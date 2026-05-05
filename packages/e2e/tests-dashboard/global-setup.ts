@@ -3,9 +3,10 @@
  *
  * 1. Boots the dashboard with a seeded user/team/project/API key (shared
  *    `bootDashboard` helper).
- * 2. Streams a real Playwright dogfood run into the dashboard so the UI has
- *    something to render (otherwise every spec would have to seed its own
- *    data through the API, doubling test time).
+ * 2. Runs `dashboard/scripts/upload-fixtures.mjs` against that dashboard —
+ *    the same canonical fixture pipeline `pnpm setup:local` uses, so the
+ *    e2e suite sees the same realistic data (cart/checkout/flaky/visual
+ *    across three branch scenarios) a developer running `pnpm dev` does.
  * 3. Logs in via the actual /login form once and saves `storageState.json`
  *    so every spec starts authenticated. Specs that test the unauth path
  *    explicitly clear storage in their own `test.use({ storageState: … })`.
@@ -24,11 +25,19 @@ import { chromium, type FullConfig } from "@playwright/test";
 import { bootDashboard, type DashboardFixture } from "../src/dashboard-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const E2E_DIR = resolve(__dirname, "..");
+const ROOT = resolve(__dirname, "../../..");
+const DASHBOARD_DIR = resolve(ROOT, "packages/dashboard");
 const STORAGE_STATE_PATH = resolve(__dirname, ".auth", "storageState.json");
 const FIXTURE_PATH = resolve(__dirname, ".auth", "fixture.json");
 
 const PORT = 5189;
+
+/**
+ * Branch stamped on the canonical "feature with failures" fixture scenario
+ * (see `dashboard/scripts/upload-fixtures.mjs` → `02-feature-flaky`). Specs
+ * use this to filter the runs list down to the run carrying the visual diff.
+ */
+export const FAILURES_BRANCH = "feat/discount-codes";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -44,23 +53,25 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
 
   try {
     console.log(
-      "[playwright] Seeding the dashboard with a streamed Playwright run",
+      "[playwright] Seeding fixtures via upload-fixtures.mjs " +
+        "(canonical scenarios — same as setup:local)",
     );
-    try {
-      execSync("npx playwright test --config=playwright.config.ts", {
-        cwd: E2E_DIR,
-        stdio: "pipe",
-        env: {
-          ...process.env,
-          WRIGHTFUL_URL: fixture.url,
-          WRIGHTFUL_TOKEN: fixture.apiKey,
-        },
-      });
-    } catch {
-      // The dogfood suite includes intentional failures; we only care that
-      // results streamed in. The UI specs will assert the runs page is
-      // populated; no need to gate on the dogfood exit code.
-    }
+    // Reuse the local-dev fixture pipeline so the e2e suite sees the same
+    // data shape a developer does. The script accepts WRIGHTFUL_URL +
+    // WRIGHTFUL_TOKEN env to bypass its standard `.dev.vars.seed.json`
+    // lookup. Its three scenarios produce the runs the specs assert on:
+    //   01-main-green, 02-feature-flaky (visual + flaky failures),
+    //   03-main-historical.
+    execSync("node scripts/upload-fixtures.mjs", {
+      cwd: DASHBOARD_DIR,
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        WRIGHTFUL_URL: fixture.url,
+        WRIGHTFUL_TOKEN: fixture.apiKey,
+        WRIGHTFUL_QUIET: "1",
+      },
+    });
 
     console.log("[playwright] Building storageState from sign-up cookies");
     mkdirSync(dirname(STORAGE_STATE_PATH), { recursive: true });

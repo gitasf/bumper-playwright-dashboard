@@ -18,19 +18,33 @@ const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const seedPath = new URL("../.dev.vars.seed.json", import.meta.url).pathname;
 const playwrightDir = new URL("./seed/playwright/", import.meta.url).pathname;
 
-if (!existsSync(seedPath)) {
+// Two callers:
+//   - `setup:local` / `pnpm fixtures:generate` — reads `.dev.vars.seed.json`.
+//   - The dashboard e2e suite (packages/e2e/tests-dashboard/global-setup.ts)
+//     boots its own ephemeral dashboard + API key and passes both as env so
+//     fixtures land against the test fixture, not the persistent demo user.
+// Env wins; the seed file is the standalone fallback.
+const envUrl = process.env.WRIGHTFUL_URL;
+const envToken = process.env.WRIGHTFUL_TOKEN;
+const envEmail = process.env.WRIGHTFUL_EMAIL;
+const hasEnvCreds = envUrl && envToken;
+
+let seed;
+if (hasEnvCreds) {
+  seed = { url: envUrl, apiKey: envToken, email: envEmail ?? null };
+} else if (existsSync(seedPath)) {
+  seed = JSON.parse(readFileSync(seedPath, "utf8"));
+} else {
   console.error(
     pc.red(
-      "missing .dev.vars.seed.json — run `pnpm setup:local` first (it seeds the demo user).",
+      "missing .dev.vars.seed.json — run `pnpm setup:local` first, or pass " +
+        "WRIGHTFUL_URL + WRIGHTFUL_TOKEN to point at an existing dashboard.",
     ),
   );
   process.exit(1);
 }
-
-const seed = JSON.parse(readFileSync(seedPath, "utf8"));
-// WRIGHTFUL_URL lets `setup:local` point us at a fallback port when 5173
-// is busy. Falls back to the seeded URL when invoked standalone.
-const baseUrl = process.env.WRIGHTFUL_URL || seed.url;
+const baseUrl = envUrl || seed.url;
+const apiKey = envToken || seed.apiKey;
 const QUIET = process.env.WRIGHTFUL_QUIET === "1";
 const log = (...args) => {
   if (!QUIET) console.log(...args);
@@ -42,7 +56,7 @@ async function probe() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${seed.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         "X-Wrightful-Version": "3",
       },
       body: "{}",
@@ -56,17 +70,27 @@ async function probe() {
   }
 }
 
+function authRejected() {
+  // Env-mode callers (e.g. the e2e suite) supplied their own creds, so the
+  // remediation has nothing to do with the seeded `.dev.vars.seed.json`.
+  if (hasEnvCreds) {
+    console.error(
+      `dashboard at ${baseUrl} rejected the supplied API key. Re-check WRIGHTFUL_URL + WRIGHTFUL_TOKEN.`,
+    );
+  } else {
+    console.error(
+      "dashboard rejected the demo API key. Delete `.dev.vars.seed.json` and `.wrangler/state/v3/do/wrightful-ControlDO/` then re-run `pnpm setup:local`.",
+    );
+  }
+  process.exit(1);
+}
+
 let devServer = null;
 
 async function ensureDashboardRunning() {
   const initial = await probe();
   if (initial === 400) return;
-  if (initial === 401) {
-    console.error(
-      "dashboard rejected the demo API key. Delete `.dev.vars.seed.json` and `.wrangler/state/v3/do/wrightful-ControlDO/` then re-run `pnpm setup:local`.",
-    );
-    process.exit(1);
-  }
+  if (initial === 401) authRejected();
 
   log(`dashboard not reachable at ${baseUrl} — starting dev server…`);
   devServer = spawn("pnpm", ["--filter", "@wrightful/dashboard", "dev"], {
@@ -97,12 +121,7 @@ async function ensureDashboardRunning() {
       log("dashboard is up");
       return;
     }
-    if (status === 401) {
-      console.error(
-        "dashboard rejected the demo API key. Delete `.dev.vars.seed.json` and `.wrangler/state/v3/do/wrightful-ControlDO/` then re-run `pnpm setup:local`.",
-      );
-      process.exit(1);
-    }
+    if (status === 401) authRejected();
   }
   console.error("dashboard did not become ready within 90s — aborting");
   process.exit(1);
@@ -263,7 +282,7 @@ async function runScenario(scenario, index, total) {
     WRIGHTFUL_FIXTURE_FAILURES: scenario.includeFailures ? "1" : "0",
     PLAYWRIGHT_OUTPUT_DIR: resultsDir,
     WRIGHTFUL_URL: baseUrl,
-    WRIGHTFUL_TOKEN: seed.apiKey,
+    WRIGHTFUL_TOKEN: apiKey,
     GITHUB_ACTIONS: "true",
     GITHUB_RUN_ID: scenario.buildId,
     GITHUB_REF_NAME: scenario.branch,
@@ -306,12 +325,16 @@ for (let i = 0; i < SCENARIOS.length; i++) {
 }
 
 if (!QUIET) {
-  console.log(pc.green(`\n✓ sign in at ${seed.url} as ${seed.email}`));
-  if (baseUrl !== seed.url) {
-    console.log(
-      pc.dim(
-        `  (fixtures were uploaded against ${baseUrl}; ${seed.url} is where \`pnpm dev\` binds)`,
-      ),
-    );
+  if (seed.email) {
+    console.log(pc.green(`\n✓ sign in at ${seed.url} as ${seed.email}`));
+    if (baseUrl !== seed.url) {
+      console.log(
+        pc.dim(
+          `  (fixtures were uploaded against ${baseUrl}; ${seed.url} is where \`pnpm dev\` binds)`,
+        ),
+      );
+    }
+  } else {
+    console.log(pc.green(`\n✓ fixtures uploaded to ${baseUrl}`));
   }
 }
