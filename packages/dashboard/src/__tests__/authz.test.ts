@@ -5,19 +5,15 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { dbRef, cachedOrgsRef } = vi.hoisted(() => ({
+const { dbRef } = vi.hoisted(() => ({
   dbRef: { current: null as unknown },
-  cachedOrgsRef: { current: null as { orgs: string[] } | null },
 }));
 
 vi.mock("cloudflare:workers", () => ({ env: {} }));
 vi.mock("@/control", () => ({ getControlDb: () => dbRef.current }));
-vi.mock("@/lib/github-orgs", () => ({
-  getCachedUserOrgs: vi.fn(async () => cachedOrgsRef.current),
-}));
 
 import {
-  getSuggestedTeamsForUser,
+  getPendingInvitesForUser,
   getTeamProjects,
   getTeamRole,
   getUserTeams,
@@ -37,7 +33,6 @@ beforeEach(() => {
   const t = makeTestDb();
   driver = t.driver;
   dbRef.current = t.db;
-  cachedOrgsRef.current = null;
 });
 
 describe("getTeamRole", () => {
@@ -78,7 +73,6 @@ describe("resolveTeamBySlug", () => {
           id: "team-1",
           slug: "acme",
           name: "Acme",
-          githubOrgSlug: "acme-inc",
           role: "owner",
         },
       ]),
@@ -88,7 +82,6 @@ describe("resolveTeamBySlug", () => {
       id: "team-1",
       slug: "acme",
       name: "Acme",
-      githubOrgSlug: "acme-inc",
       role: "owner",
     });
   });
@@ -153,82 +146,75 @@ describe("getUserTeams", () => {
   });
 });
 
-describe("getSuggestedTeamsForUser", () => {
-  it("returns [] when the user has no cached GitHub orgs", async () => {
-    cachedOrgsRef.current = null;
-    expect(await getSuggestedTeamsForUser("u1")).toEqual([]);
-    // Never queried the DB.
-    expect(driver.queries).toHaveLength(0);
+describe("getPendingInvitesForUser", () => {
+  it("returns [] when the user has no email and no GitHub login", async () => {
+    // First two queries fetch user.email and account.githubLogin; both empty.
+    driver.results.push(selectResult([]));
+    driver.results.push(selectResult([]));
+    expect(await getPendingInvitesForUser("u1")).toEqual([]);
+    // No invite query issued — short-circuit.
+    expect(driver.queries.length).toBe(2);
   });
 
-  it("returns [] when the cache exists but has zero orgs (no false positives)", async () => {
-    cachedOrgsRef.current = { orgs: [] };
-    expect(await getSuggestedTeamsForUser("u1")).toEqual([]);
-    expect(driver.queries).toHaveLength(0);
-  });
-
-  it("maps DB rows to SuggestedTeam[], surfacing dismissedAt as a boolean", async () => {
-    cachedOrgsRef.current = { orgs: ["acme", "globex"] };
+  it("matches invites by user.email (case-folded) and surfaces matchedBy='email'", async () => {
+    driver.results.push(selectResult([{ email: "Joe@Example.COM" }]));
+    driver.results.push(selectResult([{ githubLogin: null }]));
     driver.results.push(
       selectResult([
         {
-          id: "t1",
-          slug: "acme",
-          name: "Acme",
-          githubOrgSlug: "acme",
-          dismissedAt: null,
-        },
-        {
-          id: "t2",
-          slug: "globex",
-          name: "Globex",
-          githubOrgSlug: "globex",
-          dismissedAt: 1_700_000_500,
+          id: "inv-1",
+          teamId: "team-1",
+          role: "member",
+          email: "joe@example.com",
+          inviteGithubLogin: null,
+          expiresAt: 9_999_999_999,
+          teamSlug: "acme",
+          teamName: "Acme",
         },
       ]),
     );
-    const out = await getSuggestedTeamsForUser("u1");
-    expect(out).toEqual([
+    const invites = await getPendingInvitesForUser("u1");
+    expect(invites).toEqual([
       {
-        id: "t1",
-        slug: "acme",
-        name: "Acme",
-        githubOrgSlug: "acme",
-        dismissed: false,
-      },
-      {
-        id: "t2",
-        slug: "globex",
-        name: "Globex",
-        githubOrgSlug: "globex",
-        dismissed: true,
+        id: "inv-1",
+        teamId: "team-1",
+        teamSlug: "acme",
+        teamName: "Acme",
+        role: "member",
+        expiresAt: 9_999_999_999,
+        matchedBy: "email",
       },
     ]);
   });
 
-  it("excludes teams the user is already a member of (memberships.id IS NULL)", async () => {
-    cachedOrgsRef.current = { orgs: ["acme"] };
-    driver.results.push(selectResult([]));
-    await getSuggestedTeamsForUser("u1");
-    const q = driver.queries[0];
-    expect(q.sql).toMatch(/"memberships"\."id"\s+is\s+null/i);
-  });
-
-  it("normalises a null githubOrgSlug to empty string on the wire", async () => {
-    cachedOrgsRef.current = { orgs: ["acme"] };
+  it("matches invites by GitHub login when email doesn't match", async () => {
+    driver.results.push(selectResult([{ email: "joe@example.com" }]));
+    driver.results.push(selectResult([{ githubLogin: "octocat" }]));
     driver.results.push(
       selectResult([
         {
-          id: "t1",
-          slug: "acme",
-          name: "Acme",
-          githubOrgSlug: null,
-          dismissedAt: null,
+          id: "inv-2",
+          teamId: "team-2",
+          role: "owner",
+          email: null,
+          inviteGithubLogin: "octocat",
+          expiresAt: 9_999_999_999,
+          teamSlug: "globex",
+          teamName: "Globex",
         },
       ]),
     );
-    const out = await getSuggestedTeamsForUser("u1");
-    expect(out[0].githubOrgSlug).toBe("");
+    const invites = await getPendingInvitesForUser("u1");
+    expect(invites[0].matchedBy).toBe("githubLogin");
+  });
+
+  it("filters out expired invites in the SQL (expiresAt > now)", async () => {
+    driver.results.push(selectResult([{ email: "joe@example.com" }]));
+    driver.results.push(selectResult([{ githubLogin: null }]));
+    driver.results.push(selectResult([]));
+    await getPendingInvitesForUser("u1");
+    const q = driver.queries[2];
+    expect(q.sql).toMatch(/"expiresAt"\s*>\s*\?/);
   });
 });
 
@@ -245,7 +231,6 @@ describe("requireTeamOwner", () => {
           id: "t1",
           slug: "acme",
           name: "Acme",
-          githubOrgSlug: null,
           role: "member",
         },
       ]),
@@ -260,7 +245,6 @@ describe("requireTeamOwner", () => {
           id: "t1",
           slug: "acme",
           name: "Acme",
-          githubOrgSlug: null,
           role: "owner",
         },
       ]),

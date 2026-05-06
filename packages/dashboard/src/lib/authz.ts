@@ -1,5 +1,4 @@
 import { getControlDb } from "@/control";
-import { getCachedUserOrgs } from "@/lib/github-orgs";
 
 export type TeamRole = "owner" | "member";
 
@@ -32,7 +31,6 @@ export async function resolveTeamBySlug(
   slug: string;
   name: string;
   role: TeamRole;
-  githubOrgSlug: string | null;
 } | null> {
   const db = getControlDb();
   const row = await db
@@ -46,7 +44,6 @@ export async function resolveTeamBySlug(
       "teams.id as id",
       "teams.slug as slug",
       "teams.name as name",
-      "teams.githubOrgSlug as githubOrgSlug",
       "memberships.role as role",
     ])
     .where("teams.slug", "=", teamSlug)
@@ -79,60 +76,78 @@ export async function getUserTeams(
     .execute();
 }
 
-export interface SuggestedTeam {
+export interface PendingInvite {
   id: string;
-  slug: string;
-  name: string;
-  githubOrgSlug: string;
-  dismissed: boolean;
+  teamId: string;
+  teamSlug: string;
+  teamName: string;
+  role: TeamRole;
+  expiresAt: number;
+  matchedBy: "email" | "githubLogin";
 }
 
 /**
- * Teams the user is NOT a member of, but whose `githubOrgSlug` matches one
- * of the user's cached GitHub orgs. Dismissed suggestions are still returned
- * with `dismissed: true` so the settings page can show them; the sidebar
- * filters them out.
- *
- * Callers must refresh the org cache where freshness matters (sign-in hook,
- * /settings/profile, /t/:teamSlug/join). This function reads the cache only.
+ * Invites addressed directly to this user (by their `user.email` or by the
+ * GitHub login captured at OAuth sign-in), still active and unexpired. Used
+ * by the team picker to surface "you've been invited" cards on first login.
  */
-export async function getSuggestedTeamsForUser(
+export async function getPendingInvitesForUser(
   userId: string,
-): Promise<SuggestedTeam[]> {
-  const cached = await getCachedUserOrgs(userId);
-  if (!cached || cached.orgs.length === 0) return [];
-
+): Promise<PendingInvite[]> {
   const db = getControlDb();
+  const [userRow, accountRow] = await Promise.all([
+    db
+      .selectFrom("user")
+      .select("email")
+      .where("id", "=", userId)
+      .limit(1)
+      .executeTakeFirst(),
+    db
+      .selectFrom("account")
+      .select("githubLogin")
+      .where("userId", "=", userId)
+      .where("providerId", "=", "github")
+      .limit(1)
+      .executeTakeFirst(),
+  ]);
+
+  const email = userRow?.email ? userRow.email.toLowerCase() : null;
+  const githubLogin = accountRow?.githubLogin ?? null;
+  if (!email && !githubLogin) return [];
+
+  const now = Math.floor(Date.now() / 1000);
   const rows = await db
-    .selectFrom("teams")
-    .leftJoin("memberships", (join) =>
-      join
-        .onRef("memberships.teamId", "=", "teams.id")
-        .on("memberships.userId", "=", userId),
-    )
-    .leftJoin("teamSuggestionDismissals", (join) =>
-      join
-        .onRef("teamSuggestionDismissals.teamId", "=", "teams.id")
-        .on("teamSuggestionDismissals.userId", "=", userId),
-    )
+    .selectFrom("teamInvites")
+    .innerJoin("teams", "teams.id", "teamInvites.teamId")
     .select([
-      "teams.id as id",
-      "teams.slug as slug",
-      "teams.name as name",
-      "teams.githubOrgSlug as githubOrgSlug",
-      "teamSuggestionDismissals.dismissedAt as dismissedAt",
+      "teamInvites.id as id",
+      "teamInvites.teamId as teamId",
+      "teamInvites.role as role",
+      "teamInvites.email as email",
+      "teamInvites.githubLogin as inviteGithubLogin",
+      "teamInvites.expiresAt as expiresAt",
+      "teams.slug as teamSlug",
+      "teams.name as teamName",
     ])
-    .where("teams.githubOrgSlug", "in", cached.orgs)
-    .where("memberships.id", "is", null)
-    .orderBy("teams.createdAt", "asc")
+    .where((eb) => {
+      const conds = [];
+      if (email) conds.push(eb("teamInvites.email", "=", email));
+      if (githubLogin)
+        conds.push(eb("teamInvites.githubLogin", "=", githubLogin));
+      return eb.or(conds);
+    })
+    .where("teamInvites.expiresAt", ">", now)
+    .orderBy("teamInvites.createdAt", "desc")
     .execute();
 
   return rows.map((r) => ({
     id: r.id,
-    slug: r.slug,
-    name: r.name,
-    githubOrgSlug: r.githubOrgSlug ?? "",
-    dismissed: r.dismissedAt != null,
+    teamId: r.teamId,
+    teamSlug: r.teamSlug,
+    teamName: r.teamName,
+    role: r.role as TeamRole,
+    expiresAt: r.expiresAt,
+    matchedBy: email && r.email === email ? "email" : "githubLogin",
   }));
 }
 
@@ -152,7 +167,6 @@ export interface ResolvedActiveTeam {
   slug: string;
   name: string;
   role: TeamRole;
-  githubOrgSlug: string | null;
 }
 
 export interface ResolvedActiveProject {
@@ -207,7 +221,6 @@ export async function resolveTenantBundleForUser(
       "teams.id as teamId",
       "teams.slug as teamSlug",
       "teams.name as teamName",
-      "teams.githubOrgSlug as githubOrgSlug",
       "memberships.role as role",
       "projects.id as projectId",
       "projects.slug as projectSlug",
@@ -232,7 +245,6 @@ export async function resolveTenantBundleForUser(
           slug: r.teamSlug,
           name: r.teamName,
           role: r.role as TeamRole,
-          githubOrgSlug: r.githubOrgSlug,
         };
       }
       if (

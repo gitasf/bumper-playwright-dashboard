@@ -29,17 +29,15 @@ import { getControlDb, batchControl } from "@/control";
 import { resolveTeamBySlug } from "@/lib/authz";
 import { cn } from "@/lib/cn";
 import { readField } from "@/lib/form";
-import { refreshUserOrgs } from "@/lib/github-orgs";
 import { generateInviteToken, hashInviteToken } from "@/lib/invite-tokens";
 import { param } from "@/lib/route-params";
 import { formatRelativeTime } from "@/lib/time-format";
 import type { AppContext } from "@/worker";
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
-// GitHub org login rules: alphanumeric + hyphens, 1-39 chars, no leading/
-// trailing hyphen, no consecutive hyphens. We relax to allow single-char
-// orgs and accept empty (clears the field).
-const GITHUB_ORG_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/;
+// GitHub user login rules: alphanumeric + single hyphens, 1-39 chars,
+// no leading/trailing hyphen, no consecutive hyphens. Same shape as orgs.
+const GITHUB_LOGIN_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/;
 const INVITE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const INVITE_FLASH_COOKIE = "wrightful_invite_flash";
 const INVITE_FLASH_MAX_AGE = 60;
@@ -92,6 +90,31 @@ function buildInviteFlashCookie(
   return attrs.join("; ");
 }
 
+type DirectedInvite =
+  | { kind: "none" }
+  | { kind: "email"; value: string }
+  | { kind: "githubLogin"; value: string }
+  | { kind: "invalid" };
+
+/**
+ * Classify an invite identifier typed by the team owner. An empty string
+ * is the existing "share-link only" path. A value containing `@` is
+ * treated as an email; otherwise it must be a GitHub login.
+ */
+function parseInviteIdentifier(raw: string): DirectedInvite {
+  if (raw === "") return { kind: "none" };
+  if (raw.includes("@")) {
+    const value = raw.toLowerCase();
+    // Minimal email shape check; we don't need RFC 5321 here, just enough
+    // to reject obvious typos like "joe@" or "@example.com".
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return { kind: "invalid" };
+    return { kind: "email", value };
+  }
+  const value = raw.toLowerCase();
+  if (!GITHUB_LOGIN_RE.test(value)) return { kind: "invalid" };
+  return { kind: "githubLogin", value };
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
@@ -113,8 +136,6 @@ export async function SettingsTeamDetailPage() {
   const generalError = url.searchParams.get("generalError");
   const dangerError = url.searchParams.get("dangerError");
   const inviteError = url.searchParams.get("inviteError");
-  const githubOrgError = url.searchParams.get("githubOrgError");
-  const githubOrgSaved = url.searchParams.get("githubOrgSaved");
   const newInviteId = url.searchParams.get("newInvite");
 
   const db = getControlDb();
@@ -139,7 +160,7 @@ export async function SettingsTeamDetailPage() {
       .execute(),
     db
       .selectFrom("teamInvites")
-      .select(["id", "role", "createdAt", "expiresAt"])
+      .select(["id", "role", "createdAt", "expiresAt", "email", "githubLogin"])
       .where("teamId", "=", team.id)
       .where("expiresAt", ">", Math.floor(Date.now() / 1000))
       .orderBy("createdAt", "desc")
@@ -252,59 +273,6 @@ export async function SettingsTeamDetailPage() {
                   >
                     Discard
                   </a>
-                </div>
-              )}
-            </form>
-          </section>
-
-          {/* GitHub organisation — auto-access for org members */}
-          <section className="rounded-lg border border-border bg-card">
-            <header className="flex items-center gap-2 border-border/50 border-b px-5 py-3">
-              <Users
-                size={14}
-                strokeWidth={2}
-                className="text-muted-foreground"
-              />
-              <h2 className="font-semibold text-sm tracking-tight">
-                GitHub organisation
-              </h2>
-            </header>
-            <form method="post" className="flex flex-col gap-4 p-5">
-              <input type="hidden" name="action" value="update-github-org" />
-              {githubOrgError && (
-                <Alert variant="error">
-                  <AlertDescription>{githubOrgError}</AlertDescription>
-                </Alert>
-              )}
-              {githubOrgSaved && !githubOrgError && (
-                <Alert>
-                  <AlertDescription>Saved.</AlertDescription>
-                </Alert>
-              )}
-              <Field>
-                <FieldLabel className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider">
-                  Org slug
-                </FieldLabel>
-                <Input
-                  nativeInput
-                  name="githubOrgSlug"
-                  defaultValue={team.githubOrgSlug ?? ""}
-                  disabled={!isOwner}
-                  placeholder="acme-corp"
-                  autoComplete="off"
-                  maxLength={39}
-                  className="font-mono"
-                />
-                <FieldDescription className="text-[11px]">
-                  Members of this GitHub org will see this team as available to
-                  join. Leave blank to disable.
-                </FieldDescription>
-              </Field>
-              {isOwner && (
-                <div className="flex items-center gap-3 pt-1">
-                  <Button type="submit" size="sm">
-                    Save
-                  </Button>
                 </div>
               )}
             </form>
@@ -471,15 +439,30 @@ export async function SettingsTeamDetailPage() {
                 )}
               </div>
               {isOwner && (
-                <form method="post" className="m-0">
+                <form
+                  method="post"
+                  className="flex items-center gap-2 m-0"
+                  aria-label="Invite a teammate"
+                >
                   <input type="hidden" name="action" value="create-invite" />
+                  <Input
+                    nativeInput
+                    type="text"
+                    name="inviteIdentifier"
+                    placeholder="email or github username"
+                    aria-label="Email or GitHub username (optional)"
+                    autoComplete="off"
+                    maxLength={254}
+                    className="h-7 w-56 font-mono text-xs"
+                  />
                   <button
                     type="submit"
-                    aria-label="Invite a teammate"
-                    title="Invite a teammate"
-                    className="inline-flex size-6 items-center justify-center rounded-sm border border-border/50 bg-background text-muted-foreground transition-colors hover:border-border hover:text-foreground"
+                    aria-label="Create invite"
+                    title="Create invite"
+                    className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2.5 font-mono font-medium text-[11px] text-foreground uppercase tracking-wider transition-colors hover:bg-accent"
                   >
                     <UserPlus size={12} strokeWidth={2.5} />
+                    Invite
                   </button>
                 </form>
               )}
@@ -546,8 +529,12 @@ export async function SettingsTeamDetailPage() {
                       />
                     </div>
                     <div className="min-w-0">
-                      <p className="whitespace-nowrap font-medium text-muted-foreground text-sm italic">
-                        Pending invite · {formatRelativeTime(invite.createdAt)}
+                      <p className="truncate font-medium text-muted-foreground text-sm italic">
+                        {invite.email
+                          ? `Invite · ${invite.email}`
+                          : invite.githubLogin
+                            ? `Invite · @${invite.githubLogin}`
+                            : `Pending invite · ${formatRelativeTime(invite.createdAt)}`}
                       </p>
                       <p className="truncate font-mono text-[11px] text-muted-foreground">
                         {formatExpiresIn(invite.expiresAt)}
@@ -730,69 +717,17 @@ export async function teamDetailHandler({
     return Response.redirect(`${origin}/settings/teams/${slug}`, 302);
   }
 
-  if (action === "update-github-org") {
-    const raw = readField(form, "githubOrgSlug").trim();
-    const normalized = raw.toLowerCase();
-    if (normalized === "") {
-      try {
-        await getControlDb()
-          .updateTable("teams")
-          .set({ githubOrgSlug: null })
-          .where("id", "=", team.id)
-          .execute();
-      } catch {
-        return redirectWithParam(
-          here,
-          "githubOrgError",
-          "Could not save the GitHub org.",
-        );
-      }
-      return redirectWithParam(here, "githubOrgSaved", "1");
-    }
-
-    if (!GITHUB_ORG_RE.test(normalized)) {
-      return redirectWithParam(
-        here,
-        "githubOrgError",
-        "Enter a valid GitHub org slug (letters, numbers, and single hyphens).",
-      );
-    }
-
-    // The acting owner must be a member of the org they're claiming. This
-    // stops drive-by claims where someone types a slug they aren't in.
-    const refresh = await refreshUserOrgs(ctx.user.id);
-    if (refresh.kind === "scope_missing" || refresh.kind === "no_token") {
-      return redirectWithParam(
-        here,
-        "githubOrgError",
-        "Reconnect GitHub in /settings/profile to link an org.",
-      );
-    }
-    if (!refresh.orgs.includes(normalized)) {
-      return redirectWithParam(
-        here,
-        "githubOrgError",
-        "You must be a member of that GitHub org to link it.",
-      );
-    }
-
-    try {
-      await getControlDb()
-        .updateTable("teams")
-        .set({ githubOrgSlug: normalized })
-        .where("id", "=", team.id)
-        .execute();
-    } catch {
-      return redirectWithParam(
-        here,
-        "githubOrgError",
-        "Could not save the GitHub org.",
-      );
-    }
-    return redirectWithParam(here, "githubOrgSaved", "1");
-  }
-
   if (action === "create-invite") {
+    const rawIdentifier = readField(form, "inviteIdentifier").trim();
+    const directed = parseInviteIdentifier(rawIdentifier);
+    if (directed.kind === "invalid") {
+      return redirectWithParam(
+        here,
+        "inviteError",
+        "Enter an email address or a GitHub username (letters, numbers, single hyphens).",
+      );
+    }
+
     const token = generateInviteToken();
     const tokenHash = await hashInviteToken(token);
     const inviteId = ulid();
@@ -808,6 +743,8 @@ export async function teamDetailHandler({
           createdBy: ctx.user.id,
           createdAt: nowSeconds,
           expiresAt: nowSeconds + INVITE_TTL_SECONDS,
+          email: directed.kind === "email" ? directed.value : null,
+          githubLogin: directed.kind === "githubLogin" ? directed.value : null,
         })
         .execute();
     } catch {

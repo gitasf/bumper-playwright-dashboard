@@ -20,7 +20,6 @@ import { Skeleton } from "@/app/components/ui/skeleton";
 import { TeamSwitcher } from "@/app/components/team-switcher";
 import { NuqsRwsdkAdapter } from "@/lib/nuqs-rwsdk-adapter";
 import {
-  getSuggestedTeamsForUser,
   getUserTeams,
   type ResolvedActiveProject,
   type ResolvedActiveTeam,
@@ -127,7 +126,6 @@ export function AppLayout({ children }: LayoutProps): React.ReactElement {
                   pathname={pathname}
                   appPromise={appPromise as Promise<AppSidebarData>}
                   signedIn={!!userId}
-                  userId={userId}
                 />
               </Suspense>
             )}
@@ -183,12 +181,10 @@ async function AppSidebarLoader({
   pathname,
   appPromise,
   signedIn,
-  userId,
 }: {
   pathname: string;
   appPromise: Promise<AppSidebarData>;
   signedIn: boolean;
-  userId: string | null;
 }): Promise<React.ReactElement> {
   const app = await appPromise;
   return (
@@ -198,40 +194,6 @@ async function AppSidebarLoader({
       activeTeam={app.activeTeam}
       activeProject={app.activeProject}
       signedIn={signedIn}
-      userId={userId}
-    />
-  );
-}
-
-/**
- * Streams the team-switcher's "Suggested" section in via its own Suspense
- * boundary. The fallback is the same `<TeamSwitcher>` with no suggestions —
- * the trigger button + joined teams are visible immediately; suggestions
- * fill in when the GitHub-org-driven query completes (~180ms).
- *
- * RSC-server-component: reads from ControlDO directly. No client fetch.
- */
-async function TeamSwitcherWithSuggestions({
-  currentTeamSlug,
-  currentTeamName,
-  teams,
-  userId,
-}: {
-  currentTeamSlug: string;
-  currentTeamName: string;
-  teams: { slug: string; name: string }[];
-  userId: string;
-}): Promise<React.ReactElement> {
-  const all = await getSuggestedTeamsForUser(userId);
-  const suggestedTeams = all
-    .filter((s) => !s.dismissed)
-    .map((s) => ({ id: s.id, slug: s.slug, name: s.name }));
-  return (
-    <TeamSwitcher
-      currentTeamSlug={currentTeamSlug}
-      currentTeamName={currentTeamName}
-      teams={teams}
-      suggestedTeams={suggestedTeams}
     />
   );
 }
@@ -336,7 +298,6 @@ interface AppSidebarContentsProps {
   activeTeam: { slug: string; name: string } | null;
   activeProject: { slug: string; name: string } | null;
   signedIn: boolean;
-  userId: string | null;
 }
 
 function AppSidebarContents({
@@ -345,7 +306,6 @@ function AppSidebarContents({
   activeTeam,
   activeProject,
   signedIn,
-  userId,
 }: AppSidebarContentsProps) {
   const activeNav = deriveActiveNav(pathname);
   const base =
@@ -388,30 +348,11 @@ function AppSidebarContents({
     <>
       {activeTeam ? (
         <div className="h-14 px-2 shrink-0 flex items-center border-b border-sidebar-border">
-          {userId ? (
-            <Suspense
-              fallback={
-                <TeamSwitcher
-                  currentTeamSlug={activeTeam.slug}
-                  currentTeamName={activeTeam.name}
-                  teams={teams}
-                />
-              }
-            >
-              <TeamSwitcherWithSuggestions
-                currentTeamSlug={activeTeam.slug}
-                currentTeamName={activeTeam.name}
-                teams={teams}
-                userId={userId}
-              />
-            </Suspense>
-          ) : (
-            <TeamSwitcher
-              currentTeamSlug={activeTeam.slug}
-              currentTeamName={activeTeam.name}
-              teams={teams}
-            />
-          )}
+          <TeamSwitcher
+            currentTeamSlug={activeTeam.slug}
+            currentTeamName={activeTeam.name}
+            teams={teams}
+          />
         </div>
       ) : (
         <div className="h-14 px-4 shrink-0 flex items-center text-sm font-semibold tracking-tight border-b border-sidebar-border">

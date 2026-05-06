@@ -148,6 +148,81 @@ describe("acceptInviteHandler", () => {
     expect(res.status).toBe(401);
     expect(driver.queries).toHaveLength(0);
   });
+
+  it("rejects a directed invite when the caller's email doesn't match", async () => {
+    // Invite row carries a directed email; user lookup returns a different
+    // address; account lookup returns no GitHub login. inviteMatchesUser
+    // must return false so the redemption is blocked.
+    driver.results.push(
+      selectResult([
+        {
+          id: "invite-1",
+          teamId: "team-1",
+          role: "member",
+          email: "joe@example.com",
+          githubLogin: null,
+          teamSlug: "acme",
+        },
+      ]),
+      selectResult([{ email: "someone-else@example.com" }]),
+    );
+
+    const res = await callAccept();
+
+    expect(res.status).toBe(302);
+    const location = res.headers.get("Location") ?? "";
+    expect(location).toMatch(/\/invite\//);
+    expect(location).toMatch(/[?&]error=/);
+    expect(mockBatchControl).not.toHaveBeenCalled();
+  });
+
+  it("accepts a directed invite when the caller's email matches (case-folded)", async () => {
+    // Invite stored lowercased; user.email comes back mixed-case.
+    driver.results.push(
+      selectResult([
+        {
+          id: "invite-1",
+          teamId: "team-1",
+          role: "member",
+          email: "joe@example.com",
+          githubLogin: null,
+          teamSlug: "acme",
+        },
+      ]),
+      selectResult([{ email: "Joe@Example.COM" }]),
+      selectResult([]),
+    );
+
+    const res = await callAccept();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("https://example.com/t/acme");
+    expect(mockBatchControl).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a directed invite when the caller's GitHub login matches", async () => {
+    // Email check returns no match (or no email); GitHub login matches.
+    driver.results.push(
+      selectResult([
+        {
+          id: "invite-1",
+          teamId: "team-1",
+          role: "member",
+          email: null,
+          githubLogin: "octocat",
+          teamSlug: "acme",
+        },
+      ]),
+      selectResult([{ githubLogin: "octocat" }]),
+      selectResult([]),
+    );
+
+    const res = await callAccept();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("https://example.com/t/acme");
+    expect(mockBatchControl).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("invite-token helpers", () => {

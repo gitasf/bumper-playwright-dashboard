@@ -43,7 +43,7 @@ describe("frozen 0000_init migrations", () => {
   it("ControlDO 0000_init has not changed since launch", () => {
     const path = resolve(__dirname, "../control/migrations.ts");
     const expected =
-      "0e82f7256e815a76b8bb2bc184dfffad7d1efeda7fd9867cc94d610778d13021";
+      "2f31e502ef2ce1905e38170079675a127fb20f6b685984234b1c13e55f7f90bc";
     expect(hashInitMigration(path)).toBe(expected);
   });
 

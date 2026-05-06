@@ -4,9 +4,13 @@ import { ulid } from "ulid";
 import { Alert, AlertDescription } from "@/app/components/ui/alert";
 import { Button } from "@/app/components/ui/button";
 import { getControlDb, batchControl } from "@/control";
+import { inviteIsDirected, inviteMatchesUser } from "@/lib/invite-identity";
 import { hashInviteToken } from "@/lib/invite-tokens";
 import { param } from "@/lib/route-params";
 import type { AppContext } from "@/worker";
+
+const DIRECTED_MISMATCH_ERROR =
+  "This invite is addressed to someone else. Sign in with the invited account or ask the team owner for a fresh link.";
 
 export async function InvitePage() {
   const ctx = requestInfo.ctx as AppContext;
@@ -25,6 +29,8 @@ export async function InvitePage() {
       "teamInvites.id as id",
       "teamInvites.teamId as teamId",
       "teamInvites.role as role",
+      "teamInvites.email as email",
+      "teamInvites.githubLogin as githubLogin",
       "teams.slug as teamSlug",
       "teams.name as teamName",
     ])
@@ -42,6 +48,31 @@ export async function InvitePage() {
         <p className="text-muted-foreground text-sm">
           {error ??
             "This invite link is no longer active. Ask the team owner for a fresh link."}
+        </p>
+        <a
+          href="/"
+          className="mt-2 inline-flex font-mono text-[11px] text-muted-foreground uppercase tracking-wider transition-colors hover:text-foreground"
+        >
+          Go home
+        </a>
+      </InviteShell>
+    );
+  }
+
+  // Directed invites are bound to a specific email or GitHub login. The
+  // share-link path must enforce the same gate as the picker accept button,
+  // otherwise a leaked token URL bypasses the directed-invite guarantee.
+  if (
+    inviteIsDirected(invite) &&
+    !(await inviteMatchesUser(invite, ctx.user.id))
+  ) {
+    return (
+      <InviteShell>
+        <h1 className="font-semibold text-2xl tracking-tight">
+          Invite not for this account
+        </h1>
+        <p className="text-muted-foreground text-sm">
+          {DIRECTED_MISMATCH_ERROR}
         </p>
         <a
           href="/"
@@ -153,6 +184,8 @@ export async function acceptInviteHandler({
       "teamInvites.id as id",
       "teamInvites.teamId as teamId",
       "teamInvites.role as role",
+      "teamInvites.email as email",
+      "teamInvites.githubLogin as githubLogin",
       "teams.slug as teamSlug",
     ])
     .where("teamInvites.tokenHash", "=", tokenHash)
@@ -166,6 +199,15 @@ export async function acceptInviteHandler({
       "error",
       "This invite is no longer valid. Ask the team owner for a fresh link.",
     );
+    return Response.redirect(url.toString(), 302);
+  }
+
+  if (
+    inviteIsDirected(invite) &&
+    !(await inviteMatchesUser(invite, ctx.user.id))
+  ) {
+    const url = new URL(here);
+    url.searchParams.set("error", DIRECTED_MISMATCH_ERROR);
     return Response.redirect(url.toString(), 302);
   }
 

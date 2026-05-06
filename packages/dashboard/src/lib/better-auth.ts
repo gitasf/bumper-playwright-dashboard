@@ -3,7 +3,7 @@ import { kyselyAdapter } from "@better-auth/kysely-adapter";
 import { ulid } from "ulid";
 import { env } from "cloudflare:workers";
 import { getControlDb } from "@/control";
-import { refreshUserOrgs } from "@/lib/github-orgs";
+import { captureGithubLogin } from "@/lib/github-login";
 
 // Cloudflare KV requires `expirationTtl >= 60`. Better Auth always passes
 // session-class TTLs (cookie cache 5 min, sessions 7 days, OAuth verifications
@@ -113,16 +113,16 @@ function buildAuth() {
     },
     databaseHooks: {
       account: {
-        // Pre-warm the user's GitHub-org cache on their first OAuth login
-        // (and on any re-auth that updates the token — e.g. scope upgrade).
-        // Awaited so `/` (team picker) renders with a populated suggestion
-        // list without us having to refresh on every page render. Failures
-        // are swallowed: the profile page still exposes a manual refresh.
+        // Capture the user's GitHub login on first OAuth sign-in (and on
+        // re-auth) so directed invites addressed to a login can resolve
+        // when the invitee lands on the team picker. Awaited but failures
+        // are swallowed — email-keyed invites still resolve, and the next
+        // sign-in retries the fetch.
         create: {
           after: async (account) => {
             if (account.providerId !== "github") return;
             try {
-              await refreshUserOrgs(account.userId);
+              await captureGithubLogin(account.userId, account.accessToken);
             } catch {
               // Best effort — don't block sign-in on a GitHub API hiccup.
             }
@@ -132,7 +132,7 @@ function buildAuth() {
           after: async (account) => {
             if (account.providerId !== "github") return;
             try {
-              await refreshUserOrgs(account.userId);
+              await captureGithubLogin(account.userId, account.accessToken);
             } catch {
               // Best effort.
             }

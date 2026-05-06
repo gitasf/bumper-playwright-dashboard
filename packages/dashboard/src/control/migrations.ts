@@ -310,4 +310,106 @@ export const controlMigrations = {
       await db.schema.dropTable("user").ifExists().execute();
     },
   },
+
+  /**
+   * Replace the GitHub-org-link auto-join feature with directed invites.
+   *
+   * Invites can now be addressed to a specific email or GitHub login: when
+   * the invitee signs in, the team picker surfaces pending invites matching
+   * `user.email` or `account.githubLogin`. Token-link invites still work
+   * (the new columns are nullable; existing rows untouched).
+   *
+   * The org-link path is removed entirely:
+   *   - `teams.githubOrgSlug` (+ index) → DROP
+   *   - `userGithubOrgs` (the post-OAuth org cache) → DROP
+   *   - `teamSuggestionDismissals` (per-user "don't suggest this team") → DROP
+   * Signed-in OAuth users will populate `account.githubLogin` lazily on
+   * their next sign-in; in the meantime, email-keyed invites still resolve.
+   */
+  "0001_directed_invites": {
+    async up(db) {
+      const addAccountLogin = await db.schema
+        .alterTable("account")
+        .addColumn("githubLogin", "text")
+        .execute();
+      const addInviteEmail = await db.schema
+        .alterTable("teamInvites")
+        .addColumn("email", "text")
+        .execute();
+      const addInviteLogin = await db.schema
+        .alterTable("teamInvites")
+        .addColumn("githubLogin", "text")
+        .execute();
+
+      await db.schema
+        .createIndex("teamInvites_email_idx")
+        .on("teamInvites")
+        .column("email")
+        .execute();
+      await db.schema
+        .createIndex("teamInvites_githubLogin_idx")
+        .on("teamInvites")
+        .column("githubLogin")
+        .execute();
+
+      await db.schema.dropIndex("teams_githubOrg_idx").ifExists().execute();
+      await db.schema.alterTable("teams").dropColumn("githubOrgSlug").execute();
+      await db.schema
+        .dropTable("teamSuggestionDismissals")
+        .ifExists()
+        .execute();
+      await db.schema.dropTable("userGithubOrgs").ifExists().execute();
+
+      return [addAccountLogin, addInviteEmail, addInviteLogin];
+    },
+
+    async down(db) {
+      // Recreate the dropped tables/columns to roll back. We don't restore
+      // data — the cache and dismissals tables held only derived/UI state.
+      await db.schema
+        .alterTable("teams")
+        .addColumn("githubOrgSlug", "text")
+        .execute();
+      await db.schema
+        .createIndex("teams_githubOrg_idx")
+        .on("teams")
+        .column("githubOrgSlug")
+        .execute();
+      await db.schema
+        .createTable("teamSuggestionDismissals")
+        .addColumn("userId", "text", (c) =>
+          c.notNull().references("user.id").onDelete("cascade"),
+        )
+        .addColumn("teamId", "text", (c) =>
+          c.notNull().references("teams.id").onDelete("cascade"),
+        )
+        .addColumn("dismissedAt", "integer", (c) => c.notNull())
+        .addPrimaryKeyConstraint("teamSuggestionDismissals_pk", [
+          "userId",
+          "teamId",
+        ])
+        .execute();
+      await db.schema
+        .createTable("userGithubOrgs")
+        .addColumn("userId", "text", (c) =>
+          c.primaryKey().references("user.id").onDelete("cascade"),
+        )
+        .addColumn("orgSlugsJson", "text", (c) => c.notNull())
+        .addColumn("refreshedAt", "integer", (c) => c.notNull())
+        .addColumn("scopeOk", "integer", (c) => c.notNull())
+        .execute();
+
+      await db.schema
+        .dropIndex("teamInvites_githubLogin_idx")
+        .ifExists()
+        .execute();
+      await db.schema.dropIndex("teamInvites_email_idx").ifExists().execute();
+      await db.schema
+        .alterTable("teamInvites")
+        .dropColumn("githubLogin")
+        .execute();
+      await db.schema.alterTable("teamInvites").dropColumn("email").execute();
+      await db.schema.alterTable("account").dropColumn("githubLogin").execute();
+    },
+  },
 } satisfies Migrations;

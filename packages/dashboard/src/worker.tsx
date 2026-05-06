@@ -75,10 +75,9 @@ import {
   setLastTeamHandler,
 } from "@/routes/api/user-state";
 import {
-  dismissSuggestionHandler,
-  joinTeamHandler,
-  undismissSuggestionHandler,
-} from "@/routes/api/team-suggestions";
+  acceptInviteByIdHandler,
+  declineInviteByIdHandler,
+} from "@/routes/api/invite-actions";
 import { authHandler } from "@/routes/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 import {
@@ -211,11 +210,11 @@ const app = defineApp([
   route("/api/user/last-project", {
     post: [loadSession, requireUser, setLastProjectHandler],
   }),
-  route("/api/user/team-suggestions/:teamId/dismiss", {
-    post: [loadSession, requireUser, dismissSuggestionHandler],
+  route("/api/invites/:inviteId/accept", {
+    post: [loadSession, requireUser, acceptInviteByIdHandler],
   }),
-  route("/api/user/team-suggestions/:teamId/undismiss", {
-    post: [loadSession, requireUser, undismissSuggestionHandler],
+  route("/api/invites/:inviteId/decline", {
+    post: [loadSession, requireUser, declineInviteByIdHandler],
   }),
   route("/api/t/:teamSlug/p/:projectSlug/runs/:runId/test-preview", {
     get: [loadSession, requireUser, runTestPreviewHandler],
@@ -277,9 +276,6 @@ const app = defineApp([
     route("/invite/:token", {
       get: [requireUser, InvitePage],
       post: [requireUser, acceptInviteHandler],
-    }),
-    route("/t/:teamSlug/join", {
-      post: [requireUser, joinTeamHandler],
     }),
     ...layout(AppLayout, [
       // Every route in this layout requires an authenticated session — hoist
