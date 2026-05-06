@@ -1,16 +1,5 @@
-import { env } from "cloudflare:workers";
 import { getAuth } from "@/lib/better-auth";
-import { parseBooleanEnv } from "@/lib/env-parse";
-
-/**
- * Email verification is disabled (no mailer wired up yet) so leaving signup
- * open means anyone on the public internet can create an account. Self-hosters
- * who don't want that must set `ALLOW_OPEN_SIGNUP=1` explicitly; otherwise we
- * block Better Auth's email/password sign-up path at the edge.
- */
-function isOpenSignupAllowed(): boolean {
-  return parseBooleanEnv(env.ALLOW_OPEN_SIGNUP);
-}
+import { isOpenSignupAllowed } from "@/lib/signup";
 
 function isSignupRequest(url: URL): boolean {
   // Better Auth's email/password sign-up endpoint. Social (OAuth) callbacks

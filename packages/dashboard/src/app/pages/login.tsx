@@ -1,6 +1,7 @@
 import { requestInfo } from "rwsdk/worker";
 import { hasGithubOAuthConfigured } from "@/lib/better-auth";
 import { safeNextPath } from "@/lib/safe-next-path";
+import { isOpenSignupAllowed } from "@/lib/signup";
 import { LoginForm } from "./login-form";
 import { LoginGithubButton } from "./login-github-button";
 
@@ -8,26 +9,34 @@ export function LoginPage() {
   const url = new URL(requestInfo.request.url);
   const next = safeNextPath(url.searchParams.get("next"));
   const callbackURL = encodeURIComponent(next);
-  const mode =
-    url.pathname === "/signup" || url.searchParams.get("mode") === "signup"
-      ? "signup"
-      : "signin";
+  const requestedSignup =
+    url.pathname === "/signup" || url.searchParams.get("mode") === "signup";
+  const signupAllowed = isOpenSignupAllowed();
+  const signupDisabled = requestedSignup && !signupAllowed;
+  const mode = requestedSignup && signupAllowed ? "signup" : "signin";
   const showGithub = hasGithubOAuthConfigured();
 
-  const copy = {
-    signin: {
-      title: "Sign in",
-      subtitle: "Access your test dashboard",
-      switchText: "Need an account? Sign up",
-      switchHref: `/signup?next=${callbackURL}`,
-    },
-    signup: {
-      title: "Create your account",
-      subtitle: "Sign up to access this Wrightful instance",
-      switchText: "Already have an account? Sign in",
-      switchHref: `/login?next=${callbackURL}`,
-    },
-  }[mode];
+  const copy = signupDisabled
+    ? {
+        title: "Signup is disabled",
+        subtitle: "This Wrightful instance isn't accepting new accounts.",
+        switchText: "Back to sign in",
+        switchHref: `/login?next=${callbackURL}`,
+      }
+    : {
+        signin: {
+          title: "Sign in",
+          subtitle: "Access your test dashboard",
+          switchText: "Need an account? Sign up",
+          switchHref: `/signup?next=${callbackURL}`,
+        },
+        signup: {
+          title: "Create your account",
+          subtitle: "Sign up to access this Wrightful instance",
+          switchText: "Already have an account? Sign in",
+          switchHref: `/login?next=${callbackURL}`,
+        },
+      }[mode];
 
   return (
     <main className="min-h-screen flex items-center justify-center p-6 bg-background">
@@ -41,7 +50,7 @@ export function LoginPage() {
           </p>
         </div>
 
-        {showGithub && (
+        {!signupDisabled && showGithub && (
           <>
             <div className="flex flex-col gap-3 mb-8">
               <LoginGithubButton callbackURL={next} />
@@ -56,16 +65,18 @@ export function LoginPage() {
           </>
         )}
 
-        <LoginForm mode={mode} callbackURL={next} />
+        {!signupDisabled && <LoginForm mode={mode} callbackURL={next} />}
 
-        <div className="mt-8 text-center">
-          <a
-            href={copy.switchHref}
-            className="font-label text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            {copy.switchText}
-          </a>
-        </div>
+        {(signupDisabled || signupAllowed) && (
+          <div className="mt-8 text-center">
+            <a
+              href={copy.switchHref}
+              className="font-label text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {copy.switchText}
+            </a>
+          </div>
+        )}
       </div>
     </main>
   );
