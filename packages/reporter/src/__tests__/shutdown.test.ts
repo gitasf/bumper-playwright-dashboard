@@ -254,7 +254,11 @@ describe("WrightfulReporter signal handling", () => {
   it("uses a short timeout for the shutdown /complete (does not retry)", async () => {
     let openCalled = false;
     const completeStarts: number[] = [];
-    let completeRejector: ((err: Error) => void) | null = null;
+    // Held in a ref so tsgo doesn't narrow it to `null` based on the literal
+    // initialiser — the callback below mutates it but tsgo can't see that.
+    const completeRejector: { current: ((err: Error) => void) | null } = {
+      current: null,
+    };
 
     const fetchFn = async (url: string) => {
       if (url.endsWith("/api/runs") && !openCalled) {
@@ -266,7 +270,7 @@ describe("WrightfulReporter signal handling", () => {
         // Hang until the handler's timeout aborts the request — exercise
         // the maxRetries:0 + timeoutMs:3000 path.
         return new Promise<Response>((_, reject) => {
-          completeRejector = reject;
+          completeRejector.current = reject;
         });
       }
       return jsonResponse(200, {});
@@ -288,7 +292,7 @@ describe("WrightfulReporter signal handling", () => {
     expect(completeStarts).toHaveLength(1);
 
     // Unblock the pending request so the test can clean up.
-    completeRejector?.(new Error("aborted by test"));
+    completeRejector.current?.(new Error("aborted by test"));
     await new Promise((r) => setTimeout(r, 20));
   });
 });

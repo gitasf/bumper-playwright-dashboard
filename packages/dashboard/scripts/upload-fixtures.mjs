@@ -277,8 +277,24 @@ async function runScenario(scenario, index, total) {
   // Spoof GitHub Actions CI detection so the run gets stamped with branch /
   // commit / build id. The reporter reads these at onBegin, before opening
   // the run, via packages/reporter/src/ci.ts.
+  //
+  // Drop GITHUB_HEAD_REF and any pre-set GITHUB_* identifiers from the
+  // ambient env before layering scenario values on top. When upload-fixtures
+  // runs inside a PR's CI job, GitHub sets GITHUB_HEAD_REF to the PR's
+  // source branch, and the reporter prefers it over GITHUB_REF_NAME — so
+  // without this every scenario would inherit the PR branch instead of its
+  // own (`feat/discount-codes` etc.) and the dashboard's branch filter
+  // wouldn't find them.
+  const {
+    GITHUB_HEAD_REF: _ghHead,
+    GITHUB_REF_NAME: _ghRefName,
+    GITHUB_RUN_ID: _ghRunId,
+    GITHUB_SHA: _ghSha,
+    GITHUB_REPOSITORY: _ghRepo,
+    ...envWithoutGithub
+  } = process.env;
   const pwEnv = {
-    ...process.env,
+    ...envWithoutGithub,
     WRIGHTFUL_FIXTURE_FAILURES: scenario.includeFailures ? "1" : "0",
     PLAYWRIGHT_OUTPUT_DIR: resultsDir,
     WRIGHTFUL_URL: baseUrl,

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { stub, idFromName, ns } = vi.hoisted(() => {
   const stub = {
-    setState: vi.fn(async () => {}),
+    setState: vi.fn(async (_state: unknown, _key: string) => {}),
   };
   const idFromName = vi.fn((name: string) => `id:${name}`);
   const ns = {

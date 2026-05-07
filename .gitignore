@@ -9,6 +9,7 @@
 
 # Playwright
 playwright-report.json
+playwright-report/
 test-results/
 
 # Logs
