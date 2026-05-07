@@ -30,7 +30,7 @@ export default defineConfig({
       "typescript/no-floating-promises": "error",
       "typescript/no-misused-promises": "error",
       "typescript/await-thenable": "error",
-      "typescript/no-unnecessary-type-assertion": "warn",
+      "typescript/no-unnecessary-type-assertion": "off",
       "typescript/no-explicit-any": "warn",
       "typescript/no-unused-vars": "error",
       "import/no-cycle": "error",

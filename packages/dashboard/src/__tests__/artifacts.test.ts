@@ -110,7 +110,7 @@ describe("registerHandler", () => {
       ctx: AUTH_CTX,
     });
     expect(res.status).toBe(413);
-    const body = await res.json();
+    const body = (await res.json()) as { maxBytes: number };
     expect(body.maxBytes).toBe(1024);
   });
 
@@ -161,7 +161,7 @@ describe("registerHandler", () => {
       ctx: AUTH_CTX,
     });
     expect(res.status).toBe(400);
-    const body = await res.json();
+    const body = (await res.json()) as { unknownTestResultIds: string[] };
     expect(body.unknownTestResultIds).toEqual(["tr-bad"]);
   });
 
@@ -186,7 +186,9 @@ describe("registerHandler", () => {
     });
 
     expect(res.status).toBe(201);
-    const body = await res.json();
+    const body = (await res.json()) as {
+      uploads: Array<{ artifactId: string; uploadUrl: string; r2Key: string }>;
+    };
     expect(body.uploads).toHaveLength(1);
     expect(body.uploads[0].r2Key).toMatch(
       /^t\/team-1\/p\/proj-1\/runs\/run-1\/tr-1\/[0-9A-Z]+\/trace\.zip$/,

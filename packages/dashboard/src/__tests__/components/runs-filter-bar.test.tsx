@@ -131,9 +131,8 @@ describe("RunsSearchInput", () => {
         pathname="/t/acme/p/web"
       />,
     );
-    const reSyncedInput = screen.getByLabelText(
-      /search runs/i,
-    ) as HTMLInputElement;
-    expect(reSyncedInput.value).toBe("ab");
+    expect(
+      (screen.getByLabelText(/search runs/i) as HTMLInputElement).value,
+    ).toBe("ab");
   });
 });
