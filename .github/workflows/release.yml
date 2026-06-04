@@ -32,6 +32,11 @@ jobs:
       - name: Build reporter
         run: pnpm --filter @wrightful/reporter build
 
+      # The reporter's wire-contract test imports the dashboard's schemas,
+      # whose tsconfig extends .void/tsconfig.json — generate it first.
+      - name: Prepare Void codegen
+        run: pnpm --filter @wrightful/dashboard exec void prepare
+
       - name: Test reporter
         run: pnpm --filter @wrightful/reporter test
 
