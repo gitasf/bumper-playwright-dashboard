@@ -1,4 +1,4 @@
-import { statusColor } from "@/lib/status";
+import { statusToken } from "@/lib/status";
 
 export interface SparklinePoint {
   /** Any status string — unknown values render with the fallback colour. */
@@ -26,9 +26,9 @@ export interface SparklineProps {
  * attempts rather than a continuous edge-to-edge bar.
  *
  * (The component is still named `Sparkline` for historical reasons —
- * callers across the app reference it under that name, and there's a
- * separate `DurationSparkline` in `insights/slowest-tests.tsx` that does
- * actual line-chart sparkline work.)
+ * callers across the app reference it under that name. Numeric line-chart
+ * sparkline work lives in the separate `MetricSparkline`
+ * (`analytics/metric-sparkline.tsx`).)
  */
 export function Sparkline({
   points,
@@ -63,10 +63,10 @@ export function Sparkline({
     >
       {ordered.map((p, i) => (
         <rect
-          fill={statusColor(p.status)}
           height={barH}
           key={`${i}-${p.status}`}
           rx="1.5"
+          style={{ fill: statusToken(p.status) }}
           width={Math.max(1, cellW - inset * 2)}
           x={i * cellW + inset}
           y={3}

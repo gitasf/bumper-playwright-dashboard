@@ -1,8 +1,7 @@
 import { defineHandler } from "void";
-import { requireAuth } from "void/auth";
 import { and, db, eq } from "void/db";
 import { runs, testResults } from "@schema";
-import { tenantScopeForUserBySlugs } from "@/lib/scope";
+import { resolveTenantApiScope } from "@/lib/tenant-api-scope";
 
 export type TestResultSummaryResponse = {
   id: string;
@@ -28,17 +27,9 @@ export type TestResultSummaryResponse = {
  * `testResult` occurrence rather than a whole run.
  */
 export const GET = defineHandler(async (c) => {
-  const user = requireAuth(c);
-  const teamSlug = c.req.param("teamSlug");
-  const projectSlug = c.req.param("projectSlug");
-  const runId = c.req.param("runId");
-  const testResultId = c.req.param("testResultId");
-  if (!teamSlug || !projectSlug || !runId || !testResultId) {
-    return c.json({ error: "Not found" }, 404);
-  }
-
-  const scope = await tenantScopeForUserBySlugs(user.id, teamSlug, projectSlug);
-  if (!scope) return c.json({ error: "Not found" }, 404);
+  const ctx = await resolveTenantApiScope(c, { requireTestResultId: true });
+  if (ctx instanceof Response) return ctx;
+  const { scope, runId, testResultId } = ctx;
 
   const rows = await db
     .select({

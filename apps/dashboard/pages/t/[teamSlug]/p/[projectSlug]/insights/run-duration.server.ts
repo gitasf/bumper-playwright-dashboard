@@ -1,14 +1,17 @@
 import { defineHandler, type InferProps } from "void";
 import { db, sql } from "void/db";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import {
-  DAY_SEC,
   parseSegment,
   SEGMENTS,
   type Segment,
 } from "@/lib/analytics/bucketing";
-import { bucketExpr } from "@/lib/analytics/bucketing-sql";
-import { makeRangeParser, rangeToSeconds } from "@/lib/analytics/range";
+import { bucketExpr, percentilePick } from "@/lib/analytics/bucketing-sql";
+import { branchFragment } from "@/lib/analytics/filters";
+import {
+  normalizeBranchFilter,
+  resolveAnalyticsWindow,
+} from "@/lib/analytics/params";
+import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
 import { requireTenantContext } from "@/lib/tenant-context";
 
@@ -54,20 +57,19 @@ export const loader = defineHandler(async (c) => {
     url.searchParams.get("segment"),
     defaultSegmentForRange(range),
   );
-  const branchParam = url.searchParams.get("branch");
-  const branchFilter =
-    !branchParam || branchParam === ALL_BRANCHES ? null : branchParam;
-  const rangeSec = rangeToSeconds(range);
-  const days = rangeSec ? rangeSec / DAY_SEC : 30;
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  const windowStartSec = nowSec - days * DAY_SEC;
+  const { branchParam, branchFilter } = normalizeBranchFilter(
+    url.searchParams.get("branch"),
+  );
+  const {
+    nowSec,
+    windowStartSec,
+    days: windowDays,
+  } = resolveAnalyticsWindow(range);
+  const days = windowDays ?? 30;
   const expr = bucketExpr(segment);
 
   const branches = await loadProjectBranches(scope);
-  const branchSql = branchFilter
-    ? sql`and runs.branch = ${branchFilter}`
-    : sql``;
+  const branchSql = branchFragment(branchFilter);
 
   const perBucketResult = await db.run(sql`
     with ranked as (
@@ -85,9 +87,9 @@ export const loader = defineHandler(async (c) => {
     select
       bucket,
       max(cnt) as cnt,
-      min(case when rn = max(1, cast(round(cnt * 0.50) as integer)) then duration end) as p50,
-      min(case when rn = max(1, cast(round(cnt * 0.90) as integer)) then duration end) as p90,
-      min(case when rn = max(1, cast(round(cnt * 0.95) as integer)) then duration end) as p95
+      ${percentilePick(0.5)} as p50,
+      ${percentilePick(0.9)} as p90,
+      ${percentilePick(0.95)} as p95
     from ranked
     group by bucket
   `);
@@ -107,9 +109,9 @@ export const loader = defineHandler(async (c) => {
     )
     select
       max(cnt) as cnt,
-      min(case when rn = max(1, cast(round(cnt * 0.50) as integer)) then duration end) as p50,
-      min(case when rn = max(1, cast(round(cnt * 0.90) as integer)) then duration end) as p90,
-      min(case when rn = max(1, cast(round(cnt * 0.95) as integer)) then duration end) as p95
+      ${percentilePick(0.5)} as p50,
+      ${percentilePick(0.9)} as p90,
+      ${percentilePick(0.95)} as p95
     from ranked
   `);
   const overall: OverallDurationStats = (overallResult.results?.[0] as

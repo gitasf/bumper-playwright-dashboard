@@ -1,10 +1,7 @@
 import { defineMiddleware } from "void";
 import { getSession } from "void/auth";
-import {
-  resolveTenantBundleForUser,
-  type ResolvedActiveProject,
-  type ResolvedActiveTeam,
-} from "@/lib/authz";
+import { resolveTenantBundleForUser } from "@/lib/authz";
+import type { ResolvedActiveProject, SharedBundle } from "@/lib/shared-bundle";
 import {
   clearWorkspaceCookie,
   readWorkspaceCookie,
@@ -30,21 +27,6 @@ import {
  */
 const TENANT_PATH_RE = /^\/t\/([^/]+)(?:\/p\/([^/]+))?(?:\/|$)/;
 const API_PATH_RE = /^\/api(?:\/|$)/;
-
-interface SharedBundle {
-  auth: {
-    user: {
-      id: string;
-      email: string;
-      name: string;
-      image: string | null;
-    };
-  } | null;
-  userTeams: { slug: string; name: string }[];
-  selectedTeam: ResolvedActiveTeam | null;
-  teamProjects: { slug: string; name: string }[];
-  selectedProject: ResolvedActiveProject | null;
-}
 
 declare module "void" {
   interface CloudContextVariables {

@@ -1,12 +1,13 @@
 /**
- * Realtime UI updates via the SyncedStateServer DO.
+ * Realtime UI updates via the `void/live` topic `run:<runId>`.
  *
  * Flow:
  *   1. Open a fresh run via the public API.
  *   2. Navigate the browser to that run's detail page (auth'd).
  *   3. Append results via API.
- *   4. Assert the page DOM reflects the new state without reload —
- *      summary counters tick up, test row appears in the live list.
+ *   4. Assert the page DOM reflects the new state without reload — the
+ *      published summary snapshot drives the header OutcomeBar/tiles, and the
+ *      test row appears in the live list.
  */
 import type { APIRequestContext } from "@playwright/test";
 
@@ -84,7 +85,7 @@ async function appendResults(
   }
 }
 
-test.describe("Realtime UI updates (SyncedStateServer)", () => {
+test.describe("Realtime UI updates (void/live topic run:<runId>)", () => {
   test("a passing test appended via API appears live in the run detail page", async ({
     playwright,
     runDetailPage,
@@ -118,7 +119,7 @@ test.describe("Realtime UI updates (SyncedStateServer)", () => {
     }
   });
 
-  test("summary counters update live as results stream in", async ({
+  test("header summary snapshot updates live as results stream in", async ({
     playwright,
     runDetailPage,
     ctx,
@@ -146,13 +147,21 @@ test.describe("Realtime UI updates (SyncedStateServer)", () => {
         { testId: "f-1", title: "f1", status: "failed" },
       ]);
 
-      // The Failed summary tile is a `<button>` whose accessible name
-      // joins its label and value: "Failed 1". Once a failure streams
-      // in, the name picks up a non-zero digit.
-      const failedTile = runDetailPage.page.getByRole("button", {
-        name: /^Failed/,
+      // Assert the PUBLISHED SUMMARY snapshot, not the per-test row recompute:
+      // the header OutcomeBar (rendered by the <RunSummaryLive> island from
+      // `RunProgressEvent.summary`) is a `role="img"` whose accessible name is
+      // built from the aggregate counts. Once 2 passed + 1 failed stream in it
+      // reads "2 passed, 1 failed, …" — proving the broadcast summary reaches
+      // the header live, distinct from the SegmentedControl filter pill counts
+      // that derive from the row accumulator.
+      const outcomeBar = runDetailPage.page.getByRole("img", {
+        name: /passed,.*failed,.*flaky,.*skipped/,
       });
-      await expect(failedTile).toContainText(/[1-9]/, { timeout: 5_000 });
+      await expect(outcomeBar).toHaveAttribute(
+        "aria-label",
+        /2 passed, 1 failed/,
+        { timeout: 5_000 },
+      );
     } finally {
       await request.dispose();
     }

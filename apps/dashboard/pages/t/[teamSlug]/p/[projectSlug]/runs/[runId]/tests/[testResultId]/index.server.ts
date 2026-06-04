@@ -9,6 +9,7 @@ import {
   testTags,
 } from "@schema";
 import { signArtifactToken } from "@/lib/artifact-tokens";
+import { runByIdWhere } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -50,7 +51,7 @@ export const loader = defineHandler(async (c) => {
   const url = new URL(c.req.url);
   const origin = url.origin;
 
-  const { project } = requireTenantContext(c);
+  const { project, scope } = requireTenantContext(c);
 
   const [resultRows, runRows] = await Promise.all([
     db
@@ -64,11 +65,7 @@ export const loader = defineHandler(async (c) => {
         ),
       )
       .limit(1),
-    db
-      .select()
-      .from(runs)
-      .where(and(eq(runs.projectId, project.id), eq(runs.id, runId)))
-      .limit(1),
+    db.select().from(runs).where(runByIdWhere(scope, runId)).limit(1),
   ]);
   const result = resultRows[0];
   const run = runRows[0];

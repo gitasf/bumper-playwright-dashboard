@@ -8,7 +8,7 @@ export type { RunSummaryResponse } from "../../routes/api/t/[teamSlug]/p/[projec
 export type {
   RunResultsResponse,
   LoadRunResultsOpts,
-} from "../../routes/api/t/[teamSlug]/p/[projectSlug]/runs/[runId]/results";
+} from "@/lib/run-results-page";
 export type {
   TestPreviewItem,
   TestPreviewResponse,

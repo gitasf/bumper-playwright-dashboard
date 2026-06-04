@@ -2,7 +2,6 @@ import { GitBranch, GitCommit, GitPullRequest } from "lucide-react";
 import { Link } from "@void/react";
 import type React from "react";
 import { ActorAvatar } from "@/components/actor-avatar";
-import { OutcomeBar } from "@/components/outcome-bar";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import {
@@ -10,8 +9,10 @@ import {
   type RunHistoryPoint,
 } from "@/components/run-history-chart";
 import { RunProgress } from "@/components/run-progress";
+import { RunSummaryLive } from "@/components/run-summary-live";
 import { StatusGlyph } from "@/components/status-glyph";
 import { cn } from "@/lib/cn";
+import { makeHrefBuilder } from "@/lib/page-links";
 import { prUrl } from "@/lib/pr-url";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
 import type { Props } from "./index.server";
@@ -93,9 +94,6 @@ export default function RunDetailPage({
       .join(" · "),
   }));
 
-  const totalTests =
-    run.passed + run.failed + run.flaky + run.skipped || run.totalTests;
-
   const initialSummary = {
     totalTests: run.totalTests,
     passed: run.passed,
@@ -107,13 +105,11 @@ export default function RunDetailPage({
     completedAt: run.completedAt,
   };
 
-  const tabHref = (next: TabKey): string => {
-    const p = new URLSearchParams();
-    if (branchParam) p.set("branch", branchParam);
-    if (next !== "tests") p.set("tab", next);
-    const qs = p.toString();
-    return qs ? `${pathname}?${qs}` : pathname;
-  };
+  const { with: hrefWith } = makeHrefBuilder(pathname, {
+    branch: branchParam,
+  });
+  const tabHref = (next: TabKey): string =>
+    hrefWith({ tab: next === "tests" ? null : next });
 
   return (
     /* Single page-level scroller. The H1 row + tab bar are sticky inside this
@@ -167,30 +163,14 @@ export default function RunDetailPage({
           {run.commitSha ? (
             <CommitPill href={commitHref} sha={run.commitSha} />
           ) : null}
-          <div className="flex-1" />
-          <div className="flex shrink-0 items-center gap-3 font-mono tabular-nums">
-            <SummaryStat n={run.passed} status="passed" />
-            {run.failed > 0 ? (
-              <SummaryStat n={run.failed} status="failed" />
-            ) : null}
-            {run.flaky > 0 ? (
-              <SummaryStat n={run.flaky} status="flaky" />
-            ) : null}
-            {run.skipped > 0 ? (
-              <SummaryStat n={run.skipped} status="skipped" />
-            ) : null}
-          </div>
         </div>
 
+        {/* Live summary tiles + OutcomeBar. Seeded from SSR `run.*`, then driven
+         * by the published `RunProgressEvent.summary` so the header counters
+         * track streaming results (and run completion) without a reload —
+         * `"use client"` stays at this leaf, not the page root. */}
         <div className="mt-2.5">
-          <OutcomeBar
-            failed={run.failed}
-            flaky={run.flaky}
-            height={6}
-            passed={run.passed}
-            skipped={run.skipped}
-            total={totalTests}
-          />
+          <RunSummaryLive initialSummary={initialSummary} runId={runId} />
         </div>
 
         <div className="mt-4">
@@ -240,7 +220,6 @@ export default function RunDetailPage({
       {/* Tab content — scrolls with the rest of the page */}
       {tab === "tests" ? (
         <RunProgress
-          initialSummary={initialSummary}
           initialTests={tests}
           projectSlug={project.slug}
           runId={runId}
@@ -351,27 +330,6 @@ function CommitPill({
     </a>
   ) : (
     <span className={className}>{content}</span>
-  );
-}
-
-function SummaryStat({
-  status,
-  n,
-}: {
-  status: "passed" | "failed" | "flaky" | "skipped";
-  n: number;
-}): React.ReactElement {
-  const color = `var(--${status})`;
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span
-        aria-hidden
-        className="inline-block size-1.5 rounded-full"
-        style={{ background: color }}
-      />
-      <span style={{ color }}>{n}</span>
-      <span className="capitalize text-fg-3">{status}</span>
-    </span>
   );
 }
 

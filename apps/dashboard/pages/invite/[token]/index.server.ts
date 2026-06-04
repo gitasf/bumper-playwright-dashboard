@@ -3,6 +3,7 @@ import { getSession, requireAuth } from "void/auth";
 import { and, db, eq, gt } from "void/db";
 import { ulid } from "ulid";
 import { memberships, teamInvites, teams, type MembershipRole } from "@schema";
+import { runBatch } from "@/lib/db-batch";
 import { inviteIsDirected, inviteMatchesUser } from "@/lib/invite-identity";
 import { hashInviteToken } from "@/lib/invite-tokens";
 
@@ -154,7 +155,7 @@ export const action = defineHandler(async (c) => {
   }
 
   try {
-    await db.batch([
+    await runBatch([
       db.insert(memberships).values({
         id: ulid(),
         userId: user.id,
@@ -163,7 +164,7 @@ export const action = defineHandler(async (c) => {
         createdAt: Math.floor(Date.now() / 1000),
       }),
       db.delete(teamInvites).where(eq(teamInvites.id, invite.id)),
-    ] as never);
+    ]);
   } catch {
     return c.redirect(
       `${here}?error=${encodeURIComponent(

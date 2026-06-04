@@ -116,6 +116,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
           teamSlug: fixture.teamSlug,
           projectSlug: fixture.projectSlug,
           betterAuthSecret: fixture.betterAuthSecret,
+          artifactTokenSecret: fixture.artifactTokenSecret,
           email: fixture.email,
           password: fixture.password,
         },

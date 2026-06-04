@@ -4,7 +4,7 @@ import { Line } from "@visx/shape";
 import { Link } from "@void/react";
 import { RunHistoryBarHoverCard } from "@/components/run-history-bar-hover";
 import { cn } from "@/lib/cn";
-import { statusColor } from "@/lib/status";
+import { statusToken } from "@/lib/status";
 import { formatDuration } from "@/lib/time-format";
 
 export interface RunHistoryPoint {
@@ -257,7 +257,7 @@ export function RunHistoryChart({
                       )}
                       style={{
                         height: `${heightPct}%`,
-                        background: statusColor(p.status),
+                        background: statusToken(p.status),
                       }}
                     />
                   )}

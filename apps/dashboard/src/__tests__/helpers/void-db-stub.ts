@@ -46,10 +46,15 @@ function sqlImpl(strings: TemplateStringsArray | string, ...args: unknown[]) {
   return { __op: "sql", strings, args };
 }
 (sqlImpl as unknown as { raw: typeof sqlImpl }).raw = sqlImpl;
+function joinImpl(chunks: unknown[], separator?: unknown) {
+  return { __op: "sql.join", chunks, separator };
+}
+(sqlImpl as unknown as { join: typeof joinImpl }).join = joinImpl;
 export const sql = sqlImpl as unknown as {
   (strings: TemplateStringsArray, ...args: unknown[]): unknown;
   (raw: string): unknown;
   raw: typeof sqlImpl;
+  join: typeof joinImpl;
 };
 
 export const db = new Proxy(

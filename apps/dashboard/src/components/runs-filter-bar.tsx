@@ -3,7 +3,6 @@ import {
   CalendarIcon,
   CircleDotIcon,
   GitBranchIcon,
-  SearchIcon,
   ServerIcon,
   UserIcon,
 } from "lucide-react";
@@ -14,10 +13,10 @@ import {
   FilterTriggerButton,
   MultiComboboxFilter,
 } from "@/components/filter-controls";
+import { SearchFilterInput } from "@/components/search-filter-input";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
-import { cn } from "@/lib/cn";
 import { useDebouncedValue } from "@/lib/hooks/use-debounced-value";
 import {
   type RunsFilters,
@@ -25,6 +24,7 @@ import {
   type RunStatus,
   toSearchParams,
 } from "@/lib/runs-filters";
+import { statusLabel, statusToken } from "@/lib/status";
 
 type FilterOptions = {
   branches: string[];
@@ -36,24 +36,6 @@ type Props = {
   pathname: string;
   filters: RunsFilters;
   options: FilterOptions;
-};
-
-const STATUS_LABEL: Record<RunStatus, string> = {
-  passed: "Passed",
-  failed: "Failed",
-  flaky: "Flaky",
-  timedout: "Timed out",
-  interrupted: "Interrupted",
-  skipped: "Skipped",
-};
-
-const STATUS_DOT_CLASS: Record<RunStatus, string> = {
-  passed: "bg-pass",
-  failed: "bg-fail",
-  flaky: "bg-flaky",
-  timedout: "bg-fail",
-  interrupted: "bg-flaky",
-  skipped: "bg-skipped",
 };
 
 function formatDisplayDate(iso: string): string {
@@ -103,20 +85,14 @@ export function RunsSearchInput({
   }, [filters.q]);
 
   return (
-    <div className="relative w-[240px] shrink-0">
-      <SearchIcon
-        aria-hidden
-        className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground"
-      />
-      <input
-        aria-label="Search runs"
-        className="h-8 w-full rounded-md border border-line-1 bg-card pl-8 pr-2.5 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/72 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/24 [&::-webkit-search-cancel-button]:appearance-none"
-        onChange={(e) => setQLocal(e.target.value)}
-        placeholder="Search commits…"
-        type="search"
-        value={qLocal}
-      />
-    </div>
+    <SearchFilterInput
+      aria-label="Search runs"
+      className="w-[240px] shrink-0"
+      inputClassName="h-8 text-[13px] placeholder:text-muted-foreground/72 [&::-webkit-search-cancel-button]:appearance-none"
+      onChange={(e) => setQLocal(e.target.value)}
+      placeholder="Search commits…"
+      value={qLocal}
+    />
   );
 }
 
@@ -170,17 +146,15 @@ export function RunsFilterBar({
           }}
           options={RUN_STATUSES.map((s) => ({
             value: s,
-            label: STATUS_LABEL[s],
+            label: statusLabel(s),
           }))}
           placeholder="Status"
           renderItem={(value, itemLabel) => (
             <span className="flex items-center gap-2 truncate">
               <span
                 aria-hidden
-                className={cn(
-                  "inline-block size-2 shrink-0 rounded-full",
-                  STATUS_DOT_CLASS[value as RunStatus],
-                )}
+                className="inline-block size-2 shrink-0 rounded-full"
+                style={{ background: statusToken(value) }}
               />
               <span className="truncate">{itemLabel}</span>
             </span>

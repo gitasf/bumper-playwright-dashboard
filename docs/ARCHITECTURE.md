@@ -9,7 +9,7 @@ Playwright CI ──@wrightful/reporter──▶ Worker (/api/runs/*)
                                         │
                                         ├─ D1 (Drizzle) ── auth + tenancy lookup, runs + derived rows
                                         │
-                                        ├─ R2 (presigned PUT/GET) ── artifact bytes
+                                        ├─ R2 (worker-proxied PUT/GET) ── artifact bytes
                                         │
                                         └─ void/live ── publishRunUpdate(run:<id>)
 
@@ -29,7 +29,7 @@ One **D1 database**, accessed through Drizzle (`db` from `void/db`, tables from 
 - **Control tables.** `teams`, `projects`, `memberships`, `teamInvites`, `apiKeys`, `userGithubAccounts`.
 - **Tenant tables.** `runs`, `testResults`, `testResultAttempts`, `testTags`, `testAnnotations`, `artifacts`. Every run-scoped child carries denormalized `teamId` (on `runs`) and `projectId` so scope is enforced without joining through `runs`. Reached only through the auth-checked `TenantScope` from `src/lib/scope.ts` / `src/lib/tenant-context.ts`.
 - **Better Auth tables** (`user`, `session`, `account`, `verification`) are owned by `void/auth` — bootstrapped idempotently against the same D1 and intentionally not declared in `db/schema.ts`. Cross-table joins use raw SQL.
-- **R2.** Artifact bytes only. Upload via presigned PUT from the reporter; download via a signed token that carries the R2 key, so GETs don't touch the DB.
+- **R2.** Artifact bytes only. Both directions are **worker-proxied** — the worker is on the byte path. Upload: the reporter PUTs to a relative worker route (`/api/artifacts/:id/upload`) returned by `register`, which streams the body into R2 via `storage.put`. Download: a worker route (`/api/artifacts/:id/download`) authorized by a signed HMAC token that carries the R2 key (so GETs don't touch the DB), which then `storage.get`s and streams the bytes back. There is no S3-style presigned R2 URL today; offloading bytes off the worker would be a separate, deliberate change.
 - **Realtime.** `void/live` (`src/live.ts`) broadcasts progress on topic `run:<runId>`. Ingest handlers call `publishRunUpdate` after each DO write; run detail/list islands subscribe via `useRunProgress(runId)`.
 
 **Tenant isolation is logical, not physical.** There is no per-team Durable Object boundary — every query against a run-scoped table must filter by `projectId` (and `teamId` where present). The branded `AuthorizedProjectId` / `AuthorizedTeamId` on `TenantScope` force the auth-checked ids through the type system so a query can't silently cross tenants.

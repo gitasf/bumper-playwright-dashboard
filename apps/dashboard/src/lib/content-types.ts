@@ -7,8 +7,22 @@
  * `contentType: "text/html"` (or `image/svg+xml`, which can carry script)
  * and trick a teammate into rendering attacker-controlled HTML/JS on the
  * dashboard's origin.
+ *
+ * This allowlist is one of two artifact-serving origin-safety defenses that
+ * must stay consistent (the silent-drift risk the policy test below guards):
+ *   1. THIS allowlist — caps what content-type the download endpoint will ever
+ *      emit (everything else falls back to `application/octet-stream`), and the
+ *      download handler additionally forces `Content-Disposition: attachment`
+ *      (see `buildArtifactHeaders` in `src/lib/artifacts.ts`).
+ *   2. The Content-Security-Policy in `apps/dashboard/void.json` — its
+ *      `img-src 'self' data: blob:` deliberately does NOT permit a renderable
+ *      type to *execute* (`object-src 'none'`, `frame-ancestors 'none'`).
+ * If you ever widen this set to add a renderable/executable type, the download
+ * leg must keep forcing attachment and the CSP must keep forbidding execution.
+ * `src/__tests__/artifact-origin-safety.test.ts` cross-checks both so a change
+ * to one leg without the other fails loudly instead of silently.
  */
-const SAFE_CONTENT_TYPES = new Set<string>([
+export const SAFE_CONTENT_TYPES: ReadonlySet<string> = new Set<string>([
   // Trace bundles
   "application/zip",
   "application/x-zip-compressed",

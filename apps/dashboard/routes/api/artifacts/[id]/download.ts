@@ -1,13 +1,7 @@
 import { defineHandler } from "void";
 import type { Context } from "hono";
-import { storage } from "void/storage";
 import { verifyArtifactToken } from "@/lib/artifact-tokens";
-import { safeContentType } from "@/lib/content-types";
-
-// `R2Object` resolves via the `/// <reference types="@cloudflare/workers-types" />`
-// triple-slash reference inside `void/env`'s d.ts — we don't need to import
-// the type explicitly, and we don't depend on `@cloudflare/workers-types`
-// directly. Leaving it as a free identifier matches the auto-load.
+import { buildArtifactResponse, readArtifact } from "@/lib/artifacts";
 
 const ALLOWED_CROSS_ORIGINS = new Set(["https://trace.playwright.dev"]);
 
@@ -31,48 +25,14 @@ async function handle(c: Context): Promise<Response> {
   const corsOrigin = resolveAllowedOrigin(c.req.raw, url.origin);
   const { r2Key, contentType } = payload;
 
-  if (c.req.method === "HEAD") {
-    const head = await storage.head(r2Key);
-    if (!head) return new Response("Not found", { status: 404 });
-    return new Response(null, {
-      status: 200,
-      headers: buildHeaders(head, contentType, corsOrigin, r2Key),
-    });
-  }
+  const read = await readArtifact(r2Key, c.req.raw.headers, c.req.method);
+  if (!read) return new Response("Not found", { status: 404 });
 
-  const object = await storage.get(r2Key, {
-    range: c.req.raw.headers,
-    onlyIf: c.req.raw.headers,
-  });
-  if (!object) return new Response("Not found", { status: 404 });
-
-  const headers = buildHeaders(object, contentType, corsOrigin, r2Key);
-  const hasBody = "body" in object && object.body !== null;
-  const requestedRange = c.req.header("range") !== undefined;
-  const servedRange =
-    requestedRange && "range" in object && Boolean(object.range);
-
-  if (servedRange && "range" in object && object.range) {
-    const range = object.range;
-    const offset = "offset" in range ? (range.offset ?? 0) : 0;
-    const length =
-      "length" in range && range.length !== undefined
-        ? range.length
-        : object.size - offset;
-    headers.set(
-      "content-range",
-      `bytes ${offset}-${offset + length - 1}/${object.size}`,
-    );
-    headers.set("content-length", String(length));
-  }
-
-  if (!hasBody) {
-    return new Response(null, { status: 304, headers });
-  }
-
-  return new Response(object.body, {
-    status: servedRange ? 206 : 200,
-    headers,
+  return buildArtifactResponse(read, {
+    tokenContentType: contentType,
+    allowedOrigin: corsOrigin,
+    r2Key,
+    method: c.req.method,
   });
 }
 
@@ -133,46 +93,8 @@ function resolveAllowedOrigin(
   return dashboardOrigin;
 }
 
-function buildHeaders(
-  object: R2Object,
-  tokenContentType: string,
-  allowedOrigin: string,
-  r2Key: string,
-): Headers {
-  const headers = new Headers();
-  object.writeHttpMetadata(headers);
-  // Always override with a sanitised content-type. R2 objects stored before
-  // the registration allowlist landed could still carry an unsafe
-  // `httpMetadata.contentType` (e.g. `text/html`) — normalising here makes
-  // sure no legacy row can hand the dashboard's origin to an attacker.
-  headers.set("content-type", safeContentType(tokenContentType));
-  headers.set("etag", object.httpEtag);
-  headers.set("content-length", String(object.size));
-  headers.set("cache-control", "public, max-age=31536000, immutable");
-  // Force a download on top-level navigation so a leaked signed URL pasted
-  // into the address bar never renders as HTML/JS on the dashboard origin.
-  // Subresource loads (<img>, <video>, fetch(), trace.playwright.dev) ignore
-  // Content-Disposition and keep working, so the in-app rendering paths are
-  // unaffected. RFC 5987 `filename*` syntax handles UTF-8 names safely and
-  // `encodeURIComponent` percent-encodes the characters (\r, \n, ") that
-  // would otherwise allow header injection via a hostile artifact name.
-  const filename = r2Key.split("/").pop() ?? "artifact";
-  headers.set(
-    "content-disposition",
-    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
-  );
-  headers.set("access-control-allow-origin", allowedOrigin);
-  headers.set("vary", "Origin");
-  headers.set("access-control-allow-methods", "GET, HEAD, OPTIONS");
-  headers.set("access-control-allow-headers", "Range, If-Match, If-None-Match");
-  headers.set(
-    "access-control-expose-headers",
-    "Content-Length, Content-Range, ETag",
-  );
-  return headers;
-}
-
-// HEAD requests fall through to the GET route in Hono. The handler branches
-// on `c.req.method === "HEAD"` to short-circuit with a metadata-only response
-// (no R2 GET, just `storage.head()`).
+// HEAD requests fall through to the GET route in Hono. `readArtifact` branches
+// on the method to short-circuit a HEAD with a metadata-only `storage.head()`
+// (no R2 GET); the range/304/header math then lives in the pure
+// `buildArtifactResponse` (see `@/lib/artifacts`).
 export const GET = defineHandler(handle);

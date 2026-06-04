@@ -1,8 +1,10 @@
 import { defineHandler } from "void";
 import { requireAuth } from "void/auth";
-import { and, db, eq, gt, or, sql } from "void/db";
+import { and, db, eq, gt } from "void/db";
 import { ulid } from "ulid";
-import { memberships, teamInvites, userGithubAccounts } from "@schema";
+import { memberships, teamInvites } from "@schema";
+import { buildInviteMatchConds, getUserIdentity } from "@/lib/auth-users";
+import { runBatch } from "@/lib/db-batch";
 
 /**
  * POST /api/invites/:inviteId/accept
@@ -17,30 +19,17 @@ export const POST = defineHandler(async (c) => {
   const inviteId = c.req.param("inviteId");
   if (!inviteId) return c.json({ error: "Not found" }, 404);
 
-  // Fetch the user's email (from void's user table via raw SQL) and
-  // captured github login so we can match against the invite addressing.
-  const [userRow, ghRow] = await Promise.all([
-    db.run(sql`SELECT email FROM "user" WHERE id = ${user.id} LIMIT 1`),
-    db
-      .select({ githubLogin: userGithubAccounts.githubLogin })
-      .from(userGithubAccounts)
-      .where(eq(userGithubAccounts.userId, user.id))
-      .limit(1),
-  ]);
-  const email =
-    (
-      userRow.results?.[0] as { email?: string } | undefined
-    )?.email?.toLowerCase() ?? null;
-  const githubLogin = ghRow[0]?.githubLogin ?? null;
-
-  const now = Math.floor(Date.now() / 1000);
-  const matchConds: ReturnType<typeof eq>[] = [];
-  if (email) matchConds.push(eq(teamInvites.email, email));
-  if (githubLogin) matchConds.push(eq(teamInvites.githubLogin, githubLogin));
-  if (matchConds.length === 0) {
+  // Resolve the user's `{ email, githubLogin }` identity (raw `"user"` read +
+  // github mirror live behind the auth-users seam) and build the invite match
+  // predicate from it so a leaked invite id can't be accepted by the wrong
+  // account.
+  const identity = await getUserIdentity(user.id);
+  const matchConds = buildInviteMatchConds(identity);
+  if (!matchConds) {
     return c.json({ error: "Invite not addressed to this account" }, 403);
   }
 
+  const now = Math.floor(Date.now() / 1000);
   const rows = await db
     .select({
       id: teamInvites.id,
@@ -52,7 +41,7 @@ export const POST = defineHandler(async (c) => {
       and(
         eq(teamInvites.id, inviteId),
         gt(teamInvites.expiresAt, now),
-        or(...matchConds),
+        matchConds,
       ),
     )
     .limit(1);
@@ -79,7 +68,7 @@ export const POST = defineHandler(async (c) => {
     return c.json({ ok: true, teamId: invite.teamId });
   }
 
-  await db.batch([
+  await runBatch([
     db.insert(memberships).values({
       id: ulid(),
       userId: user.id,
@@ -88,7 +77,7 @@ export const POST = defineHandler(async (c) => {
       createdAt: now,
     }),
     db.delete(teamInvites).where(eq(teamInvites.id, invite.id)),
-  ] as never);
+  ]);
 
   return c.json({ ok: true, teamId: invite.teamId });
 });

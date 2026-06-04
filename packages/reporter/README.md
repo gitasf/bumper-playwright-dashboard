@@ -96,7 +96,8 @@ For each test, the reporter sends:
   message, and error stack.
 - **Tags and annotations** declared in your test code.
 - **Attachments** (when `artifacts` is `'failed'` or `'all'`): file bytes
-  uploaded via a presigned URL. Attachment paths are resolved through
+  streamed through the dashboard worker to R2 via the upload URL returned by
+  `/api/artifacts/register`. Attachment paths are resolved through
   `realpath` and rejected if they escape the project root, to guard against
   symlink exfiltration via a hostile `playwright.config.ts`. Inline body
   attachments (those without a `path`) are **not** uploaded.

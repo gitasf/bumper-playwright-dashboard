@@ -1,3 +1,5 @@
+import { statusToken } from "@/lib/status";
+
 interface OutcomeBarProps {
   passed?: number;
   failed?: number;
@@ -9,13 +11,78 @@ interface OutcomeBarProps {
   total?: number;
   /** Min width in px. Default 80, matches the design bundle. */
   minWidth?: number;
+  /** Max width in px. Unset = no cap (bar stretches to its container). */
+  maxWidth?: number;
+  /**
+   * When the bucket counts (and `total`) are all zero, render a muted em-dash
+   * instead of an empty track. Used by the tests catalog, where a no-data row
+   * reads more clearly as "—" than as a blank bar.
+   */
+  emptyDash?: boolean;
+}
+
+interface OutcomeSegment {
+  key: "passed" | "flaky" | "failed" | "skipped";
+  n: number;
+  /** Width as a percentage of the (possibly overridden) denominator. */
+  widthPercent: number;
+  /** CSS `var(...)` colour token from the status registry. */
+  color: string;
+}
+
+/**
+ * Pure layout for the stacked outcome bar: turns the four bucket counts (plus an
+ * optional `total` override) into proportionally-sized segments in the canonical
+ * pass → flaky → fail → skipped order. Extracted so the proportional-width math
+ * and zero-total handling are unit-testable without rendering. Colours come from
+ * the status registry (`statusToken`), so the bar stays theme-aware.
+ */
+export function outcomeBarSegments({
+  passed = 0,
+  failed = 0,
+  flaky = 0,
+  skipped = 0,
+  total,
+}: Pick<
+  OutcomeBarProps,
+  "passed" | "failed" | "flaky" | "skipped" | "total"
+>): OutcomeSegment[] {
+  const sum = total ?? passed + failed + flaky + skipped;
+  const denom = sum === 0 ? 1 : sum;
+  return [
+    { key: "passed", n: passed },
+    { key: "flaky", n: flaky },
+    { key: "failed", n: failed },
+    { key: "skipped", n: skipped },
+  ].map((s) => ({
+    key: s.key as OutcomeSegment["key"],
+    n: s.n,
+    widthPercent: (s.n / denom) * 100,
+    color: statusToken(s.key),
+  }));
+}
+
+/** Whether all four buckets (and any `total` override) are zero. */
+export function isOutcomeEmpty({
+  passed = 0,
+  failed = 0,
+  flaky = 0,
+  skipped = 0,
+  total,
+}: Pick<
+  OutcomeBarProps,
+  "passed" | "failed" | "flaky" | "skipped" | "total"
+>): boolean {
+  return (total ?? passed + failed + flaky + skipped) === 0;
 }
 
 /**
  * Stacked horizontal outcome bar (pass / flaky / fail / skipped). Ports
  * `OutcomeBar` from `wrightful/project/primitives.jsx:115-130`. Background
  * is `--bg-3` (the "raised tint" surface) — segments overlay it
- * proportionally; empty buckets render no segment.
+ * proportionally; empty buckets render no segment. The lone canonical
+ * stacked-status-bar: the tests catalog renders this too (via `emptyDash`),
+ * rather than forking its own.
  */
 export function OutcomeBar({
   passed = 0,
@@ -25,21 +92,25 @@ export function OutcomeBar({
   height = 6,
   total,
   minWidth = 80,
+  maxWidth,
+  emptyDash = false,
 }: OutcomeBarProps) {
-  const sum = total ?? passed + failed + flaky + skipped;
-  const denom = sum === 0 ? 1 : sum;
-  const segments = [
-    { key: "passed", n: passed, color: "var(--pass)" },
-    { key: "flaky", n: flaky, color: "var(--flaky)" },
-    { key: "failed", n: failed, color: "var(--fail)" },
-    { key: "skipped", n: skipped, color: "var(--skipped)" },
-  ];
+  if (emptyDash && isOutcomeEmpty({ passed, failed, flaky, skipped, total })) {
+    return <div className="font-mono text-[10px] text-muted-foreground">—</div>;
+  }
+  const segments = outcomeBarSegments({
+    passed,
+    failed,
+    flaky,
+    skipped,
+    total,
+  });
   return (
     <div
-      className="flex overflow-hidden rounded-full bg-bg-3"
+      className="flex w-full overflow-hidden rounded-full bg-bg-3"
       role="img"
       aria-label={`${passed} passed, ${failed} failed, ${flaky} flaky, ${skipped} skipped`}
-      style={{ height, minWidth }}
+      style={{ height, minWidth, maxWidth }}
       title={`${passed} passed · ${failed} failed · ${flaky} flaky · ${skipped} skipped`}
     >
       {segments.map((s) =>
@@ -47,7 +118,7 @@ export function OutcomeBar({
           <div
             key={s.key}
             style={{
-              width: `${(s.n / denom) * 100}%`,
+              width: `${s.widthPercent}%`,
               background: s.color,
             }}
           />

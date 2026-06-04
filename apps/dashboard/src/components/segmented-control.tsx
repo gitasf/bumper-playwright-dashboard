@@ -1,5 +1,6 @@
 import type React from "react";
 import { cn } from "@/lib/cn";
+import { statusToken } from "@/lib/status";
 
 export interface SegmentedOption<T extends string> {
   value: T;
@@ -37,18 +38,14 @@ export function SegmentedControl<T extends string>({
     <div className="inline-flex items-center gap-0.5 rounded-md border border-line-1 bg-card p-0.5">
       {options.map((opt) => {
         const active = opt.value === value;
+        // `running` is a glyph-only state absent from the status registry, so
+        // it keeps its own token; the rest resolve through `statusToken`.
         const dotColor =
-          opt.dot != null
-            ? opt.dot === "passed"
-              ? "var(--pass)"
-              : opt.dot === "failed"
-                ? "var(--fail)"
-                : opt.dot === "flaky"
-                  ? "var(--flaky)"
-                  : opt.dot === "skipped"
-                    ? "var(--skipped)"
-                    : "var(--running)"
-            : null;
+          opt.dot == null
+            ? null
+            : opt.dot === "running"
+              ? "var(--running)"
+              : statusToken(opt.dot);
         return (
           <button
             className={cn(

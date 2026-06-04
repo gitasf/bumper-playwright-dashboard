@@ -91,6 +91,22 @@ describe("03.rate-limit middleware", () => {
     expect(nextCalled).toBe(true);
   });
 
+  it("throttles the artifact-upload ingest path (shared isIngestRoute branch)", async () => {
+    // Closes the CI gap: the artifact half of the ingest surface was never
+    // driven through 03. Because 02 and 03 share `isIngestRoute`, asserting it
+    // here pins the matcher for both gates.
+    const c = fakeContext("/api/artifacts/art_1/upload", envWith(false), {
+      id: "key_1",
+    });
+    let nextCalled = false;
+    const res = await rateLimitMiddleware(c, async () => {
+      nextCalled = true;
+    });
+    expect(nextCalled).toBe(false);
+    expect(res).toBeInstanceOf(Response);
+    expect((res as Response).status).toBe(429);
+  });
+
   it("does not throttle unmatched (non-API) paths", async () => {
     const c = fakeContext("/t/team/p/proj", envWith(false));
     let nextCalled = false;

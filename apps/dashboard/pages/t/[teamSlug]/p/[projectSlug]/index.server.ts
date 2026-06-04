@@ -1,5 +1,5 @@
 import { defineHandler, type InferProps } from "void";
-import { and, db, desc, eq, isNotNull, sql } from "void/db";
+import { and, db, desc, isNotNull, sql } from "void/db";
 import { runs } from "@schema";
 import {
   DEFAULT_PAGE_SIZE,
@@ -8,6 +8,7 @@ import {
   type RunsFilters,
 } from "@/lib/runs-filters";
 import { scopedRunsWhere } from "@/lib/runs-filters-where";
+import { runScopeWhere } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -32,40 +33,22 @@ export const loader = defineHandler(async (c) => {
   const totalRunsPromise: Promise<number> = db
     .select({ value: sql<number>`count(*)` })
     .from(runs)
-    .where(scopedRunsWhere(scope.teamId, scope.projectId, filters))
+    .where(scopedRunsWhere(scope, filters))
     .then((rows) => rows[0]?.value ?? 0);
 
   const [branchRows, actorRows, envRows, totalRuns] = await Promise.all([
     db
       .selectDistinct({ value: runs.branch })
       .from(runs)
-      .where(
-        and(
-          eq(runs.teamId, scope.teamId),
-          eq(runs.projectId, scope.projectId),
-          isNotNull(runs.branch),
-        ),
-      ),
+      .where(and(runScopeWhere(scope), isNotNull(runs.branch))),
     db
       .selectDistinct({ value: runs.actor })
       .from(runs)
-      .where(
-        and(
-          eq(runs.teamId, scope.teamId),
-          eq(runs.projectId, scope.projectId),
-          isNotNull(runs.actor),
-        ),
-      ),
+      .where(and(runScopeWhere(scope), isNotNull(runs.actor))),
     db
       .selectDistinct({ value: runs.environment })
       .from(runs)
-      .where(
-        and(
-          eq(runs.teamId, scope.teamId),
-          eq(runs.projectId, scope.projectId),
-          isNotNull(runs.environment),
-        ),
-      ),
+      .where(and(runScopeWhere(scope), isNotNull(runs.environment))),
     totalRunsPromise,
   ]);
 
@@ -91,7 +74,7 @@ export const loader = defineHandler(async (c) => {
   const allRuns = await db
     .select()
     .from(runs)
-    .where(scopedRunsWhere(scope.teamId, scope.projectId, filters))
+    .where(scopedRunsWhere(scope, filters))
     .orderBy(desc(runs.createdAt))
     .limit(DEFAULT_PAGE_SIZE)
     .offset(offset);

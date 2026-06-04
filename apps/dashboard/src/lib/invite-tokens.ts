@@ -4,18 +4,12 @@
 // Lookup on accept re-hashes the URL's token and matches by hash. Mirrors the
 // `apiKeys.keyHash` pattern in `lib/api-key.ts`.
 
+import { mintToken, sha256Hex } from "@/lib/token-crypto";
+
 export function generateInviteToken(): string {
-  const rand = crypto.getRandomValues(new Uint8Array(24));
-  return btoa(String.fromCharCode(...rand))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return mintToken();
 }
 
 export async function hashInviteToken(token: string): Promise<string> {
-  const data = new TextEncoder().encode(token);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return sha256Hex(token);
 }

@@ -14,7 +14,7 @@ export class RunDetailPage {
   readonly projectSlug: string;
 
   readonly testRowLinks: Locator;
-  readonly attemptsHeading: Locator;
+  readonly testTitleHeading: Locator;
 
   constructor(page: Page, teamSlug: string, projectSlug: string) {
     this.page = page;
@@ -27,9 +27,12 @@ export class RunDetailPage {
     // are external github.com links, and the history-chart points link to
     // `/runs/<id>` without `/tests/`).
     this.testRowLinks = page.locator('a[href*="/tests/"]');
-    this.attemptsHeading = page.getByRole("heading", {
-      name: /attempts & errors/i,
-    });
+    // The test-detail page's only level-1 heading is the spec title. (The
+    // former "Attempts & errors" section header was dropped when the attempts
+    // panel was restyled to flat underline tabs.) It's the stable anchor that
+    // proves the deep-dive page rendered rather than a 404 / error page, and
+    // it doesn't depend on attempt count or pass/fail status.
+    this.testTitleHeading = page.getByRole("heading", { level: 1 });
   }
 
   pathFor(runId: string): string {

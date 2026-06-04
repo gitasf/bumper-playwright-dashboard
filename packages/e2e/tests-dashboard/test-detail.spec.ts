@@ -14,7 +14,7 @@ test.describe("Test detail page", () => {
     await expect(page).toHaveURL(new RegExp(`/runs/${runId}/tests/`));
   });
 
-  test("test-detail renders the Attempts & errors heading", async ({
+  test("test-detail renders the spec-title heading", async ({
     runsListPage,
     runDetailPage,
   }) => {
@@ -22,7 +22,7 @@ test.describe("Test detail page", () => {
     const runId = await runsListPage.firstRunId();
     await runDetailPage.goto(runId);
     await runDetailPage.clickFirstTest();
-    await expect(runDetailPage.attemptsHeading).toBeVisible({
+    await expect(runDetailPage.testTitleHeading).toBeVisible({
       timeout: 10_000,
     });
   });

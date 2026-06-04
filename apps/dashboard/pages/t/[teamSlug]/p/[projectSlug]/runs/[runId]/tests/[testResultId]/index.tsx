@@ -1,5 +1,4 @@
 import { Link } from "@void/react";
-import type React from "react";
 import type { ArtifactAction } from "@/components/artifact-actions";
 import { ArtifactsRail } from "@/components/artifacts-rail";
 import {
@@ -14,7 +13,10 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { TestErrorAlert } from "@/components/test-error-alert";
-import { cn } from "@/lib/cn";
+import {
+  signedDownloadHref,
+  signedTraceViewerUrl,
+} from "@/lib/artifact-tokens";
 import { parseTitleSegments } from "@/lib/group-tests-by-file";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
 import type { Props } from "./index.server";
@@ -54,50 +56,6 @@ function normaliseAttemptRowStatus(status: string): AttemptRowStatus {
   if (status === "passed") return "passed";
   if (status === "skipped") return "skipped";
   return "failed";
-}
-
-function AttemptsHeaderIcon({
-  status,
-}: {
-  status: string;
-}): React.ReactElement {
-  return (
-    <span
-      className={cn(
-        "inline-block size-2 shrink-0 rounded-full",
-        overallStatusDotColor(status),
-      )}
-      aria-label={status}
-    />
-  );
-}
-
-function overallStatusDotColor(status: string): string {
-  if (status === "passed") return "bg-success";
-  if (status === "failed" || status === "timedout") return "bg-destructive";
-  if (status === "flaky") return "bg-warning";
-  return "bg-muted-foreground/50";
-}
-
-function overallStatusTextColor(status: string): string {
-  if (status === "passed") return "text-success";
-  if (status === "failed" || status === "timedout") return "text-destructive";
-  if (status === "flaky") return "text-warning";
-  return "text-muted-foreground";
-}
-
-function overallStatusLabel(status: string): string {
-  if (status === "timedout") return "Timed out";
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
-
-function traceViewerUrl(
-  origin: string,
-  artifactId: string,
-  token: string,
-): string {
-  const downloadUrl = `${origin}/api/artifacts/${artifactId}/download?t=${encodeURIComponent(token)}`;
-  return `https://trace.playwright.dev/?trace=${encodeURIComponent(downloadUrl)}`;
 }
 
 /**
@@ -182,7 +140,7 @@ export default function TestDetailPage(props: Props) {
   }
 
   const downloadHref = (artifactId: string): string =>
-    `/api/artifacts/${artifactId}/download?t=${encodeURIComponent(artifactTokens[artifactId] ?? "")}`;
+    signedDownloadHref(artifactId, artifactTokens[artifactId] ?? "");
 
   const allAttempts = Array.from({ length: totalAttempts }, (_, i) => i);
   const fallbackErrorOn: number | null =
@@ -202,7 +160,7 @@ export default function TestDetailPage(props: Props) {
     downloadHref: downloadHref(a.id),
     traceViewerUrl:
       a.type === "trace"
-        ? traceViewerUrl(origin, a.id, artifactTokens[a.id] ?? "")
+        ? signedTraceViewerUrl(origin, a.id, artifactTokens[a.id] ?? "")
         : undefined,
   });
 
@@ -388,37 +346,11 @@ export default function TestDetailPage(props: Props) {
 
       <div className="flex flex-row gap-0">
         <section className="flex-[3] min-w-0 flex flex-col border-r border-border bg-background">
-          <header className="shrink-0 bg-muted/20">
-            <div className="flex items-center justify-between px-5 h-12 border-b border-border">
-              <div className="flex items-center gap-2 min-w-0">
-                <AttemptsHeaderIcon status={result.status} />
-                <h2 className="text-sm font-semibold tracking-tight">
-                  Attempts & errors
-                </h2>
-              </div>
-              <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground shrink-0">
-                {totalAttempts > 1 ? (
-                  <>
-                    <span>{totalAttempts} attempts</span>
-                    <span className="inline-block w-1 h-1 rounded-full bg-muted-foreground/50" />
-                  </>
-                ) : null}
-                <span
-                  className={cn(
-                    "uppercase tracking-wider",
-                    overallStatusTextColor(result.status),
-                  )}
-                >
-                  {overallStatusLabel(result.status)}
-                </span>
-              </div>
+          {totalAttempts > 1 ? (
+            <div className="shrink-0 border-b border-border px-3 pt-2">
+              <AttemptTabsBar items={tabItems} defaultValue={defaultTab} />
             </div>
-            {totalAttempts > 1 ? (
-              <div className="px-3 pt-2 border-b border-border">
-                <AttemptTabsBar items={tabItems} defaultValue={defaultTab} />
-              </div>
-            ) : null}
-          </header>
+          ) : null}
           <div>
             {allAttempts.map((attempt) => {
               const view = resolveAttemptView(attempt);

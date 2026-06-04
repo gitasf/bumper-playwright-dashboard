@@ -1,28 +1,20 @@
 import type React from "react";
-
-type Status =
-  | "passed"
-  | "failed"
-  | "timedout"
-  | "flaky"
-  | "interrupted"
-  | "skipped"
-  | "running";
+import { statusToken } from "@/lib/status";
 
 interface StatusGlyphProps {
   status: string;
   size?: number;
 }
 
-const COLOR_BY_STATUS: Record<Status, string> = {
-  passed: "var(--pass)",
-  failed: "var(--fail)",
-  timedout: "var(--fail)",
-  flaky: "var(--flaky)",
-  interrupted: "var(--flaky)",
-  skipped: "var(--skipped)",
-  running: "var(--running)",
-};
+/**
+ * Glyph colour. `running` is a glyph-only state (not a Playwright outcome and
+ * absent from the status registry), so it keeps its own token here; everything
+ * else resolves through the shared registry's `statusToken`.
+ */
+function glyphToken(status: string): string {
+  if (status === "running") return "var(--running)";
+  return statusToken(status);
+}
 
 /**
  * Status indicator with shape-per-status — colorblind safety per the
@@ -39,7 +31,11 @@ export function StatusGlyph({
   status,
   size = 14,
 }: StatusGlyphProps): React.ReactElement {
-  const color = COLOR_BY_STATUS[status as Status] ?? "var(--muted-foreground)";
+  // Token resolves to a `var(...)` reference; SVG paint attributes can't take
+  // `var()`, so we set it as the CSS `color` on the wrapping <span> and paint
+  // with `currentColor`, which inherits the resolved value.
+  const token = glyphToken(status);
+  const color = "currentColor";
   const stroke = Math.max(1.4, size / 8);
 
   if (status === "running") {
@@ -51,7 +47,7 @@ export function StatusGlyph({
         role="img"
         aria-label="running"
         className="inline-flex items-center justify-center"
-        style={{ width: size, height: size }}
+        style={{ width: size, height: size, color: token }}
       >
         <svg
           aria-hidden="true"
@@ -129,7 +125,7 @@ export function StatusGlyph({
       role="img"
       aria-label={status}
       className="inline-flex items-center justify-center"
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, color: token }}
     >
       <svg aria-hidden="true" height={size} viewBox="0 0 16 16" width={size}>
         {glyph}

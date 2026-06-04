@@ -1,8 +1,8 @@
 import { defineHandler } from "void";
-import { requireAuth } from "void/auth";
-import { and, db, eq } from "void/db";
+import { db } from "void/db";
 import { runs } from "@schema";
-import { tenantScopeForUserBySlugs } from "@/lib/scope";
+import { runByIdWhere } from "@/lib/scope";
+import { resolveTenantApiScope } from "@/lib/tenant-api-scope";
 
 export type RunSummaryResponse = {
   id: string;
@@ -29,15 +29,9 @@ export type RunSummaryResponse = {
  * branch, commit, author. Per-test detail lives on `/test-preview`.
  */
 export const GET = defineHandler(async (c) => {
-  const user = requireAuth(c);
-  const teamSlug = c.req.param("teamSlug");
-  const projectSlug = c.req.param("projectSlug");
-  const runId = c.req.param("runId");
-  if (!teamSlug || !projectSlug || !runId) {
-    return c.json({ error: "Not found" }, 404);
-  }
-  const scope = await tenantScopeForUserBySlugs(user.id, teamSlug, projectSlug);
-  if (!scope) return c.json({ error: "Not found" }, 404);
+  const ctx = await resolveTenantApiScope(c);
+  if (ctx instanceof Response) return ctx;
+  const { scope, runId } = ctx;
 
   const rows = await db
     .select({
@@ -58,7 +52,7 @@ export const GET = defineHandler(async (c) => {
       completedAt: runs.completedAt,
     })
     .from(runs)
-    .where(and(eq(runs.projectId, scope.projectId), eq(runs.id, runId)))
+    .where(runByIdWhere(scope, runId))
     .limit(1);
 
   const run = rows[0];

@@ -4,6 +4,20 @@
 
 import type { ArtifactType, SnapshotRole } from "./attachments.js";
 
+/**
+ * Version of the streaming-ingest protocol this reporter speaks. Sent on every
+ * ingest request as the `X-Wrightful-Version` header; the dashboard rejects
+ * anything it doesn't support with a 409 (see
+ * `apps/dashboard/src/lib/api-auth.ts`'s `SUPPORTED_VERSIONS`). This is the
+ * single emit-side source for the version — the dashboard keeps its own
+ * accept-set, and `contract.test.ts` asserts the two agree so the literals
+ * can't drift silently across the two packages.
+ */
+export const PROTOCOL_VERSION = 3;
+
+/** Header carrying {@link PROTOCOL_VERSION} on every ingest request. */
+export const WRIGHTFUL_VERSION_HEADER = "X-Wrightful-Version";
+
 export interface TestAttemptPayload {
   /** 0 = initial attempt, 1 = first retry, … */
   attempt: number;
@@ -72,6 +86,30 @@ export interface ArtifactUpload {
   artifactId: string;
   uploadUrl: string;
   r2Key: string;
+}
+
+// Response-side wire types (server → reporter). Mirror of the
+// `*ResponseSchema` Zod schemas in apps/dashboard/src/lib/schemas.ts; the
+// reporter reads only these fields off each response (see client.ts). The
+// contract test parses values of these shapes through the dashboard schemas so
+// a rename on either side fails the build.
+
+export interface OpenRunResponse {
+  runId: string;
+  runUrl?: string;
+}
+
+export interface ResultMapping {
+  clientKey: string;
+  testResultId: string;
+}
+
+export interface AppendResultsResponse {
+  results: ResultMapping[];
+}
+
+export interface RegisterArtifactsResponse {
+  uploads: ArtifactUpload[];
 }
 
 export interface ArtifactRegistration {

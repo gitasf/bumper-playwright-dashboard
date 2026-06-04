@@ -1,6 +1,49 @@
 // Canned catalog for the local seed script: spec files + test titles, actors,
 // branch name templates, commit messages. Shaped to look like an e-commerce
 // test suite so the UI shows recognisable-looking data.
+//
+// Also the single home for the synthetic-data primitives (the seeded PRNG and
+// the deterministic fake-SHA derived from it). Both the history generator and
+// the upload-fixtures volume scenarios need a "fake but stable commit SHA";
+// keeping `makePrng` + `sha40` here means that concept lives in one place
+// instead of being re-derived per entrypoint with a divergent algorithm.
+
+/**
+ * xorshift32. Deterministic, 1 line of state, zero deps. Good enough for
+ * seeding — we're not doing crypto or serious Monte Carlo.
+ *
+ * @param {string} seedString
+ * @returns {() => number} a PRNG returning [0, 1)
+ */
+export function makePrng(seedString) {
+  let state = 0x811c9dc5;
+  for (let i = 0; i < seedString.length; i++) {
+    state = Math.imul(state ^ seedString.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  if (state === 0) state = 1;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 0x100000000;
+  };
+}
+
+/**
+ * A deterministic 40-char lowercase-hex commit SHA, drawn from a PRNG. Both
+ * the history generator (per-run `commitSha`) and the upload-fixtures volume
+ * scenarios use this so their fake SHAs come from one algorithm; callers that
+ * need a stable per-index SHA seed a PRNG via `makePrng(String(n))`.
+ *
+ * @param {() => number} rand — seeded PRNG returning [0, 1)
+ * @returns {string} 40 lowercase hex chars
+ */
+export function sha40(rand) {
+  const bytes = new Uint8Array(20);
+  for (let i = 0; i < 20; i++) bytes[i] = Math.floor(rand() * 256);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 export const SPEC_FILES = [
   {

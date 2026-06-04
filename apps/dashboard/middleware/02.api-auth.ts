@@ -3,6 +3,7 @@ import {
   negotiateVersionOrResponse,
   requireApiKeyOrResponse,
 } from "@/lib/api-auth";
+import { isIngestRoute } from "@/lib/ingest-routes";
 
 /**
  * API-key + protocol-version gate for the reporter ingest endpoints.
@@ -11,8 +12,8 @@ import {
  *   - POST /api/runs                       (open a run)
  *   - POST /api/runs/:id/results           (append a batch)
  *   - POST /api/runs/:id/complete          (finalize)
- *   - POST /api/artifacts/register         (reserve + presign)
- *   - PUT  /api/artifacts/:id/upload       (stream into R2)
+ *   - POST /api/artifacts/register         (reserve row + return worker upload URL)
+ *   - PUT  /api/artifacts/:id/upload       (stream into R2 through the worker)
  *
  * Explicitly NOT applied to:
  *   - /api/artifacts/:id/download — signed HMAC token in `?t=`, not bearer keys
@@ -24,14 +25,13 @@ import {
  * Required as global middleware (rather than per-route) because the
  * `defineHandler.withValidator(...)` curry doesn't accept middleware in the
  * chain — see comments in `src/lib/api-auth.ts`.
+ *
+ * The ingest route set is owned by `isIngestRoute` (`src/lib/ingest-routes.ts`)
+ * so this Bearer gate and the `03.rate-limit.ts` throttle gate stay in lockstep.
  */
-const RUN_INGEST_RE = /^\/api\/runs(?:\/|$)/;
-const ARTIFACT_INGEST_RE =
-  /^\/api\/artifacts\/(?:register|[^/]+\/upload)(?:\/|$)/;
-
 export default defineMiddleware(async (c, next) => {
   const path = c.req.path;
-  if (!RUN_INGEST_RE.test(path) && !ARTIFACT_INGEST_RE.test(path)) {
+  if (!isIngestRoute(path)) {
     await next();
     return;
   }

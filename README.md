@@ -7,7 +7,7 @@ A Playwright test reporting dashboard. Ships as two pieces:
 
 ## Deploy your own dashboard
 
-The dashboard deploys to Cloudflare with `void deploy`, which auto-provisions the D1 database, R2 bucket, and any KV bindings on first run — no manual resource creation, no separate migrate step. See **[`SELF-HOSTING.md`](./SELF-HOSTING.md)** for the full step-by-step guide (fork + Cloudflare Git integration, or CLI).
+The dashboard runs on Cloudflare Workers (one Worker + a D1 database + an R2 bucket). The recommended path is to deploy to **your own Cloudflare account** with `wrangler` — the build output is a standard Worker. A one-command `void deploy` to Void's managed platform also works but is still early. See **[`SELF-HOSTING.md`](./SELF-HOSTING.md)** for both, step by step.
 
 In short, once deployed:
 

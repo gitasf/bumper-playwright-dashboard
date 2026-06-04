@@ -1,6 +1,7 @@
 import { MoonIcon, SunIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
+import { applyTheme, isDarkApplied, persistTheme } from "@/lib/theme";
 
 /**
  * Reads the current theme from `<html class>` on mount (which the inline
@@ -19,11 +20,11 @@ export function ThemeToggle({
   const [isDark, setIsDark] = useState<boolean | null>(null);
 
   useEffect(() => {
-    setIsDark(document.documentElement.classList.contains("dark"));
+    setIsDark(isDarkApplied());
   }, []);
 
   const toggle = () => {
-    const next = !document.documentElement.classList.contains("dark");
+    const next = !isDarkApplied();
 
     // Suppress every transition + animation across the document while we flip
     // the theme class. Without this, anything with `transition-colors` (most
@@ -39,7 +40,7 @@ export function ThemeToggle({
     );
     document.head.appendChild(disable);
 
-    document.documentElement.classList.toggle("dark", next);
+    applyTheme(next);
 
     // Force a reflow so the disable rule + class change land in the same paint.
     void window.getComputedStyle(document.body).backgroundColor;
@@ -48,11 +49,7 @@ export function ThemeToggle({
       document.head.removeChild(disable);
     });
 
-    try {
-      localStorage.setItem("theme", next ? "dark" : "light");
-    } catch {
-      // localStorage unavailable (private mode etc) — class still toggled.
-    }
+    persistTheme(next);
     setIsDark(next);
   };
 

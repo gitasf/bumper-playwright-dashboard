@@ -1,5 +1,4 @@
-import { db, eq, sql } from "void/db";
-import { userGithubAccounts } from "@schema";
+import { getUserIdentity, identityMatchesInvite } from "@/lib/auth-users";
 
 export interface InviteIdentity {
   email: string | null;
@@ -23,30 +22,14 @@ export function inviteIsDirected(invite: InviteIdentity): boolean {
  * directed-invite gate. Pre-existing token-link invites without a directed
  * identifier short-circuit via `inviteIsDirected` before this is called.
  *
- * Reads `user.email` from the void-managed `user` table via raw SQL — it
- * isn't declared in our Drizzle schema (see db/schema.ts header).
+ * Resolves the caller's `{ email, githubLogin }` identity through the
+ * `auth-users` seam (the single owner of the raw `"user"` read), then matches
+ * with the same `email | githubLogin` rule as the rest of the redemption flow.
  */
 export async function inviteMatchesUser(
   invite: InviteIdentity,
   userId: string,
 ): Promise<boolean> {
-  if (invite.email) {
-    const userRow = await db.run(
-      sql`select email from "user" where id = ${userId} limit 1`,
-    );
-    const email = (userRow.results?.[0] as { email?: string } | undefined)
-      ?.email;
-    if (email && email.toLowerCase() === invite.email) {
-      return true;
-    }
-  }
-  if (invite.githubLogin) {
-    const rows = await db
-      .select({ githubLogin: userGithubAccounts.githubLogin })
-      .from(userGithubAccounts)
-      .where(eq(userGithubAccounts.userId, userId))
-      .limit(1);
-    if (rows[0]?.githubLogin === invite.githubLogin) return true;
-  }
-  return false;
+  const identity = await getUserIdentity(userId);
+  return identityMatchesInvite(identity, invite);
 }

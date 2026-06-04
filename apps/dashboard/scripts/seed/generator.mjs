@@ -4,32 +4,25 @@
 // the seed orchestrator stay a thin loop.
 
 import {
+  buildCompleteRunPayload,
+  buildOpenRunPayload,
+  buildResult,
+} from "@wrightful/reporter";
+import {
   ACTORS,
   COMMIT_MESSAGES,
   branchesForLifecycle,
   buildTestCatalog,
+  makePrng,
+  sha40,
 } from "./catalog.mjs";
 
-const DAY_SECONDS = 86_400;
+// `makePrng` moved to catalog.mjs (the home for the synthetic-data
+// primitives). Re-export it here so generator.mjs's prior public surface is
+// preserved for any consumer that reached for it via this module.
+export { makePrng };
 
-/**
- * xorshift32. Deterministic, 1 line of state, zero deps. Good enough for
- * seeding — we're not doing crypto or serious Monte Carlo.
- */
-export function makePrng(seedString) {
-  let state = 0x811c9dc5;
-  for (let i = 0; i < seedString.length; i++) {
-    state = Math.imul(state ^ seedString.charCodeAt(i), 0x01000193) >>> 0;
-  }
-  if (state === 0) state = 1;
-  return () => {
-    state ^= state << 13;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    state >>>= 0;
-    return state / 0x100000000;
-  };
-}
+const DAY_SECONDS = 86_400;
 
 function randInt(rand, min, maxExclusive) {
   return min + Math.floor(rand() * (maxExclusive - min));
@@ -37,12 +30,6 @@ function randInt(rand, min, maxExclusive) {
 
 function pick(rand, arr) {
   return arr[Math.floor(rand() * arr.length)];
-}
-
-function sha40(rand) {
-  const bytes = new Uint8Array(20);
-  for (let i = 0; i < 20; i++) bytes[i] = Math.floor(rand() * 256);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -180,21 +167,25 @@ function buildTestResult(rand, test, logicalStatus) {
   }
   const totalDuration = attempts.reduce((s, a) => s + a.durationMs, 0);
   const errorAttempt = attempts.find((a) => a.status === "failed");
-  return {
-    testId: test.testId,
-    title: test.title,
-    file: test.file,
-    status: resultStatus,
-    durationMs: totalDuration,
-    retryCount: attempts.length - 1,
-    errorMessage:
-      resultStatus === "failed" ? (errorAttempt?.errorMessage ?? null) : null,
-    errorStack:
-      resultStatus === "failed" ? (errorAttempt?.errorStack ?? null) : null,
-    tags: [],
-    annotations: [],
+  // Feed the synthetic fields to the shared v3 payload builder so the seeder
+  // produces the same wire shape the reporter does (filling `projectName`,
+  // `workerIndex`, and the nullable error fields) rather than re-deriving it.
+  return buildResult(
+    {
+      testId: test.testId,
+      title: test.title,
+      file: test.file,
+      // Synthetic runs use Playwright's default (unnamed) project.
+      projectName: null,
+      status: resultStatus,
+      durationMs: totalDuration,
+      errorMessage:
+        resultStatus === "failed" ? (errorAttempt?.errorMessage ?? null) : null,
+      errorStack:
+        resultStatus === "failed" ? (errorAttempt?.errorStack ?? null) : null,
+    },
     attempts,
-  };
+  );
 }
 
 /**
@@ -237,37 +228,42 @@ function buildRun(
   const runStatus = failed > 0 ? "failed" : "passed";
   const idempotencyKey = `seed-${meta.seed}-${dayIndex}-${slot}-${meta.branch}`;
 
+  // Build the canonical v3 payloads via the shared builder, then layer on the
+  // dev-only `createdAt` / `completedAt` backdating — the one field the seeder
+  // owns that the reporter never sends (it rides the `BackdateSeconds` escape
+  // hatch in the dashboard's Zod schemas, honored only in dev).
   const openPayload = {
-    idempotencyKey,
-    createdAt,
-    run: {
-      ciProvider: "github",
-      ciBuildId: `gha-${randInt(rand, 1_000_000, 9_999_999)}`,
-      branch: meta.branch,
-      environment: meta.environment ?? null,
-      commitSha: sha40(rand),
-      commitMessage: pick(rand, COMMIT_MESSAGES),
-      prNumber: meta.prNumber ?? null,
-      repo: "wrightful/example-shop",
-      actor: meta.actor,
-      reporterVersion: "0.1.0",
-      playwrightVersion: "1.59.1",
-      expectedTotalTests: activeTests.length,
-      plannedTests: activeTests.map((t) => ({
+    ...buildOpenRunPayload(
+      {
+        idempotencyKey,
+        ciProvider: "github",
+        ciBuildId: `gha-${randInt(rand, 1_000_000, 9_999_999)}`,
+        branch: meta.branch,
+        environment: meta.environment ?? null,
+        commitSha: sha40(rand),
+        commitMessage: pick(rand, COMMIT_MESSAGES),
+        prNumber: meta.prNumber ?? null,
+        repo: "wrightful/example-shop",
+        actor: meta.actor,
+        reporterVersion: "0.1.0",
+        playwrightVersion: "1.59.1",
+      },
+      activeTests.map((t) => ({
         testId: t.testId,
         title: t.title,
         file: t.file,
+        // Synthetic runs use Playwright's default (unnamed) project.
+        projectName: null,
       })),
-    },
+    ),
+    createdAt,
   };
 
-  const resultsPayload = {
-    results: results.map((r) => ({ ...r, clientKey: r.testId })),
-  };
+  // `buildResult` already sets `clientKey` to `testId`, matching the reporter.
+  const resultsPayload = { results };
 
   const completePayload = {
-    status: runStatus,
-    durationMs,
+    ...buildCompleteRunPayload(runStatus, durationMs),
     completedAt,
   };
 

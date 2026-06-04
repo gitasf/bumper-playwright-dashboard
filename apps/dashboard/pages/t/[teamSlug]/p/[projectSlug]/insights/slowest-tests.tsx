@@ -7,6 +7,7 @@ import {
 } from "@/components/analytics/bucket-bar-chart";
 import { InsightsTabs } from "@/components/analytics/insights-tabs";
 import { AnalyticsKpiCard } from "@/components/analytics/kpi-card";
+import { MetricSparkline } from "@/components/analytics/metric-sparkline";
 import { PageHeader } from "@/components/page-header";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
@@ -27,13 +28,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/cn";
-import { STATUS_COLORS } from "@/lib/status";
+import { makeHrefBuilder } from "@/lib/page-links";
+import { statusToken } from "@/lib/status";
 import { formatDuration } from "@/lib/time-format";
-import type {
-  BottleneckRow,
-  Props,
-  SparklinePoint,
-} from "./slowest-tests.server";
+import type { BottleneckRow, Props } from "./slowest-tests.server";
 
 const HIST_BINS = 20;
 
@@ -94,21 +92,12 @@ export default function SlowestTestsPage({
     },
   );
 
-  const hrefWith = (overrides: Record<string, string | null>): string => {
-    const p = new URLSearchParams();
-    p.set("range", range);
-    if (branchParam) p.set("branch", branchParam);
-    if (q) p.set("q", q);
-    if (currentPage > 1) p.set("page", String(currentPage));
-    for (const [k, v] of Object.entries(overrides)) {
-      if (v === null) p.delete(k);
-      else p.set(k, v);
-    }
-    return `${pathname}?${p.toString()}`;
-  };
-
-  const pageHref = (page: number): string =>
-    hrefWith({ page: page === 1 ? null : String(page) });
+  const { with: hrefWith, pageHref } = makeHrefBuilder(pathname, {
+    range,
+    branch: branchParam,
+    q,
+    page: currentPage > 1 ? String(currentPage) : null,
+  });
 
   // KPI summary across the ranked window.
   const topRow = bottlenecks[0];
@@ -320,9 +309,17 @@ export default function SlowestTestsPage({
                             : formatDuration(Math.round(row.p95))}
                         </TableCell>
                         <TableCell className="w-[120px] px-4 py-3 align-middle">
-                          <DurationSparkline
+                          <MetricSparkline
+                            area={false}
+                            ariaLabel="7-day duration trend"
+                            className="mx-auto"
                             color={tone.sparkColor}
-                            points={spark}
+                            height={20}
+                            points={spark.map((p) => ({
+                              x: p.day,
+                              y: p.avg,
+                            }))}
+                            width={80}
                           />
                         </TableCell>
                         <TableCell className="w-[80px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-muted-foreground">
@@ -365,89 +362,26 @@ function rowTone(row: BottleneckRow): RowTone {
   if (row.failCount > 0) {
     return {
       Icon: XCircle,
-      iconColor: STATUS_COLORS.failed,
+      iconColor: statusToken("failed"),
       border: "border-l-destructive",
       p95Text: "text-destructive-foreground",
-      sparkColor: STATUS_COLORS.failed,
+      sparkColor: statusToken("failed"),
     };
   }
   if (row.flakyCount > 0) {
     return {
       Icon: TriangleAlert,
-      iconColor: STATUS_COLORS.flaky,
+      iconColor: statusToken("flaky"),
       border: "border-l-warning",
       p95Text: "text-warning-foreground",
-      sparkColor: STATUS_COLORS.flaky,
+      sparkColor: statusToken("flaky"),
     };
   }
   return {
     Icon: CheckCircle2,
-    iconColor: STATUS_COLORS.passed,
+    iconColor: statusToken("passed"),
     border: "border-l-border",
     p95Text: "text-muted-foreground",
-    sparkColor: STATUS_COLORS.passed,
+    sparkColor: statusToken("passed"),
   };
-}
-
-function DurationSparkline({
-  points,
-  color,
-}: {
-  points: SparklinePoint[];
-  color: string;
-}) {
-  const w = 80;
-  const h = 20;
-  if (points.length === 0) {
-    return (
-      <svg
-        width={w}
-        height={h}
-        style={{ display: "block", margin: "0 auto" }}
-        role="img"
-        aria-label="No data"
-      />
-    );
-  }
-  if (points.length === 1) {
-    return (
-      <svg
-        width={w}
-        height={h}
-        style={{ display: "block", margin: "0 auto" }}
-        role="img"
-        aria-label="Single data point"
-      >
-        <circle cx={w / 2} cy={h / 2} r={1.5} fill={color} />
-      </svg>
-    );
-  }
-  const xs = points.map((p) => p.day);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const ys = points.map((p) => p.avg);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const rangeY = maxY - minY || 1;
-  const rangeX = maxX - minX || 1;
-
-  const path = points
-    .map((p, i) => {
-      const x = ((p.day - minX) / rangeX) * (w - 2) + 1;
-      const y = h - 1 - ((p.avg - minY) / rangeY) * (h - 2);
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(" ");
-
-  return (
-    <svg
-      width={w}
-      height={h}
-      style={{ display: "block", margin: "0 auto" }}
-      role="img"
-      aria-label="7-day duration trend"
-    >
-      <path d={path} stroke={color} strokeWidth={1.25} fill="none" />
-    </svg>
-  );
 }

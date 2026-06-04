@@ -5,7 +5,7 @@
     "compatibility_flags": ["nodejs_compat"]
   },
   "auth": {
-    "providers": ["email", "github"]
+    "providers": ["email"]
   },
   "routing": {
     "headers": {

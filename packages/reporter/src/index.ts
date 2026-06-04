@@ -16,6 +16,12 @@ import {
   type ArtifactType,
   type SnapshotRole,
 } from "./attachments.js";
+import {
+  TestAccumulator,
+  isTestDone,
+  type PendingTest,
+} from "./accumulator.js";
+import { ArtifactUploader } from "./artifact-uploader.js";
 import { Batcher } from "./batcher.js";
 import { detectCI, generateIdempotencyKey, type CIInfo } from "./ci.js";
 import { AuthError, StreamClient } from "./client.js";
@@ -27,7 +33,6 @@ import {
 import { computeTestId } from "./test-id.js";
 import type {
   ArtifactMode,
-  ArtifactRegistration,
   ReporterOptions,
   TestAttemptPayload,
   TestResultPayload,
@@ -63,10 +68,31 @@ export interface PreparedArtifact {
   snapshotName?: string;
 }
 
-interface PendingTest {
-  test: TestCase;
-  results: TestResult[];
-}
+// `isTestDone` and the `PendingTest` shape are owned by ./accumulator and
+// re-exported here so existing import sites (tests, downstream) stay stable.
+export { isTestDone, type PendingTest };
+
+// The streaming ingest client is part of the package's public surface so
+// out-of-process callers (e.g. the local history seeder in
+// apps/dashboard/scripts) can drive the same open → append → complete pipeline
+// the reporter uses — with the same retry / Retry-After / timeout / version-
+// header behaviour — instead of hand-rolling a second, untested HTTP client.
+export { AuthError, StreamClient } from "./client.js";
+
+// Plain-data v3 payload builders. The reporter derives payloads from live
+// Playwright objects via `buildPayload` / `buildTestDescriptor`; the local
+// history seeder has only synthetic plain data, so it feeds these builders the
+// few fields it owns and gets back the same wire shape — concentrating the v3
+// contract instead of hand-assembling a third, drift-prone copy.
+export {
+  buildAttempt,
+  buildCompleteRunPayload,
+  buildOpenRunPayload,
+  buildResult,
+  type AttemptInput,
+  type ResultFields,
+  type RunMeta,
+} from "./payload.js";
 
 /**
  * Promote tentative snapshot images to `type: "visual"` only when all three
@@ -136,11 +162,12 @@ interface EnqueuedTest {
  */
 export default class WrightfulReporter implements Reporter {
   private client: StreamClient | null = null;
+  private uploader: ArtifactUploader | null = null;
   private runId: string | null = null;
   private runUrl: string | null = null;
   private ci: CIInfo | null = null;
   private batcher: Batcher<EnqueuedTest> | null = null;
-  private pending: Map<string, PendingTest> = new Map();
+  private accumulator = new TestAccumulator();
   private artifactTasks: Promise<void>[] = [];
   private allowedRoot = "";
   private artifactMode: ArtifactMode = DEFAULT_ARTIFACT_MODE;
@@ -181,6 +208,11 @@ export default class WrightfulReporter implements Reporter {
     }
 
     this.client = new StreamClient(baseUrl, token);
+    this.uploader = new ArtifactUploader(
+      this.client,
+      warn,
+      ARTIFACT_UPLOAD_CONCURRENCY,
+    );
 
     const allTests = suite.allTests();
     const plannedTests = allTests.map((t) =>
@@ -244,7 +276,7 @@ export default class WrightfulReporter implements Reporter {
           batch.map((e) => e.payload),
         );
         this.streamed += batch.length;
-        this.fireArtifactUploads(batch, mapping);
+        this.fireArtifactUploads(this.runId, batch, mapping);
       },
       onFailure: (batch, err) => {
         if (err instanceof AuthError) {
@@ -324,16 +356,8 @@ export default class WrightfulReporter implements Reporter {
 
   onTestEnd(test: TestCase, result: TestResult): void {
     if (!this.batcher) return;
-
-    const testKey = makeTestKey(test);
-    const entry = this.pending.get(testKey) ?? { test, results: [] };
-    entry.results.push(result);
-    this.pending.set(testKey, entry);
-
-    if (!isTestDone(test, result)) return;
-
-    this.pending.delete(testKey);
-    this.artifactTasks.push(this.enqueueDone(entry));
+    const done = this.accumulator.record(test, result);
+    if (done) this.artifactTasks.push(this.enqueueDone(done));
   }
 
   private async enqueueDone(entry: PendingTest): Promise<void> {
@@ -390,83 +414,34 @@ export default class WrightfulReporter implements Reporter {
     return promoteSnapshotTriples(out);
   }
 
+  /**
+   * Delegate the flushed batch's artifact pipeline to {@link ArtifactUploader}.
+   * The returned promise is tracked on `artifactTasks` (not awaited here) so
+   * uploads overlap with subsequent flushes; `onEnd` awaits them before
+   * `/complete`. The `{ ok, failed }` counts are folded into the summary
+   * tallies once the upload settles.
+   */
   private fireArtifactUploads(
+    runId: string,
     batch: EnqueuedTest[],
     mapping: Array<{ clientKey: string; testResultId: string }>,
   ): void {
-    const byClientKey = new Map(
-      mapping.map((m) => [m.clientKey, m.testResultId] as const),
-    );
-    const registrations: ArtifactRegistration[] = [];
-    const locals: PreparedArtifact[] = [];
-    for (const entry of batch) {
-      if (entry.artifacts.length === 0) continue;
-      const testResultId = byClientKey.get(entry.payload.clientKey);
-      if (!testResultId) continue;
-      for (const a of entry.artifacts) {
-        registrations.push({
-          testResultId,
-          type: a.type,
-          name: a.name,
-          contentType: a.contentType,
-          sizeBytes: a.sizeBytes,
-          attempt: a.attempt,
-          role: a.role,
-          snapshotName: a.snapshotName,
-        });
-        locals.push(a);
-      }
-    }
-    if (registrations.length === 0) return;
-    this.artifactTasks.push(this.uploadArtifactBatch(registrations, locals));
-  }
-
-  private async uploadArtifactBatch(
-    registrations: ArtifactRegistration[],
-    locals: PreparedArtifact[],
-  ): Promise<void> {
-    if (!this.client || !this.runId) return;
-    let uploads;
-    try {
-      uploads = await this.client.registerArtifacts(this.runId, registrations);
-    } catch (err) {
-      warn(
-        `artifact register failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      this.artifactsFailed += registrations.length;
-      return;
-    }
-    // Bounded-parallelism workers so large batches don't open hundreds of
-    // sockets simultaneously.
-    let next = 0;
-    const worker = async (): Promise<void> => {
-      while (true) {
-        const i = next++;
-        if (i >= uploads.length) return;
-        const upload = uploads[i];
-        const local = locals[i];
-        if (!upload || !local || !this.client) continue;
-        try {
-          await this.client.uploadArtifact(
-            upload.uploadUrl,
-            local.localPath,
-            local.contentType,
-            local.sizeBytes,
-          );
-          this.artifactsOk++;
-        } catch (err) {
-          this.artifactsFailed++;
-          warn(
-            `artifact PUT failed (${local.name}): ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
-    };
-    await Promise.all(
-      Array.from(
-        { length: Math.min(ARTIFACT_UPLOAD_CONCURRENCY, uploads.length) },
-        () => worker(),
-      ),
+    if (!this.uploader) return;
+    const uploader = this.uploader;
+    this.artifactTasks.push(
+      uploader
+        .upload(
+          runId,
+          batch.map((e) => ({
+            clientKey: e.payload.clientKey,
+            artifacts: e.artifacts,
+          })),
+          mapping,
+        )
+        .then(({ ok, failed }) => {
+          this.artifactsOk += ok;
+          this.artifactsFailed += failed;
+        }),
     );
   }
 
@@ -476,10 +451,9 @@ export default class WrightfulReporter implements Reporter {
     // Any test whose "done" trigger never fired (e.g. interrupted worker
     // killed the run mid-attempt) gets flushed here with whatever state we
     // have. Better to report partial data than lose it.
-    for (const entry of this.pending.values()) {
+    for (const entry of this.accumulator.drainPending()) {
       this.artifactTasks.push(this.enqueueDone(entry));
     }
-    this.pending.clear();
 
     // enqueueDone tasks (pushed from onTestEnd) resolve asynchronously and
     // their `batcher.enqueue` call fires only after collectArtifacts settles.
@@ -588,19 +562,6 @@ export default class WrightfulReporter implements Reporter {
   printsToStdio(): boolean {
     return false;
   }
-}
-
-function makeTestKey(test: TestCase): string {
-  // Playwright assigns a stable `id` per test per run.
-  return test.id;
-}
-
-export function isTestDone(test: TestCase, result: TestResult): boolean {
-  if (result.status === "passed") return true;
-  if (result.status === "skipped") return true;
-  if (result.status === "interrupted") return true;
-  // Final attempt: no more retries configured.
-  return result.retry >= test.retries;
 }
 
 /**

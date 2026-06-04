@@ -14,7 +14,7 @@
 // terminal and has no `env.DB`. Same shape as how the reporter ingests
 // test data — POST to the worker, let it write to D1.
 //
-// Required env: WRIGHTFUL_BASE_URL (e.g. http://localhost:5173). The dev
+// Required env: WRIGHTFUL_URL (e.g. http://localhost:5173). The dev
 // server must be running and ALLOW_OPEN_SIGNUP=true must be set in
 // `.env.local` (setup-local.mjs handles both).
 //
@@ -40,9 +40,9 @@ const log = (...args) => {
   if (!QUIET) console.log(...args);
 };
 
-const baseUrl = process.env.WRIGHTFUL_BASE_URL;
+const baseUrl = process.env.WRIGHTFUL_URL;
 if (!baseUrl) {
-  console.error(pc.red("seed-demo.mjs requires WRIGHTFUL_BASE_URL to be set."));
+  console.error(pc.red("seed-demo.mjs requires WRIGHTFUL_URL to be set."));
   console.error(
     pc.dim("Run via `pnpm setup:local`, which starts the dev server first."),
   );
@@ -64,10 +64,10 @@ function readSetCookies(res) {
 }
 
 /**
- * Issue an HTTP request, never following redirects. We need to read the
- * Set-Cookie + Location headers from intermediate redirects (e.g. team
- * creation 302s with the team slug, key creation 302s with the reveal
- * cookie).
+ * Issue an HTTP request, never following redirects. Auth (sign-up/sign-in)
+ * still 302s and sets the session cookie, so we read intermediate redirects;
+ * team/project/key creation now goes through typed JSON API routes that
+ * return a 200 body, not a 302 Location header.
  */
 async function request(method, path, opts = {}) {
   const url = `${baseUrl}${path}`;
@@ -160,16 +160,17 @@ if (sessionCookies.length === 0) {
   process.exit(1);
 }
 
-// ---------- 2. Create team (idempotent: 302 to /settings/teams/<slug>) ----------
+// ---------- 2. Create team ----------
 
+// Created via the typed JSON API route (sibling of the create-team form
+// action; both share the `createTeamForUser` provisioning seam). The route
+// returns the assigned `{ teamSlug }` directly — no scraping a 302 Location.
 async function ensureTeam() {
-  // Try creating; if the slug clashes, the form-action redirects with an
-  // error param — but on a fresh install we expect a clean redirect.
-  const res = await request("POST", "/settings/teams/new", {
+  const res = await request("POST", "/api/teams", {
     cookies: sessionCookies,
-    form: { name: TEAM_NAME },
+    json: { name: TEAM_NAME },
   });
-  if (res.status !== 302) {
+  if (!res.ok) {
     console.error(
       pc.red(
         `team creation returned ${res.status}: ${(await res.text()) || "(empty body)"}`,
@@ -177,27 +178,20 @@ async function ensureTeam() {
     );
     process.exit(1);
   }
-  const location = res.headers.get("location") ?? "";
-  const match = location.match(/\/settings\/teams\/([^/?#]+)/);
-  if (!match) {
-    console.error(
-      pc.red(`team creation redirected to unexpected URL: ${location}`),
-    );
-    process.exit(1);
-  }
-  const slug = match[1];
-  // If slug is suffixed (e.g. "demo-2"), the team probably already
-  // exists — but the form action is INSERT-ALWAYS today, so a re-run
-  // creates a second team. Check for this and bail with a clear error.
-  if (slug !== TEAM_SLUG) {
+  const { teamSlug } = await res.json();
+  // Team creation is INSERT-ALWAYS, so a re-run against existing demo state
+  // produces a "demo-2"-suffixed slug. Bail with a clear recovery hint rather
+  // than silently seeding a duplicate team. setup-local.mjs avoids this by
+  // probing the existing key first and only re-seeding from fresh D1 state.
+  if (teamSlug !== TEAM_SLUG) {
     console.error(
       pc.red(
-        `expected team slug "${TEAM_SLUG}" but got "${slug}" — looks like a duplicate. Delete the existing team or wipe local DO state.`,
+        `expected team slug "${TEAM_SLUG}" but got "${teamSlug}" — looks like a duplicate. Wipe local D1 (\`npx void db reset\`) and re-run.`,
       ),
     );
     process.exit(1);
   }
-  return slug;
+  return teamSlug;
 }
 
 log(`${pc.dim("›")} creating team "${TEAM_NAME}"…`);
@@ -206,15 +200,11 @@ const teamSlug = await ensureTeam();
 // ---------- 3. Create project ----------
 
 async function ensureProject() {
-  const res = await request(
-    "POST",
-    `/settings/teams/${teamSlug}/projects/new`,
-    {
-      cookies: sessionCookies,
-      form: { name: PROJECT_NAME },
-    },
-  );
-  if (res.status !== 302) {
+  const res = await request("POST", `/api/teams/${teamSlug}/projects`, {
+    cookies: sessionCookies,
+    json: { name: PROJECT_NAME },
+  });
+  if (!res.ok) {
     console.error(
       pc.red(
         `project creation returned ${res.status}: ${(await res.text()) || "(empty body)"}`,
@@ -222,49 +212,36 @@ async function ensureProject() {
     );
     process.exit(1);
   }
-  // project-new redirects to /settings/teams/<teamSlug> on success and to
-  // /settings/teams/<teamSlug>/projects/new?error=… on validation failure.
-  // Both are 302s, so we have to read the Location to tell them apart.
-  const location = res.headers.get("location") ?? "";
-  const expectedSuccessPath = `/settings/teams/${teamSlug}`;
-  const locationPath = (() => {
-    try {
-      return new URL(location, baseUrl).pathname;
-    } catch {
-      return location;
-    }
-  })();
-  if (locationPath !== expectedSuccessPath) {
+  const { projectSlug } = await res.json();
+  if (projectSlug !== PROJECT_SLUG) {
     console.error(
-      pc.red(`project creation redirected to unexpected URL: ${location}`),
+      pc.red(
+        `expected project slug "${PROJECT_SLUG}" but got "${projectSlug}" — looks like a duplicate. Wipe local D1 (\`npx void db reset\`) and re-run.`,
+      ),
     );
     process.exit(1);
   }
-  // Success path doesn't include the project slug, so we trust that
-  // PROJECT_NAME slugifies to PROJECT_SLUG (no existing project on this
-  // fresh team to force a "-2" suffix).
-  return PROJECT_SLUG;
+  return projectSlug;
 }
 
 log(`${pc.dim("›")} creating project "${PROJECT_NAME}"…`);
 const projectSlug = await ensureProject();
 
-// ---------- 4. Mint API key (read plaintext from reveal cookie) ----------
-
-const REVEAL_COOKIE = "wrightful_reveal_key";
+// ---------- 4. Mint API key ----------
 
 log(`${pc.dim("›")} minting API key…`);
-// The keys page bundles several mutations on one route; Void disambiguates
-// them via `?actionName` in the query string (see keys.tsx form actions).
+// Minted via the Void API route, which returns the plaintext token in the
+// JSON body (the dashboard surfaces it once client-side in a modal). There is
+// no pre-Void server-action reveal cookie to parse.
 const keyRes = await request(
   "POST",
-  `/settings/teams/${teamSlug}/p/${projectSlug}/keys?createKey`,
+  `/api/teams/${teamSlug}/p/${projectSlug}/keys`,
   {
     cookies: sessionCookies,
-    form: { label: "fixtures" },
+    json: { label: "fixtures" },
   },
 );
-if (keyRes.status !== 302) {
+if (!keyRes.ok) {
   console.error(
     pc.red(
       `api key creation returned ${keyRes.status}: ${(await keyRes.text()) || "(empty body)"}`,
@@ -272,29 +249,16 @@ if (keyRes.status !== 302) {
   );
   process.exit(1);
 }
-
-const setCookies = keyRes.headers.getSetCookie();
-const reveal = setCookies
-  .map((raw) => {
-    const [head, ...attrs] = raw.split(";").map((s) => s.trim());
-    const eq = head.indexOf("=");
-    if (eq < 0) return null;
-    const name = head.slice(0, eq);
-    const value = head.slice(eq + 1);
-    return { name, value, attrs };
-  })
-  .filter(Boolean)
-  .find((c) => c.name === REVEAL_COOKIE);
-
-if (!reveal || !reveal.value) {
+const keyBody = await keyRes.json();
+const apiKey = typeof keyBody.token === "string" ? keyBody.token : null;
+if (!apiKey) {
   console.error(
     pc.red(
-      "key creation succeeded but reveal cookie was missing — cannot recover the plaintext key.",
+      "key creation succeeded but no token was returned in the response body.",
     ),
   );
   process.exit(1);
 }
-const apiKey = decodeURIComponent(reveal.value);
 
 // ---------- 5. Save seed file ----------
 

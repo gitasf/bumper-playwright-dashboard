@@ -32,12 +32,21 @@ export interface BootOptions {
   /** TCP port the dev server should listen on. */
   port: number;
   /**
-   * Local-only Better Auth secret. The Playwright + Vitest suites both forge
-   * artifact-download HMAC tokens with this, so it has to match the value the
-   * dashboard runs under. Default is fine unless a caller is doing something
-   * exotic.
+   * Local-only Better Auth secret. Drives the session cookie HMAC, and (absent
+   * a dedicated `artifactTokenSecret`) the artifact-download token HMAC too.
+   * Default is fine unless a caller is doing something exotic.
    */
   betterAuthSecret?: string;
+  /**
+   * Local-only dedicated artifact-token secret. When set, the boot writes
+   * `ARTIFACT_TOKEN_SECRET` into `.env.local` so the dashboard signs download
+   * tokens with it instead of `BETTER_AUTH_SECRET` — exercising the production
+   * "rotate the artifact secret independently" path. Leave unset for the
+   * fallback (BETTER_AUTH_SECRET) behavior. Either way the fixture exposes the
+   * *resolved* signing secret as `artifactTokenSecret` so the HMAC forger signs
+   * under whatever the boot resolved, never re-deriving the precedence by hand.
+   */
+  artifactTokenSecret?: string;
   /** Slug + display name of the seeded team. Defaults to `e2e` / `E2E`. */
   teamSlug?: string;
   teamName?: string;
@@ -61,6 +70,15 @@ export interface DashboardFixture {
   teamSlug: string;
   projectSlug: string;
   betterAuthSecret: string;
+  /**
+   * The secret the booted dashboard actually signs artifact-download tokens
+   * with: the dedicated `ARTIFACT_TOKEN_SECRET` when the boot provisioned one,
+   * else `betterAuthSecret` (mirrors the dashboard's
+   * `resolveArtifactTokenSecret`). Token-forging consumers MUST sign with this,
+   * not `betterAuthSecret`, so they can't silently diverge once a dedicated
+   * secret is introduced.
+   */
+  artifactTokenSecret: string;
   email: string;
   password: string;
   /** Kills the dev server and restores `.env.local`. Idempotent. */
@@ -150,6 +168,13 @@ export async function bootDashboard(
   const betterAuthSecret =
     options.betterAuthSecret ??
     "e2e-local-only-not-a-secret-openssl-rand-base64-32ch";
+  // The single source of "what secret signs artifact tokens under this boot".
+  // Mirrors the dashboard's resolveArtifactTokenSecret (`?? BETTER_AUTH_SECRET`
+  // precedence): a dedicated ARTIFACT_TOKEN_SECRET wins, else the session
+  // secret. Both the .env.local we write below and the value we hand the forger
+  // derive from THIS, so the two can't diverge.
+  const dedicatedArtifactTokenSecret = options.artifactTokenSecret;
+  const artifactTokenSecret = dedicatedArtifactTokenSecret ?? betterAuthSecret;
 
   const backupSuffix = options.envBackupSuffix ?? "e2e-backup";
   const envBackupPath = resolve(DASHBOARD_DIR, `.env.local.${backupSuffix}`);
@@ -204,6 +229,12 @@ export async function bootDashboard(
     const envLocal =
       [
         `BETTER_AUTH_SECRET=${betterAuthSecret}`,
+        // Only written when a dedicated secret was requested — otherwise the
+        // dashboard's resolveArtifactTokenSecret falls back to
+        // BETTER_AUTH_SECRET, which is exactly `artifactTokenSecret` here.
+        ...(dedicatedArtifactTokenSecret
+          ? [`ARTIFACT_TOKEN_SECRET=${dedicatedArtifactTokenSecret}`]
+          : []),
         `WRIGHTFUL_PUBLIC_URL=${url}`,
         // Sign-up gate is locked in production; e2e provisions a user via
         // /api/auth/sign-up/email so we explicitly opt in here.
@@ -288,46 +319,40 @@ export async function bootDashboard(
     }
     const sessionCookie = sessionCookies[0];
 
-    // team
-    const teamRes = await request("POST", "/settings/teams/new", {
+    // team — created via the Void API route, which returns the assigned slug
+    // as JSON (the typed sibling of the create-team form action). No 302
+    // Location scraping.
+    const teamRes = await request("POST", "/api/teams", {
       cookies: sessionCookies,
-      form: { name: teamName },
+      json: { name: teamName },
     });
-    if (teamRes.status !== 302) {
+    if (!teamRes.ok) {
       throw new Error(
         `team creation returned ${teamRes.status}: ${(await teamRes.text()) || "(empty body)"}`,
       );
     }
-    const teamLoc = teamRes.headers.get("location") ?? "";
-    const teamMatch = teamLoc.match(/\/settings\/teams\/([^/?#]+)/);
-    if (!teamMatch || teamMatch[1] !== teamSlug) {
+    const teamBody = (await teamRes.json()) as { teamSlug?: unknown };
+    if (teamBody.teamSlug !== teamSlug) {
       throw new Error(
-        `expected team slug "${teamSlug}", got Location "${teamLoc}" — local D1 probably wasn't reset`,
+        `expected team slug "${teamSlug}", got "${String(teamBody.teamSlug)}" — local D1 probably wasn't reset`,
       );
     }
 
-    // project
+    // project — same typed JSON contract; returns the assigned slug.
     const projectRes = await request(
       "POST",
-      `/settings/teams/${teamSlug}/projects/new`,
-      { cookies: sessionCookies, form: { name: projectName } },
+      `/api/teams/${teamSlug}/projects`,
+      { cookies: sessionCookies, json: { name: projectName } },
     );
-    if (projectRes.status !== 302) {
+    if (!projectRes.ok) {
       throw new Error(
         `project creation returned ${projectRes.status}: ${(await projectRes.text()) || "(empty body)"}`,
       );
     }
-    const expectedProjectLoc = `/settings/teams/${teamSlug}`;
-    const projectLoc = projectRes.headers.get("location") ?? "";
-    let projectLocPath = projectLoc;
-    try {
-      projectLocPath = new URL(projectLoc, url).pathname;
-    } catch {
-      /* fall through */
-    }
-    if (projectLocPath !== expectedProjectLoc) {
+    const projectBody = (await projectRes.json()) as { projectSlug?: unknown };
+    if (projectBody.projectSlug !== projectSlug) {
       throw new Error(
-        `project creation redirected to unexpected URL: ${projectLoc}`,
+        `expected project slug "${projectSlug}", got "${String(projectBody.projectSlug)}" — local D1 probably wasn't reset`,
       );
     }
 
@@ -361,6 +386,7 @@ export async function bootDashboard(
       teamSlug,
       projectSlug,
       betterAuthSecret,
+      artifactTokenSecret,
       email,
       password,
       teardown,

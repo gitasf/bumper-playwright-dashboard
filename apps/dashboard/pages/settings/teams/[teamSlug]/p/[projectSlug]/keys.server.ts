@@ -2,6 +2,7 @@ import { defineHandler, type InferProps } from "void";
 import { and, db, desc, eq, isNull, ne } from "void/db";
 import { apiKeys, projects, type ApiKey } from "@schema";
 import { readField } from "@/lib/form";
+import { runBatch } from "@/lib/db-batch";
 import {
   redirectWithParam,
   requireOwnedProjectScope,
@@ -147,10 +148,10 @@ export const actions = {
     }
 
     try {
-      await db.batch([
+      await runBatch([
         db.delete(apiKeys).where(eq(apiKeys.projectId, project.id)),
         db.delete(projects).where(eq(projects.id, project.id)),
-      ] as never);
+      ]);
     } catch (err) {
       logger.error("delete project failed", {
         projectId: project.id,

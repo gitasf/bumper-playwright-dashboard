@@ -1,28 +1,36 @@
 import type { Context } from "hono";
 import { db, and, eq } from "void/db";
 import { apiKeys, type ApiKey } from "@schema";
+import { sha256Hex, timingSafeEqualHex } from "@/lib/token-crypto";
 
-async function hashKey(key: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(key);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function timingSafeEqualHex(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
+/**
+ * The pure security decision behind {@link validateApiKey}: given the rows
+ * sharing a prefix and the raw key, hash the raw key, constant-time compare it
+ * against every candidate's stored hash, and reject a matched-but-revoked row.
+ * Returns the matching live row or null.
+ *
+ * IO-free (async only because {@link sha256Hex} uses `crypto.subtle`) so the
+ * branch logic — multiple same-prefix candidates, revoked gate, no match — is
+ * unit-testable without a Hono Context or live D1.
+ */
+export async function selectMatchingKey(
+  candidates: ApiKey[],
+  rawKey: string,
+): Promise<ApiKey | null> {
+  const hash = await sha256Hex(rawKey);
+  const key = candidates.find((k) => timingSafeEqualHex(k.keyHash, hash));
+  if (!key) return null;
+  if (key.revokedAt) return null;
+  return key;
 }
 
 /**
  * Resolve a Bearer API key to the owning row. Returns null on any failure
  * (no header, malformed, no row, hash mismatch, revoked). Constant-time
  * hash compare across all keys sharing the 8-char prefix.
+ *
+ * Thin IO wrapper: parse the Bearer header, fetch candidates by prefix, and
+ * delegate the hash/compare/revoke decision to {@link selectMatchingKey}.
  *
  * Side-effect: bumps `lastUsedAt` after a successful match. Off the
  * auth-path latency budget via `executionCtx.waitUntil` — workerd keeps the
@@ -38,16 +46,14 @@ export async function validateApiKey(
 
   const rawKey = match[1];
   const prefix = rawKey.slice(0, 8);
-  const hash = await hashKey(rawKey);
 
   const candidates = await db
     .select()
     .from(apiKeys)
     .where(eq(apiKeys.keyPrefix, prefix));
 
-  const key = candidates.find((k) => timingSafeEqualHex(k.keyHash, hash));
+  const key = await selectMatchingKey(candidates, rawKey);
   if (!key) return null;
-  if (key.revokedAt) return null;
 
   c.executionCtx.waitUntil(
     db

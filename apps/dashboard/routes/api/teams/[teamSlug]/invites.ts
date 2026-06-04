@@ -3,8 +3,8 @@ import { requireAuth } from "void/auth";
 import { db } from "void/db";
 import { ulid } from "ulid";
 import { teamInvites } from "@schema";
-import { requireTeamOwner } from "@/lib/authz";
-import { readField } from "@/lib/form";
+import { AuthzError, resolveOwnedTeam } from "@/lib/settings-scope";
+import { readBodyField } from "@/lib/form";
 import { generateInviteToken, hashInviteToken } from "@/lib/invite-tokens";
 
 const GITHUB_LOGIN_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/;
@@ -38,25 +38,18 @@ function parseInviteIdentifier(raw: string): DirectedInvite {
  */
 export const POST = defineHandler(async (c) => {
   const user = requireAuth(c);
-  const teamSlug = c.req.param("teamSlug");
-  if (!teamSlug) return c.json({ error: "Not found" }, 404);
-  let team: { id: string; slug: string; name: string };
+  let team: Awaited<ReturnType<typeof resolveOwnedTeam>>;
   try {
-    team = await requireTeamOwner(user.id, teamSlug);
-  } catch {
-    return c.json({ error: "Forbidden" }, 403);
+    team = await resolveOwnedTeam(c);
+  } catch (err) {
+    if (err instanceof AuthzError) return c.json({ error: "Forbidden" }, 403);
+    throw err;
   }
 
-  let rawIdentifier: string;
-  const ctype = c.req.header("content-type") ?? "";
-  if (ctype.includes("application/json")) {
-    const body = (await c.req.json()) as { identifier?: unknown };
-    rawIdentifier =
-      typeof body.identifier === "string" ? body.identifier.trim() : "";
-  } else {
-    const form = await c.req.formData();
-    rawIdentifier = readField(form, "inviteIdentifier").trim();
-  }
+  const rawIdentifier = await readBodyField(c, {
+    jsonKey: "identifier",
+    formKey: "inviteIdentifier",
+  });
 
   const directed = parseInviteIdentifier(rawIdentifier);
   if (directed.kind === "invalid") {

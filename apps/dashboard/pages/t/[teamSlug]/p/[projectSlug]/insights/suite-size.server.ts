@@ -1,7 +1,6 @@
 import { defineHandler, type InferProps } from "void";
 import { and, db, desc, eq, gte, sql } from "void/db";
 import { runs, testResults, testTags } from "@schema";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import {
   DAY_SEC,
   parseSegment,
@@ -9,8 +8,13 @@ import {
   type Segment,
 } from "@/lib/analytics/bucketing";
 import { bucketExpr } from "@/lib/analytics/bucketing-sql";
-import { makeRangeParser, rangeToSeconds } from "@/lib/analytics/range";
+import {
+  normalizeBranchFilter,
+  resolveAnalyticsWindow,
+} from "@/lib/analytics/params";
+import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
+import { runScopeWhere } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -46,20 +50,17 @@ export const loader = defineHandler(async (c) => {
     url.searchParams.get("segment"),
     defaultSegmentForRange(range),
   );
-  const branchParam = url.searchParams.get("branch");
-  const branchFilter =
-    !branchParam || branchParam === ALL_BRANCHES ? null : branchParam;
+  const { branchParam, branchFilter } = normalizeBranchFilter(
+    url.searchParams.get("branch"),
+  );
 
   const branches = await loadProjectBranches(scope);
 
-  const nowSec = Math.floor(Date.now() / 1000);
-  const rangeSec = rangeToSeconds(range);
-  const windowStartSec = rangeSec ? nowSec - rangeSec : 0;
+  const { nowSec, windowStartSec, rangeSec } = resolveAnalyticsWindow(range);
   const expr = bucketExpr(segment);
 
   const trendConditions = [
-    eq(runs.teamId, scope.teamId),
-    eq(runs.projectId, scope.projectId),
+    runScopeWhere(scope),
     gte(runs.createdAt, windowStartSec),
   ];
   if (branchFilter) trendConditions.push(eq(runs.branch, branchFilter));
@@ -79,9 +80,7 @@ export const loader = defineHandler(async (c) => {
     const earliest = await db
       .select({ first: sql<number | null>`min(${runs.createdAt})` })
       .from(runs)
-      .where(
-        and(eq(runs.teamId, scope.teamId), eq(runs.projectId, scope.projectId)),
-      );
+      .where(runScopeWhere(scope));
     shellStartSec = earliest[0]?.first ?? nowSec;
   }
 

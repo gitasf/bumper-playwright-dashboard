@@ -29,18 +29,18 @@ Non-goals (explicitly out of scope):
 
 ## Tech Stack
 
-| Layer          | Technology                                          | Why                                                                                                                                               |
-| -------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Framework      | **Void**                                            | Fullstack Vite plugin + deploy platform for Cloudflare. File-based Hono routing + Inertia-style server-rendered pages with co-located loaders.    |
-| Data store     | **Single Cloudflare D1**                            | One SQLite database holds auth, tenancy, runs, and derived rows. Tenant isolation is logical (filter by `teamId`/`projectId`), not physical.      |
-| Query builder  | **Drizzle ORM**                                     | Ships with Void (`void/db`); schema in `db/schema.ts`; typed routes + typed fetch client. Multi-statement writes via D1 `db.batch`.               |
-| Auth/tenancy   | **Better Auth via `void/auth`**                     | Sessions (email + password, optional GitHub OAuth). Better Auth's own tables are void-managed; our tenancy tables live in the same D1.            |
-| Realtime       | **`void/live`**                                     | DO-backed pub-bus; ingest publishes on topic `run:<runId>`, run detail/list islands subscribe via `useRunProgress`.                               |
-| Object storage | **Cloudflare R2**                                   | S3-compatible storage for traces, screenshots, videos. 10GB free, zero egress charges. Artifacts uploaded and downloaded via presigned URLs.      |
-| Reporter       | **`@wrightful/reporter`**                           | Custom Playwright reporter that streams per-test results live as the suite runs (open run → append batches → complete). Not a JSON-file uploader. |
-| CI integration | **Reporter PR comment**                             | Opt-in `postPrComment` upserts a PR comment with run summary, tallies, and a dashboard link, posted from CI with the runner's `GITHUB_TOKEN`.     |
-| API auth       | **Bearer API keys**                                 | Per-project keys, SHA-256 hashed at rest, looked up by 8-char prefix. Multiple keys per project with individual revocation.                       |
-| Dashboard auth | **Better Auth** (sessions; email + optional GitHub) | Email/password sign-in by default, optional GitHub OAuth. Session cookie gates the UI.                                                            |
+| Layer          | Technology                                          | Why                                                                                                                                                                                                     |
+| -------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Framework      | **Void**                                            | Fullstack Vite plugin + deploy platform for Cloudflare. File-based Hono routing + Inertia-style server-rendered pages with co-located loaders.                                                          |
+| Data store     | **Single Cloudflare D1**                            | One SQLite database holds auth, tenancy, runs, and derived rows. Tenant isolation is logical (filter by `teamId`/`projectId`), not physical.                                                            |
+| Query builder  | **Drizzle ORM**                                     | Ships with Void (`void/db`); schema in `db/schema.ts`; typed routes + typed fetch client. Multi-statement writes via D1 `db.batch`.                                                                     |
+| Auth/tenancy   | **Better Auth via `void/auth`**                     | Sessions (email + password, optional GitHub OAuth). Better Auth's own tables are void-managed; our tenancy tables live in the same D1.                                                                  |
+| Realtime       | **`void/live`**                                     | DO-backed pub-bus; ingest publishes on topic `run:<runId>`, run detail/list islands subscribe via `useRunProgress`.                                                                                     |
+| Object storage | **Cloudflare R2**                                   | S3-compatible storage for traces, screenshots, videos. 10GB free, zero egress charges. Artifacts are uploaded and downloaded through worker routes (worker-proxied PUT/GET; no presigned R2 URL today). |
+| Reporter       | **`@wrightful/reporter`**                           | Custom Playwright reporter that streams per-test results live as the suite runs (open run → append batches → complete). Not a JSON-file uploader.                                                       |
+| CI integration | **Reporter PR comment**                             | Opt-in `postPrComment` upserts a PR comment with run summary, tallies, and a dashboard link, posted from CI with the runner's `GITHUB_TOKEN`.                                                           |
+| API auth       | **Bearer API keys**                                 | Per-project keys, SHA-256 hashed at rest, looked up by 8-char prefix. Multiple keys per project with individual revocation.                                                                             |
+| Dashboard auth | **Better Auth** (sessions; email + optional GitHub) | Email/password sign-in by default, optional GitHub OAuth. Session cookie gates the UI.                                                                                                                  |
 
 ### Why Void
 
@@ -68,14 +68,14 @@ The trade-off accepted: isolation is now logical, not physical. Every run-scoped
 
 For the canonical view, see [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md). One-paragraph summary:
 
-A single Cloudflare Worker (a Void app) hosts both the streaming ingest API (`/api/runs/*`, `/api/artifacts/*`) and the server-rendered dashboard UI (`/t/:teamSlug/p/:projectSlug/…`). API requests authenticate with a project-scoped Bearer key; dashboard requests carry a Better Auth session cookie. All reads/writes go to a single D1 database via Drizzle — auth/tenancy tables and run/derived tables live together, isolated logically by `teamId`/`projectId`. Artifact bytes go to R2 via presigned PUT/GET. Realtime progress is published on `void/live` topic `run:<runId>`, which the run-detail and run-list islands subscribe to via `useRunProgress`.
+A single Cloudflare Worker (a Void app) hosts both the streaming ingest API (`/api/runs/*`, `/api/artifacts/*`) and the server-rendered dashboard UI (`/t/:teamSlug/p/:projectSlug/…`). API requests authenticate with a project-scoped Bearer key; dashboard requests carry a Better Auth session cookie. All reads/writes go to a single D1 database via Drizzle — auth/tenancy tables and run/derived tables live together, isolated logically by `teamId`/`projectId`. Artifact bytes go to R2 via worker-proxied PUT/GET (the worker is on the byte path; not presigned R2 URLs). Realtime progress is published on `void/live` topic `run:<runId>`, which the run-detail and run-list islands subscribe to via `useRunProgress`.
 
 ### Streaming ingest flow
 
 The reporter doesn't dump a JSON file at the end of the suite — it streams. Three phases:
 
 - `onBegin` → `POST /api/runs` opens the run. The reporter declares the planned test list and gets back a `runId`.
-- `onTestEnd` → buffer per test until all retries are settled, then `POST /api/runs/:runId/results` in batches. Each response returns `clientKey → testResultId`, which the reporter uses to register and PUT artifacts via `POST /api/artifacts/register` + presigned R2 URLs.
+- `onTestEnd` → buffer per test until all retries are settled, then `POST /api/runs/:runId/results` in batches. Each response returns `clientKey → testResultId`, which the reporter uses to register and PUT artifacts via `POST /api/artifacts/register` (which returns a relative worker upload URL; bytes stream through the worker into R2, not via presigned R2 URLs).
 - `onEnd` → `POST /api/runs/:runId/complete` sets the terminal status.
 
 The route handlers are auth + translation only; the batch pipeline lives behind `openRun` / `appendRunResults` / `completeRun` in `apps/dashboard/src/lib/ingest.ts`. Per-test emission means one row per test at its final outcome, with retries aggregated into `flaky`. Wire types live in both `packages/reporter/src/types.ts` (TypeScript) and `apps/dashboard/src/lib/schemas.ts` (Zod) — keep them in sync; `packages/reporter/src/__tests__/contract.test.ts` is the canary.
@@ -180,9 +180,9 @@ Playwright's internal `test.id` is not stable across runs. We generate our own b
 
 To keep R2 storage manageable, the default reporter config uploads traces/screenshots/videos only for failed and flaky tests. Users can override with `artifacts: 'all'`. This matches Playwright's recommended `trace: 'on-first-retry'` and `screenshot: 'only-on-failure'` config.
 
-### Presigned R2 URLs for artifact serving
+### Worker-proxied artifact upload + signed-token download
 
-Artifacts upload directly from the reporter to R2 (presigned PUT) and are served from R2 to the browser (signed token containing the R2 key). The Worker is never in the byte path. This avoids Worker CPU time on large files and avoids the response-size cap. Served content types are normalized against an allowlist with `Content-Disposition: attachment` to prevent stored-XSS via artifact downloads.
+Artifacts are uploaded by the reporter to a worker route (`PUT /api/artifacts/:id/upload`, returned by `register`) and served to the browser from a worker route (`GET /api/artifacts/:id/download`) gated by a short-lived HMAC token that carries the R2 key (so GETs skip the DB). Both directions are **worker-proxied** — the worker `storage.put`s the upload body and `storage.get`s + streams the download bytes, so it is on the byte path for every artifact transfer. This means Worker CPU time, egress, and request/response-size limits apply to artifact traffic; capacity and failure-mode planning must account for the worker on the data path. (A real presigned-R2 model that takes the worker off the byte path would be a separate, deliberate architectural change.) Served content types are normalized against an allowlist with `Content-Disposition: attachment` to prevent stored-XSS via artifact downloads.
 
 ### Server-rendered pages over a React SPA
 

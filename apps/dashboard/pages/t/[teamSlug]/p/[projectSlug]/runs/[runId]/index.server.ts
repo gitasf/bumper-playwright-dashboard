@@ -1,8 +1,10 @@
 import { defineHandler, type InferProps } from "void";
 import { and, db, desc, eq } from "void/db";
-import { runs, testResults } from "@schema";
+import { runs } from "@schema";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import { loadProjectBranches } from "@/lib/branches-query";
+import { loadRunResultsPage } from "@/lib/run-results-page";
+import { runByIdWhere, runScopeWhere } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 import { loadFailingArtifactActions } from "@/lib/test-artifact-actions";
 
@@ -26,7 +28,7 @@ export const loader = defineHandler(async (c) => {
   const runRows = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.projectId, scope.projectId), eq(runs.id, runId)))
+    .where(runByIdWhere(scope, runId))
     .limit(1);
   const run = runRows[0];
   if (!run) throw new Response("Not Found", { status: 404 });
@@ -41,14 +43,11 @@ export const loader = defineHandler(async (c) => {
   const origin = url.origin;
 
   // History: last HISTORY_LIMIT runs, optionally filtered by branch.
-  const historyConditions = [
-    eq(runs.teamId, scope.teamId),
-    eq(runs.projectId, scope.projectId),
-  ];
+  const historyConditions = [runScopeWhere(scope)];
   if (effectiveBranch !== ALL_BRANCHES) {
     historyConditions.push(eq(runs.branch, effectiveBranch));
   }
-  const [history, branches, testRows] = await Promise.all([
+  const [history, branches, resultsPage] = await Promise.all([
     db
       .select({
         id: runs.id,
@@ -64,34 +63,24 @@ export const loader = defineHandler(async (c) => {
       .orderBy(desc(runs.createdAt))
       .limit(HISTORY_LIMIT),
     loadProjectBranches(scope),
-    db
-      .select({
-        id: testResults.id,
-        testId: testResults.testId,
-        title: testResults.title,
-        file: testResults.file,
-        projectName: testResults.projectName,
-        status: testResults.status,
-        durationMs: testResults.durationMs,
-        retryCount: testResults.retryCount,
-        errorMessage: testResults.errorMessage,
-        errorStack: testResults.errorStack,
-        createdAt: testResults.createdAt,
-      })
-      .from(testResults)
-      .where(
-        and(
-          eq(testResults.projectId, scope.projectId),
-          eq(testResults.runId, runId),
-        ),
-      )
-      .orderBy(desc(testResults.createdAt), desc(testResults.id))
-      .limit(TESTS_LIMIT),
+    // Canonical "first page of a run's testResults as RunProgressTest[]" —
+    // shared with the GET /results back-paginator so the SSR seed and any
+    // later pages can never diverge in shape, ordering, or status
+    // normalization (see @/lib/run-results-page).
+    loadRunResultsPage(scope, runId, {
+      cursor: null,
+      limit: TESTS_LIMIT,
+      status: null,
+    }),
   ]);
+
+  // The full-run select() above already 404s on a foreign/missing run, so the
+  // run is owned here; loadRunResultsPage's own ownership probe agrees.
+  const tests = resultsPage?.results ?? [];
 
   const artifactActionsByTestId = await loadFailingArtifactActions(
     scope,
-    testRows.map((t) => ({
+    tests.map((t) => ({
       id: t.id,
       status: t.status,
       retryCount: t.retryCount,
@@ -117,18 +106,7 @@ export const loader = defineHandler(async (c) => {
     effectiveBranch,
     tab,
     pathname: url.pathname,
-    tests: testRows.map((r) => ({
-      id: r.id,
-      testId: r.testId,
-      title: r.title,
-      file: r.file,
-      projectName: r.projectName,
-      status: r.status,
-      durationMs: r.durationMs,
-      retryCount: r.retryCount,
-      errorMessage: r.errorMessage,
-      errorStack: r.errorStack,
-    })),
+    tests,
     artifactActionsByTestId,
   };
 });

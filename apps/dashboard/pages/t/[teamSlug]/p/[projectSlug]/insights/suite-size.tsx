@@ -10,8 +10,9 @@ import { PageHeader } from "@/components/page-header";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import { Card, CardPanel } from "@/components/ui/card";
-import { bucketKey, buildEmptyBuckets } from "@/lib/analytics/bucketing";
+import { alignBuckets } from "@/lib/analytics/bucketing";
 import { cn } from "@/lib/cn";
+import { makeHrefBuilder } from "@/lib/page-links";
 import type { Props } from "./suite-size.server";
 
 const COUNT_SERIES: LineChartSeries[] = [
@@ -40,15 +41,16 @@ export default function SuiteSizePage({
   pathname,
   ranges,
 }: Props) {
-  const shells = buildEmptyBuckets(segment, shellStartSec, nowSec);
-  const peaksByKey = new Map(
-    trendRows.map((r) => [bucketKey(r.bucket), r.peak]),
-  );
-  const buckets: LineChartBucket[] = shells.map((s) => {
+  const buckets: LineChartBucket[] = alignBuckets(
+    segment,
+    shellStartSec,
+    nowSec,
+    trendRows,
+  ).map((s) => {
     // Empty buckets — bucket data hasn't been recorded — render as gaps in
     // the line. `null` skips that segment instead of pulling the line down
     // to zero, which would falsely imply "all tests were deleted".
-    const peak = peaksByKey.get(s.key);
+    const peak = s.row?.peak;
     return {
       key: s.key,
       label: s.label,
@@ -86,14 +88,11 @@ export default function SuiteSizePage({
   const growthPct =
     firstPeak === 0 ? 0 : ((lastPeak - firstPeak) / firstPeak) * 100;
 
-  const hrefWith = (overrides: Record<string, string>): string => {
-    const p = new URLSearchParams();
-    p.set("range", range);
-    p.set("segment", segment);
-    if (branchParam) p.set("branch", branchParam);
-    for (const [k, v] of Object.entries(overrides)) p.set(k, v);
-    return `${pathname}?${p.toString()}`;
-  };
+  const { with: hrefWith } = makeHrefBuilder(pathname, {
+    range,
+    segment,
+    branch: branchParam,
+  });
 
   return (
     <>

@@ -1,6 +1,7 @@
 import { defineHandler, type InferProps } from "void";
 import { env } from "void/env";
 import { getSession } from "void/auth";
+import { githubOAuthEnabled, openSignupAllowed } from "@/lib/config";
 
 export type Props = InferProps<typeof loader>;
 
@@ -14,11 +15,8 @@ export const loader = defineHandler(async (c) => {
   if (session) {
     return c.redirect("/");
   }
-  const githubEnabled = Boolean(
-    env.AUTH_GITHUB_CLIENT_ID && env.AUTH_GITHUB_CLIENT_SECRET,
-  );
   return {
-    githubEnabled,
-    signupAllowed: env.ALLOW_OPEN_SIGNUP,
+    githubEnabled: githubOAuthEnabled(env),
+    signupAllowed: openSignupAllowed(env.ALLOW_OPEN_SIGNUP),
   };
 });

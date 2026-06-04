@@ -16,13 +16,25 @@ const REPORT_PATH = inject("reportPath");
 const SESSION_COOKIE = inject("sessionCookie");
 const TEAM_SLUG = inject("teamSlug");
 const PROJECT_SLUG = inject("projectSlug");
-const BETTER_AUTH_SECRET = inject("betterAuthSecret");
+// The secret the booted dashboard actually signs artifact-download tokens with,
+// already resolved by the fixture (dedicated ARTIFACT_TOKEN_SECRET when set,
+// else BETTER_AUTH_SECRET). We sign with THIS rather than re-deriving the
+// `?? BETTER_AUTH_SECRET` precedence here, so the forge can never silently
+// diverge from the dashboard's resolveArtifactTokenSecret the moment a
+// dedicated secret is introduced.
+const ARTIFACT_TOKEN_SECRET = inject("artifactTokenSecret");
 
 // Mirrors apps/dashboard/src/lib/artifact-tokens.ts#signArtifactToken.
 // Artifact downloads are gated by a short-lived HMAC token the dashboard mints
 // server-side on authenticated pages; the e2e suite holds the same secret, so
 // we can forge a valid token rather than scrape one out of the rendered HTML.
 // Token format: `${base64url(JSON({r2Key, contentType, exp}))}.${base64url(HMAC(body))}`.
+//
+// This is a deliberate cross-package clone (the canonical signer is async
+// WebCrypto running in workerd; this runs sync in the Node Vitest harness). The
+// body-shape + HMAC/base64url contract is guarded by a canary in the dashboard
+// suite — apps/dashboard/src/__tests__/artifact-tokens.test.ts ("e2e token
+// forging contract"). Keep this in sync with that canary; a drift fails there.
 function base64url(input: Buffer): string {
   return input
     .toString("base64")
@@ -41,7 +53,7 @@ function signArtifactToken(
     Buffer.from(JSON.stringify({ r2Key, contentType, exp })),
   );
   const sig = base64url(
-    createHmac("sha256", BETTER_AUTH_SECRET).update(body).digest(),
+    createHmac("sha256", ARTIFACT_TOKEN_SECRET).update(body).digest(),
   );
   return `${body}.${sig}`;
 }
@@ -169,11 +181,17 @@ describe("Wrightful E2E", () => {
       const detailRes = await fetchAuthed(`${PROJECT_URL}/runs/${runId}`);
       const detailHtml = await detailRes.text();
       expect(detailRes.status).toBe(200);
-      expect(
-        detailHtml.includes("demo") ||
-          detailHtml.includes("spec") ||
-          detailHtml.includes("Test Results"),
-      ).toBe(true);
+      // Two assertions instead of a loose OR over 'demo'||'spec'||'Test Results'
+      // (which passed on nearly any non-empty page — "Test Results" isn't even
+      // a string the Void run-detail page renders):
+      //   1. Stable page chrome — the Tests/Environment tab pills — proves we
+      //      landed on the run-detail page rather than an error/empty render.
+      //   2. A streamed test-file marker (`.spec`, from the demo suite's
+      //      *.spec.ts files) proves real test-result data rendered, not just
+      //      the page shell.
+      expect(detailHtml).toContain("Tests");
+      expect(detailHtml).toContain("Environment");
+      expect(detailHtml).toContain(".spec");
     });
   });
 

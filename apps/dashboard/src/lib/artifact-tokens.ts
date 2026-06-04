@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { env } from "void/env";
+import { resolveArtifactTokenSecret } from "@/lib/config";
+import {
+  base64urlDecode,
+  base64urlEncode,
+  timingSafeEqualBytes,
+} from "@/lib/token-crypto";
 
 const DEFAULT_TTL_SECONDS = 60 * 60; // 1 hour
 
@@ -24,30 +30,13 @@ const signedPayloadSchema = z.object({
 
 type SignedPayload = z.infer<typeof signedPayloadSchema>;
 
-function base64urlEncode(bytes: Uint8Array): string {
-  let str = "";
-  for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
-  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function base64urlDecode(str: string): Uint8Array | null {
-  try {
-    const padded = str.replace(/-/g, "+").replace(/_/g, "/");
-    const pad = padded.length % 4;
-    const binary = atob(pad ? padded + "=".repeat(4 - pad) : padded);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes;
-  } catch {
-    return null;
-  }
-}
-
 async function getKey(): Promise<CryptoKey> {
   // Prefer a dedicated artifact-token secret so these short-lived, broadly
   // minted download capabilities can be rotated independently of the session
-  // secret. Falls back to BETTER_AUTH_SECRET when unset (backward compatible).
-  const secret = env.ARTIFACT_TOKEN_SECRET ?? env.BETTER_AUTH_SECRET;
+  // secret. The `ARTIFACT_TOKEN_SECRET ?? BETTER_AUTH_SECRET` precedence is
+  // owned by resolveArtifactTokenSecret() in @/lib/config so the e2e HMAC
+  // forger signs under provably the same rule (see its docstring).
+  const secret = resolveArtifactTokenSecret(env);
   return crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -57,11 +46,31 @@ async function getKey(): Promise<CryptoKey> {
   );
 }
 
-function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
+/**
+ * The one place that owns the artifact-download URL shape
+ * (`/api/artifacts/:id/download?t=<token>`). Pure + exported so every caller —
+ * the server-side action builder, the test-detail page island, and (by
+ * contract) the e2e suite — pairs an artifact id with a signed token the same
+ * way. Deleting this re-scatters the literal across both loaders and the page.
+ */
+export function signedDownloadHref(artifactId: string, token: string): string {
+  return `/api/artifacts/${artifactId}/download?t=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Wrap a signed download URL in a trace.playwright.dev link. The trace viewer
+ * fetches the absolute download URL, so this needs the request `origin`. Pure
+ * + exported alongside `signedDownloadHref` so the trace-viewer wrap lives next
+ * to the download-URL shape it depends on (the viewer URL embeds the download
+ * URL verbatim).
+ */
+export function signedTraceViewerUrl(
+  origin: string,
+  artifactId: string,
+  token: string,
+): string {
+  const downloadUrl = `${origin}${signedDownloadHref(artifactId, token)}`;
+  return `https://trace.playwright.dev/?trace=${encodeURIComponent(downloadUrl)}`;
 }
 
 export async function signArtifactToken(
@@ -101,7 +110,7 @@ export async function verifyArtifactToken(
     key,
     new TextEncoder().encode(body),
   );
-  if (!timingSafeEqual(new Uint8Array(expected), provided)) return null;
+  if (!timingSafeEqualBytes(new Uint8Array(expected), provided)) return null;
 
   const bodyBytes = base64urlDecode(body);
   if (!bodyBytes) return null;

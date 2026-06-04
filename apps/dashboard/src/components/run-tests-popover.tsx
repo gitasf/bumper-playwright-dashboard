@@ -5,6 +5,7 @@ import { useCallback, useState } from "react";
 import { fetch } from "void/client";
 import { Link } from "@void/react";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
+import { statusLabel, statusToken } from "@/lib/status";
 
 type Variant = "failed" | "flaky" | "passed" | "skipped";
 
@@ -20,19 +21,10 @@ type Props = {
 const TRIGGER_CLASS =
   "relative z-10 inline-flex shrink-0 cursor-pointer items-center font-mono text-[11px] tabular-nums outline-none transition-colors hover:underline focus-visible:underline";
 
-const TRIGGER_COLOR: Record<Variant, string> = {
-  passed: "var(--pass)",
-  failed: "var(--fail)",
-  flaky: "var(--flaky)",
-  skipped: "var(--skipped)",
-};
-
-const VARIANT_LABEL: Record<Variant, string> = {
-  failed: "failed",
-  flaky: "flaky",
-  passed: "passed",
-  skipped: "skipped",
-};
+/** Sentence-case (lowercase) label for inline use, e.g. "2 failed tests". */
+function variantLabel(variant: Variant): string {
+  return statusLabel(variant).toLowerCase();
+}
 
 function fetchTestPreview(
   teamSlug: string,
@@ -82,7 +74,7 @@ export function RunTestsPopover({
         className={TRIGGER_CLASS}
         onFocus={prefetch}
         onPointerEnter={prefetch}
-        style={{ color: TRIGGER_COLOR[variant] }}
+        style={{ color: statusToken(variant) }}
       >
         {count}
       </PopoverTrigger>
@@ -90,8 +82,8 @@ export function RunTestsPopover({
         <div className="px-4 py-3 border-b border-border">
           <h3 className="text-xs font-semibold tracking-tight">
             {isLoading || !items
-              ? `${count} ${VARIANT_LABEL[variant]} tests`
-              : `Showing ${items.length} of ${count} ${VARIANT_LABEL[variant]} tests`}
+              ? `${count} ${variantLabel(variant)} tests`
+              : `Showing ${items.length} of ${count} ${variantLabel(variant)} tests`}
           </h3>
         </div>
 
@@ -117,7 +109,7 @@ export function RunTestsPopover({
           </ul>
         ) : items.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-            No {VARIANT_LABEL[variant]} tests found.
+            No {variantLabel(variant)} tests found.
           </div>
         ) : (
           <ul className="divide-y divide-border/60 max-h-80 overflow-y-auto">

@@ -5,22 +5,8 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1779540096718,
-      "tag": "20260523124136_dizzy_wong",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1780081908709,
-      "tag": "20260529191148_true_blue_shield",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1780093530571,
-      "tag": "20260529222530_stale_ravenous",
+      "when": 1780585296171,
+      "tag": "20260604150136_modern_lila_cheney",
       "breakpoints": true
     }
   ]

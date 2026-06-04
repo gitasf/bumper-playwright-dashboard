@@ -1,24 +1,30 @@
-import type { MiddlewareHandler } from "hono";
-import { defineMiddleware } from "void";
-
 /**
  * Cloudflare native rate limiter wrapper. Each limiter is declared in
  * `wrangler.jsonc#ratelimits` (Void doesn't accept `ratelimits` in
  * `void.json#worker` so it lives in the wrangler fallback file). Bindings
  * are injected on the worker `env` at runtime.
  *
- * `keyFn` returns a stable string per requesting tenant. Returning `null`
- * skips the limiter (e.g. an artifact download with no token shouldn't
- * be keyed by IP because that punishes a single user behind a NAT).
+ * A `key` of `null` skips the limiter (e.g. an artifact download with no
+ * token shouldn't be keyed by IP because that punishes a single user behind
+ * a NAT).
  */
 interface RateLimiterBinding {
   limit(input: { key: string }): Promise<{ success: boolean }>;
 }
 
-type RateLimiterBindingName =
-  | "AUTH_RATE_LIMITER"
-  | "API_RATE_LIMITER"
-  | "ARTIFACT_RATE_LIMITER";
+/**
+ * The rate-limiter bindings the application references, as a runtime array so
+ * a test can assert a bijection against `wrangler.jsonc#ratelimits[].name`
+ * (see `src/__tests__/rate-limit-config.test.ts`). This is the single source
+ * of truth for the names — the union type below is derived from it.
+ */
+export const RATE_LIMITER_BINDING_NAMES = [
+  "AUTH_RATE_LIMITER",
+  "API_RATE_LIMITER",
+  "ARTIFACT_RATE_LIMITER",
+] as const;
+
+type RateLimiterBindingName = (typeof RATE_LIMITER_BINDING_NAMES)[number];
 
 type RateLimiterEnv = Partial<
   Record<RateLimiterBindingName, RateLimiterBinding>
@@ -31,9 +37,7 @@ type RateLimiterEnv = Partial<
  * Returns `false` only when the limiter is present AND reports the key over
  * its budget. `key === null` means "skip this limiter for this request".
  *
- * Shared by the `rateLimit()` per-route factory and the global
- * `middleware/03.rate-limit.ts` path-matched gate so both honor identical
- * fail-open-in-dev semantics.
+ * Consumed by the global `middleware/03.rate-limit.ts` path-matched gate.
  */
 export async function checkRateLimit(
   env: unknown,
@@ -45,19 +49,6 @@ export async function checkRateLimit(
   if (!limiter) return true;
   const { success } = await limiter.limit({ key });
   return success;
-}
-
-export function rateLimit(
-  bindingName: RateLimiterBindingName,
-  keyFn: (c: Parameters<MiddlewareHandler>[0]) => string | null,
-): MiddlewareHandler {
-  return defineMiddleware(async (c, next) => {
-    const allowed = await checkRateLimit(c.env, bindingName, keyFn(c));
-    if (!allowed) {
-      return c.json({ error: "Too many requests" }, 429);
-    }
-    await next();
-  });
 }
 
 /**

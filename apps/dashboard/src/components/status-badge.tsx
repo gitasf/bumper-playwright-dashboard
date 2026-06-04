@@ -1,16 +1,5 @@
-import type { VariantProps } from "class-variance-authority";
-import { Badge, badgeVariants } from "@/components/ui/badge";
-
-type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>["variant"]>;
-
-const STATUS_VARIANT: Record<string, BadgeVariant> = {
-  passed: "success",
-  failed: "error",
-  timedout: "error",
-  flaky: "warning",
-  interrupted: "warning",
-  skipped: "secondary",
-};
+import { Badge } from "@/components/ui/badge";
+import { statusBadgeVariant } from "@/lib/status";
 
 interface StatusBadgeProps {
   status: string;
@@ -18,8 +7,6 @@ interface StatusBadgeProps {
 
 export function StatusBadge({ status }: StatusBadgeProps) {
   return (
-    <Badge variant={STATUS_VARIANT[status] ?? "outline"}>
-      {status.toUpperCase()}
-    </Badge>
+    <Badge variant={statusBadgeVariant(status)}>{status.toUpperCase()}</Badge>
   );
 }

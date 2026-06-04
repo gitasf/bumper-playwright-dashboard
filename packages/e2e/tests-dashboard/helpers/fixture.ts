@@ -11,6 +11,12 @@ export interface SerializedFixture {
   teamSlug: string;
   projectSlug: string;
   betterAuthSecret: string;
+  /**
+   * The secret the booted dashboard signs artifact-download tokens with
+   * (dedicated ARTIFACT_TOKEN_SECRET when provisioned, else betterAuthSecret).
+   * Any spec forging a download token must sign with this, not betterAuthSecret.
+   */
+  artifactTokenSecret: string;
   email: string;
   /**
    * Plaintext password for the seeded user. Local-only, scoped to a fresh
@@ -35,6 +41,7 @@ export function readFixture(): SerializedFixture {
     !("teamSlug" in parsed) ||
     !("projectSlug" in parsed) ||
     !("betterAuthSecret" in parsed) ||
+    !("artifactTokenSecret" in parsed) ||
     !("email" in parsed) ||
     !("password" in parsed)
   ) {

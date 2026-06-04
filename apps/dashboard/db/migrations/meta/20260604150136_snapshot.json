@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "aa256403-3fd7-49c6-a197-6daea0010ea1",
+  "id": "1a77cafa-8041-43d8-9706-472b64c2ba05",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "apiKeys": {
@@ -185,6 +185,18 @@
           "name": "artifacts_testResultId_idx",
           "columns": ["testResultId"],
           "isUnique": false
+        },
+        "artifacts_identity_uq": {
+          "name": "artifacts_identity_uq",
+          "columns": [
+            "projectId",
+            "testResultId",
+            "type",
+            "name",
+            "attempt",
+            "COALESCE(\"role\", '')"
+          ],
+          "isUnique": true
         }
       },
       "foreignKeys": {
@@ -509,6 +521,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "lastActivityAt": {
+          "name": "lastActivityAt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "completedAt": {
           "name": "completedAt",
           "type": "integer",
@@ -541,6 +560,11 @@
         "runs_project_actor_idx": {
           "name": "runs_project_actor_idx",
           "columns": ["projectId", "actor"],
+          "isUnique": false
+        },
+        "runs_status_lastActivityAt_idx": {
+          "name": "runs_status_lastActivityAt_idx",
+          "columns": ["status", "lastActivityAt"],
           "isUnique": false
         }
       },
@@ -866,11 +890,6 @@
         }
       },
       "indexes": {
-        "testResultAttempts_testResultId_idx": {
-          "name": "testResultAttempts_testResultId_idx",
-          "columns": ["testResultId"],
-          "isUnique": false
-        },
         "testResultAttempts_testResultId_attempt_uq": {
           "name": "testResultAttempts_testResultId_attempt_uq",
           "columns": ["testResultId", "attempt"],
@@ -1010,16 +1029,6 @@
           "columns": ["testId", "createdAt"],
           "isUnique": false
         },
-        "testResults_runId_idx": {
-          "name": "testResults_runId_idx",
-          "columns": ["runId"],
-          "isUnique": false
-        },
-        "testResults_status_createdAt_idx": {
-          "name": "testResults_status_createdAt_idx",
-          "columns": ["status", "createdAt"],
-          "isUnique": false
-        },
         "testResults_runId_testId_idx": {
           "name": "testResults_runId_testId_idx",
           "columns": ["runId", "testId"],
@@ -1028,6 +1037,16 @@
         "testResults_project_runId_idx": {
           "name": "testResults_project_runId_idx",
           "columns": ["projectId", "runId"],
+          "isUnique": false
+        },
+        "testResults_project_createdAt_idx": {
+          "name": "testResults_project_createdAt_idx",
+          "columns": ["projectId", "createdAt"],
+          "isUnique": false
+        },
+        "testResults_project_testId_createdAt_idx": {
+          "name": "testResults_project_testId_createdAt_idx",
+          "columns": ["projectId", "testId", "createdAt"],
           "isUnique": false
         }
       },
@@ -1088,11 +1107,6 @@
         }
       },
       "indexes": {
-        "testTags_tag_idx": {
-          "name": "testTags_tag_idx",
-          "columns": ["tag"],
-          "isUnique": false
-        },
         "testTags_testResultId_idx": {
           "name": "testTags_testResultId_idx",
           "columns": ["testResultId"],
@@ -1226,6 +1240,14 @@
     "columns": {}
   },
   "internal": {
-    "indexes": {}
+    "indexes": {
+      "artifacts_identity_uq": {
+        "columns": {
+          "COALESCE(\"role\", '')": {
+            "isExpression": true
+          }
+        }
+      }
+    }
   }
 }

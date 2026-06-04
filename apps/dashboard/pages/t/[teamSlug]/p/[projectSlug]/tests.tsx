@@ -1,9 +1,10 @@
-import { SearchIcon } from "lucide-react";
 import { Link } from "@void/react";
 import { AnalyticsButtonGroup } from "@/components/analytics/button-group";
+import { OutcomeBar } from "@/components/outcome-bar";
 import { PageHeader } from "@/components/page-header";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { SearchFilterInput } from "@/components/search-filter-input";
 import { TablePaginationFooter } from "@/components/table-pagination-footer";
 import {
   Empty,
@@ -19,8 +20,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn } from "@/lib/cn";
-import { STATUS_COLORS } from "@/lib/status";
+import { makeHrefBuilder } from "@/lib/page-links";
+import { statusToken } from "@/lib/status";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
 import type { Props } from "./tests.server";
 
@@ -48,22 +49,12 @@ export default function TestsPage({
 }: Props) {
   const base = `/t/${project.teamSlug}/p/${project.slug}`;
 
-  const hrefWith = (overrides: Record<string, string | null>): string => {
-    const p = new URLSearchParams();
-    p.set("range", range);
-    if (branchParam) p.set("branch", branchParam);
-    if (q) p.set("q", q);
-    if (currentPage > 1) p.set("page", String(currentPage));
-    for (const [k, v] of Object.entries(overrides)) {
-      if (v === null) p.delete(k);
-      else p.set(k, v);
-    }
-    const qs = p.toString();
-    return qs ? `${pathname}?${qs}` : pathname;
-  };
-
-  const pageHref = (page: number): string =>
-    hrefWith({ page: page === 1 ? null : String(page) });
+  const { with: hrefWith, pageHref } = makeHrefBuilder(pathname, {
+    range,
+    branch: branchParam,
+    q,
+    page: currentPage > 1 ? String(currentPage) : null,
+  });
 
   return (
     <>
@@ -80,21 +71,15 @@ export default function TestsPage({
       />
 
       <div className="sticky top-0 z-[4] flex shrink-0 flex-wrap items-center gap-2.5 border-b border-border bg-background px-6 py-2.5">
-        <form className="relative max-w-[360px] flex-1" method="get">
+        <form className="max-w-[360px] flex-1" method="get">
           <input name="range" type="hidden" value={range} />
           {branchParam ? (
             <input name="branch" type="hidden" value={branchParam} />
           ) : null}
-          <SearchIcon
-            aria-hidden
-            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            className="h-7 w-full rounded-md border border-input bg-card pl-8 pr-2.5 text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/24"
+          <SearchFilterInput
             defaultValue={q}
             name="q"
             placeholder="Search by test name or path…"
-            type="search"
           />
         </form>
         <RunHistoryBranchFilter
@@ -198,9 +183,13 @@ export default function TestsPage({
                         {row.n.toLocaleString()}
                       </TableCell>
                       <TableCell className="w-[200px] px-4 py-3 align-middle">
-                        <OutcomeMix
+                        <OutcomeBar
+                          emptyDash
                           failed={row.failCount}
                           flaky={row.flakyCount}
+                          height={6}
+                          maxWidth={180}
+                          minWidth={0}
                           passed={row.passedCount}
                           skipped={row.skippedCount}
                         />
@@ -245,52 +234,8 @@ function mixToneColor(row: {
   flakyCount: number;
   passedCount: number;
 }): string {
-  if (row.failCount > 0) return STATUS_COLORS.failed;
-  if (row.flakyCount > 0) return STATUS_COLORS.flaky;
-  if (row.passedCount > 0) return STATUS_COLORS.passed;
-  return STATUS_COLORS.skipped;
-}
-
-function OutcomeMix({
-  passed,
-  flaky,
-  failed,
-  skipped,
-}: {
-  passed: number;
-  flaky: number;
-  failed: number;
-  skipped: number;
-}): React.ReactElement {
-  const total = passed + flaky + failed + skipped;
-  if (total === 0) {
-    return <div className="font-mono text-[10px] text-muted-foreground">—</div>;
-  }
-  const segments: { count: number; color: string; label: string }[] = [
-    { count: passed, color: STATUS_COLORS.passed, label: "passed" },
-    { count: flaky, color: STATUS_COLORS.flaky, label: "flaky" },
-    { count: failed, color: STATUS_COLORS.failed, label: "failed" },
-    { count: skipped, color: STATUS_COLORS.skipped, label: "skipped" },
-  ];
-  return (
-    <div
-      aria-label={`${passed} passed, ${flaky} flaky, ${failed} failed, ${skipped} skipped`}
-      className={cn(
-        "flex h-1.5 w-full max-w-[180px] overflow-hidden rounded-full bg-muted",
-      )}
-      role="img"
-    >
-      {segments.map((s) =>
-        s.count > 0 ? (
-          <span
-            key={s.label}
-            style={{
-              width: `${(s.count / total) * 100}%`,
-              backgroundColor: s.color,
-            }}
-          />
-        ) : null,
-      )}
-    </div>
-  );
+  if (row.failCount > 0) return statusToken("failed");
+  if (row.flakyCount > 0) return statusToken("flaky");
+  if (row.passedCount > 0) return statusToken("passed");
+  return statusToken("skipped");
 }

@@ -5,22 +5,13 @@ import { useNavigate } from "@/lib/navigate";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/cn";
 import { link } from "@/lib/links";
-
-interface Team {
-  slug: string;
-  name: string;
-}
-
-interface Project {
-  slug: string;
-  name: string;
-}
+import type { WorkspaceListItem } from "@/lib/shared-bundle";
 
 interface WorkspaceSwitcherProps {
-  selectedTeam: Team;
-  selectedProject: Project;
-  teams: Team[];
-  projects: Project[];
+  selectedTeam: WorkspaceListItem;
+  selectedProject: WorkspaceListItem;
+  teams: WorkspaceListItem[];
+  projects: WorkspaceListItem[];
   isOwner: boolean;
 }
 

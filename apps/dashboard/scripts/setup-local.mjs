@@ -144,7 +144,7 @@ await stage("seeding demo account…", "node", ["scripts/seed-demo.mjs"], {
   env: {
     ...process.env,
     WRIGHTFUL_QUIET: "1",
-    WRIGHTFUL_BASE_URL: baseUrl,
+    WRIGHTFUL_URL: baseUrl,
   },
 });
 
@@ -220,7 +220,20 @@ if (withHistory) {
   const seedConfig = JSON.parse(
     readFileSync(fileURLToPath(seedConfigUrl), "utf8"),
   );
+  // Build the reporter first: it's loaded by Node's resolver from
+  // packages/reporter/dist/index.js, and both the seeder's ingest client
+  // (`StreamClient`) and its v3 payload builders (consumed by generator.mjs)
+  // live there — build it before importing either so the imports don't fail
+  // with an opaque module-not-found (same guard upload-fixtures.mjs uses
+  // before Playwright loads the reporter).
+  await stage("building reporter…", "pnpm", [
+    "--filter",
+    "@wrightful/reporter",
+    "build",
+  ]);
   const { generateHistory } = await import("./seed/generator.mjs");
+  const { ingestRuns } = await import("./seed/ingest-runs.mjs");
+  const { StreamClient } = await import("@wrightful/reporter");
 
   console.log(
     `\n${pc.bold(`generating ${historyMonths} months of history (seed=${historySeed})`)}`,
@@ -231,57 +244,33 @@ if (withHistory) {
   });
   console.log(`${stageLabel("runs to ingest…")}${pc.cyan(runs.length)}`);
 
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${seedConfig.apiKey}`,
-    "X-Wrightful-Version": "3",
-  };
-  const BATCH_SIZE = 50;
-  const postJson = async (path, body) => {
-    const res = await fetch(`${baseUrl}${path}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-    if (!res.ok)
-      throw new Error(`${path} → ${res.status}: ${await res.text()}`);
-    return res.json();
-  };
+  // Single-source the ingest path through the reporter's StreamClient: it
+  // owns the protocol-version header, retry-on-5xx/429, Retry-After honoring,
+  // and the aggressive completeRun retry. No hand-rolled HTTP client here.
+  const client = new StreamClient(baseUrl, seedConfig.apiKey);
 
-  let completed = 0;
-  let failedCount = 0;
+  let reportedFailures = 0;
   const startedAt = Date.now();
   const stopSpin = startSpinner(stageLabel("ingesting runs…"));
-  for (const run of runs) {
-    try {
-      const opened = await postJson("/api/runs", run.openPayload);
-      const runId = opened.runId;
-      const results = run.resultsPayload.results;
-      for (let i = 0; i < results.length; i += BATCH_SIZE) {
-        await postJson(`/api/runs/${runId}/results`, {
-          results: results.slice(i, i + BATCH_SIZE),
-        });
+  const { completed, failed } = await ingestRuns(client, runs, {
+    onError: (err) => {
+      if (++reportedFailures <= 3) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`\n${pc.red("run failed")}: ${message}\n`);
       }
-      await postJson(`/api/runs/${runId}/complete`, run.completePayload);
-      completed++;
-    } catch (err) {
-      failedCount++;
-      if (failedCount <= 3) {
-        process.stderr.write(`\n${pc.red("run failed")}: ${err.message}\n`);
-      }
-    }
-  }
+    },
+  });
   stopSpin();
   const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
-  if (failedCount > 0) {
+  if (failed > 0) {
     console.log(
-      `${pc.yellow(completed)} ok, ${pc.red(failedCount)} failed in ${elapsedSec}s`,
+      `${pc.yellow(completed)} ok, ${pc.red(failed)} failed in ${elapsedSec}s`,
     );
   } else {
     console.log(`${pc.green("done")} (${completed} runs in ${elapsedSec}s)`);
   }
 
-  if (failedCount > 0) {
+  if (failed > 0) {
     if (spawnedServer && !spawnedServer.killed) spawnedServer.kill("SIGTERM");
     process.exit(1);
   }

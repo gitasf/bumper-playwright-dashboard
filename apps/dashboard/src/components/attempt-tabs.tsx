@@ -47,7 +47,11 @@ export function AttemptTabsBar({
   const values = items.map((i) => i.value);
   const [active, setActive] = useActiveAttempt(values, defaultValue);
   return (
-    <div className="flex gap-0 -mb-px overflow-x-auto">
+    // Flat underline tabs — same style as the run-detail Tests / Environment
+    // tab bar: text labels with an accent underline under the active tab,
+    // rather than boxed folder tabs. The active underline (`after`) sits on the
+    // wrapping header's bottom border via `-mb-px`.
+    <div className="flex items-end gap-1 overflow-x-auto">
       {items.map((item) => {
         const isActive = active === item.value;
         return (
@@ -59,13 +63,15 @@ export function AttemptTabsBar({
             }}
             aria-pressed={isActive}
             className={cn(
-              "inline-flex items-center gap-2 whitespace-nowrap rounded-t-md",
-              "border-x border-t px-4 py-2 font-mono text-xs cursor-pointer",
+              "relative inline-flex items-center gap-2 whitespace-nowrap",
+              "rounded-sm px-3 py-2 text-[13px] cursor-pointer transition-colors",
               "outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              "transition-colors",
+              // Underline sits INSIDE the button box (`bottom-0`, not `-bottom-px`)
+              // so the container's `overflow-x-auto` — which forces overflow-y to
+              // clip — can't cut it off.
               isActive
-                ? "border-border bg-background text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground",
+                ? "font-medium text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--running)] after:content-['']"
+                : "text-muted-foreground hover:text-foreground",
             )}
           >
             <span
@@ -77,7 +83,7 @@ export function AttemptTabsBar({
             />
             <span>{item.label}</span>
             {item.finalSuffix ? (
-              <span className="text-muted-foreground">{item.finalSuffix}</span>
+              <span className="text-[11px] text-fg-3">{item.finalSuffix}</span>
             ) : null}
           </button>
         );

@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import pc from "picocolors";
+import { classifyProbe } from "./probe-status.mjs";
 import { startSpinner } from "./spinner.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -59,10 +60,7 @@ export async function pickPort(preferred) {
 
 /**
  * Hit the streaming ingest endpoint with an auth header + empty body.
- * 400 = server up, auth accepted, body invalid (expected signal that our
- * dashboard is live on this URL).
- * 401 = auth rejected (bad API key — caller surfaces a clearer error).
- * anything else / null = not our server / not ready.
+ * The returned status is interpreted by `classifyProbe` (probe-status.mjs).
  *
  * @param {string} baseUrl
  * @param {string} apiKey
@@ -120,30 +118,39 @@ export async function probeDashboardUnauthed(baseUrl) {
  * Registers exit / SIGINT / SIGTERM handlers to kill the spawned server
  * so Ctrl-C doesn't orphan a miniflare process.
  *
+ * `opts.onAuthRejected` is invoked when the dashboard answers the probe with
+ * a 401 (bad API key). The remediation differs by caller — `setup:local`'s
+ * seed flow points at `.env.seed.json`, while env-mode callers (the e2e
+ * suite) supplied their own creds — so the message is injected rather than
+ * hardcoded. The default surfaces the seed-file remediation and exits.
+ *
  * @param {{ url: string, apiKey: string }} seed
- * @param {{ labelWidth?: number }} [opts]
+ * @param {{ labelWidth?: number, onAuthRejected?: (baseUrl: string) => void }} [opts]
  * @returns {Promise<{ baseUrl: string, spawned: any }>}
  */
 export async function ensureDashboardRunning(seed, opts = {}) {
   const labelWidth = opts.labelWidth ?? 34;
   const stageLabel = (label) => `${pc.dim("›")} ${label.padEnd(labelWidth)} `;
+  const onAuthRejected =
+    opts.onAuthRejected ??
+    (() => {
+      console.error(
+        pc.red(
+          "dashboard rejected the demo API key. Delete `.env.seed.json` and `.wrangler/state/v3/d1/` then re-run `pnpm setup:local`.",
+        ),
+      );
+      process.exit(1);
+    });
 
   let baseUrl = seed.url;
-  const initial = await probeDashboard(baseUrl, seed.apiKey);
-  if (initial === 400) {
+  const initial = classifyProbe(await probeDashboard(baseUrl, seed.apiKey));
+  if (initial === "ready") {
     console.log(
       `${pc.dim("›")} ${"dev server…".padEnd(labelWidth)} ${pc.dim("already running")}`,
     );
     return { baseUrl, spawned: null };
   }
-  if (initial === 401) {
-    console.error(
-      pc.red(
-        "dashboard rejected the demo API key. Delete `.env.seed.json` and `.wrangler/state/v3/d1/` then re-run `pnpm setup:local`.",
-      ),
-    );
-    process.exit(1);
-  }
+  if (initial === "auth-rejected") onAuthRejected(baseUrl);
 
   const port = await pickPort(5173);
   if (port !== 5173) {
@@ -198,9 +205,14 @@ export async function ensureDashboardRunning(seed, opts = {}) {
       if (output) process.stderr.write(`${output}\n`);
       process.exit(1);
     }
-    if ((await probeDashboard(baseUrl, seed.apiKey)) === 400) {
+    const status = classifyProbe(await probeDashboard(baseUrl, seed.apiKey));
+    if (status === "ready") {
       ready = true;
       break;
+    }
+    if (status === "auth-rejected") {
+      stopSpinner();
+      onAuthRejected(baseUrl);
     }
   }
   stopSpinner();

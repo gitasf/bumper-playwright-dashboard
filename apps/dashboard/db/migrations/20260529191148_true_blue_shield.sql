@@ -1,1 +1,0 @@
-CREATE INDEX `testResults_project_createdAt_idx` ON `testResults` (`projectId`,`createdAt`);

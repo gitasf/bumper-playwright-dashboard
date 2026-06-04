@@ -1,38 +1,10 @@
 import { defineHandler, type InferProps } from "void";
 import { requireAuth } from "void/auth";
-import { db, eq, like, or } from "void/db";
-import { ulid } from "ulid";
-import { memberships, teams as teamsTable } from "@schema";
 import { mutationErrorMessage } from "@/lib/action-errors";
 import { readField } from "@/lib/form";
+import { createTeamForUser, SlugDerivationError } from "@/lib/provisioning";
 
 export type Props = InferProps<typeof loader>;
-
-const SLUG_MAX_LEN = 40;
-
-function slugifyName(name: string): string | null {
-  const base = name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, SLUG_MAX_LEN)
-    .replace(/-+$/, "");
-  return base.length >= 1 ? base : null;
-}
-
-function pickUniqueSlug(base: string, taken: Set<string>): string {
-  if (!taken.has(base)) return base;
-  for (let i = 2; i <= 999; i++) {
-    const suffix = `-${i}`;
-    const trimmed = base
-      .slice(0, SLUG_MAX_LEN - suffix.length)
-      .replace(/-+$/, "");
-    const candidate = `${trimmed}${suffix}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-  return `${base.slice(0, SLUG_MAX_LEN - 7).replace(/-+$/, "")}-${ulid().slice(-6).toLowerCase()}`;
-}
 
 /**
  * Settings → New team loader. Renders the create-team form. Errors are
@@ -46,14 +18,12 @@ export const loader = defineHandler(async (c) => {
 });
 
 /**
- * Settings → New team action. Creates a team + owner membership atomically,
- * picks a unique slug derived from the requested name, then redirects to the
- * team's detail page.
- *
- * Slug picking strategy mirrors the rwsdk version: derive a base slug, fetch
- * collisions in one query, then walk -2 / -3 / ... until we find a free one.
- * Failure modes (empty name, slug exhaustion, unique violation) round-trip
- * the error through `?error=...` so the form re-renders with a message.
+ * Settings → New team action. Delegates the slug-pick + atomic
+ * team+owner-membership insert to the shared `createTeamForUser` provisioning
+ * seam (also called by `POST /api/teams`), then redirects to the team's detail
+ * page. This handler owns only the form-decode + error-to-`?error=` mapping:
+ * an unusable name surfaces the SlugDerivationError message, DB errors round
+ * through `mutationErrorMessage` so the form re-renders with a message.
  */
 export const action = defineHandler(async (c) => {
   const user = requireAuth(c);
@@ -68,44 +38,13 @@ export const action = defineHandler(async (c) => {
     );
   }
 
-  const baseSlug = slugifyName(name);
-  if (!baseSlug) {
-    return c.redirect(
-      `${formUrl}?error=${encodeURIComponent(
-        "Name must contain at least one letter or number.",
-      )}`,
-    );
-  }
-
-  const existingRows = await db
-    .select({ slug: teamsTable.slug })
-    .from(teamsTable)
-    .where(
-      or(eq(teamsTable.slug, baseSlug), like(teamsTable.slug, `${baseSlug}-%`)),
-    );
-  const taken = new Set(existingRows.map((r) => r.slug));
-  const slug = pickUniqueSlug(baseSlug, taken);
-
-  const teamId = ulid();
-  const nowSeconds = Math.floor(Date.now() / 1000);
+  let slug: string;
   try {
-    await db.batch([
-      db.insert(teamsTable).values({
-        id: teamId,
-        slug,
-        name,
-        createdAt: nowSeconds,
-        lastActivityAt: null,
-      }),
-      db.insert(memberships).values({
-        id: ulid(),
-        userId: user.id,
-        teamId,
-        role: "owner",
-        createdAt: nowSeconds,
-      }),
-    ] as never);
+    ({ slug } = await createTeamForUser(user.id, name));
   } catch (err) {
+    if (err instanceof SlugDerivationError) {
+      return c.redirect(`${formUrl}?error=${encodeURIComponent(err.message)}`);
+    }
     const friendly = mutationErrorMessage(err, {
       context: "create team failed",
       uniqueMessage: "Could not create team — please try again.",

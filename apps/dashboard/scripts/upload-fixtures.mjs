@@ -11,7 +11,9 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import pc from "picocolors";
+import { ensureDashboardRunning } from "./lib/dev-server.mjs";
 import { startSpinner } from "./lib/spinner.mjs";
+import { makePrng, sha40 } from "./seed/catalog.mjs";
 
 const dashboardDir = fileURLToPath(new URL("..", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -43,91 +45,35 @@ if (hasEnvCreds) {
   );
   process.exit(1);
 }
-const baseUrl = envUrl || seed.url;
 const apiKey = envToken || seed.apiKey;
 const QUIET = process.env.WRIGHTFUL_QUIET === "1";
 const log = (...args) => {
   if (!QUIET) console.log(...args);
 };
 
-async function probe() {
-  try {
-    const res = await fetch(`${baseUrl}/api/runs`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "X-Wrightful-Version": "3",
-      },
-      body: "{}",
-    });
-    // 400 = server up, auth accepted, body invalid (expected).
-    // 401 = auth rejected — caller should surface a clearer error.
-    // anything else = not our server / not ready.
-    return res.status;
-  } catch {
-    return null;
-  }
-}
-
-function authRejected() {
-  // Env-mode callers (e.g. the e2e suite) supplied their own creds, so the
-  // remediation has nothing to do with the seeded `.env.seed.json`.
-  if (hasEnvCreds) {
-    console.error(
-      `dashboard at ${baseUrl} rejected the supplied API key. Re-check WRIGHTFUL_URL + WRIGHTFUL_TOKEN.`,
-    );
-  } else {
-    console.error(
-      "dashboard rejected the demo API key. Delete `.env.seed.json` and `.wrangler/state/v3/d1/` then re-run `pnpm setup:local`.",
-    );
-  }
-  process.exit(1);
-}
-
-let devServer = null;
-
-async function ensureDashboardRunning() {
-  const initial = await probe();
-  if (initial === 400) return;
-  if (initial === 401) authRejected();
-
-  log(`dashboard not reachable at ${baseUrl} — starting dev server…`);
-  devServer = spawn("pnpm", ["--filter", "@wrightful/dashboard", "dev"], {
-    cwd: repoRoot,
-    stdio: "ignore",
-    detached: false,
-  });
-  const killDev = () => {
-    if (devServer && !devServer.killed) devServer.kill("SIGTERM");
-  };
-  process.on("exit", killDev);
-  process.on("SIGINT", () => {
-    killDev();
-    process.exit(130);
-  });
-  process.on("SIGTERM", () => {
-    killDev();
-    process.exit(143);
-  });
-
-  // Poll for readiness — the vite plugin + wrangler miniflare startup can
-  // take a few seconds on a cold cache.
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 1000));
-    const status = await probe();
-    if (status === 400) {
-      log("dashboard is up");
-      return;
-    }
-    if (status === 401) authRejected();
-  }
-  console.error("dashboard did not become ready within 90s — aborting");
-  process.exit(1);
-}
-
-await ensureDashboardRunning();
+// Reachability + on-demand spawn live behind lib/dev-server.mjs so the
+// readiness contract (empty-body POST /api/runs → 400 = ready) and the
+// poll/spawn/signal-handler orchestration are shared with `setup:local`.
+// Only the 401 remediation differs by caller, so inject it: env-mode callers
+// (the e2e suite) supplied their own creds and have nothing to do with the
+// seeded `.env.seed.json`.
+const { baseUrl } = await ensureDashboardRunning(
+  { url: envUrl || seed.url, apiKey },
+  {
+    onAuthRejected: (url) => {
+      if (hasEnvCreds) {
+        console.error(
+          `dashboard at ${url} rejected the supplied API key. Re-check WRIGHTFUL_URL + WRIGHTFUL_TOKEN.`,
+        );
+      } else {
+        console.error(
+          "dashboard rejected the demo API key. Delete `.env.seed.json` and `.wrangler/state/v3/d1/` then re-run `pnpm setup:local`.",
+        );
+      }
+      process.exit(1);
+    },
+  },
+);
 
 // ---------- Ensure reporter is built ----------
 
@@ -202,22 +148,6 @@ const VOLUME_BRANCHES = [
   "release/1.2",
 ];
 
-/**
- * Produce a deterministic 40-char hex SHA for seed `n`. Uses a small LCG so
- * the result is stable across runs without pulling in node:crypto.
- */
-function sha40(n) {
-  let state = (n + 1) * 0x9e3779b1;
-  let out = "";
-  while (out.length < 40) {
-    state = Math.imul(state ^ (state >>> 16), 0x85ebca6b) >>> 0;
-    state = Math.imul(state ^ (state >>> 13), 0xc2b2ae35) >>> 0;
-    state = (state ^ (state >>> 16)) >>> 0;
-    out += state.toString(16).padStart(8, "0");
-  }
-  return out.slice(0, 40);
-}
-
 function volumeScenarios(count) {
   return Array.from({ length: count }, (_, i) => {
     const n = i + 1;
@@ -226,7 +156,10 @@ function volumeScenarios(count) {
     return {
       label,
       branch,
-      sha: sha40(n),
+      // Deterministic per-index fake SHA: seed a PRNG from the index so the
+      // volume SHAs stay stable across runs, then draw from the shared
+      // synthetic-data `sha40` (one algorithm for both seed entrypoints).
+      sha: sha40(makePrng(String(n))),
       buildId: `fixture-volume-${String(n).padStart(2, "0")}`,
       // Every 4th run intentionally includes failures for visual variety.
       includeFailures: n % 4 === 0,

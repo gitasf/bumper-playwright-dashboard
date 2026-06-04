@@ -1,5 +1,6 @@
 import { defineMiddleware } from "void";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
+import { isIngestRoute } from "@/lib/ingest-routes";
 
 /**
  * Global rate-limit gate. Runs AFTER `02.api-auth.ts` so the ingest paths can
@@ -28,9 +29,6 @@ import { checkRateLimit, clientIp } from "@/lib/rate-limit";
  */
 const AUTH_RE = /^\/api\/auth(?:\/|$)/;
 const ARTIFACT_DOWNLOAD_RE = /^\/api\/artifacts\/([^/]+)\/download(?:\/|$)/;
-const RUN_INGEST_RE = /^\/api\/runs(?:\/|$)/;
-const ARTIFACT_INGEST_RE =
-  /^\/api\/artifacts\/(?:register|[^/]+\/upload)(?:\/|$)/;
 
 function tooManyRequests(retryAfterSeconds: number): Response {
   return new Response(JSON.stringify({ error: "Too many requests" }), {
@@ -68,7 +66,7 @@ export default defineMiddleware(async (c, next) => {
     return;
   }
 
-  if (RUN_INGEST_RE.test(path) || ARTIFACT_INGEST_RE.test(path)) {
+  if (isIngestRoute(path)) {
     // 02.api-auth stashes the key before delegating to us; fall back to IP
     // if it's somehow absent so the limiter still functions.
     const apiKey = c.get("apiKey");

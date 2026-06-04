@@ -1,8 +1,7 @@
 import { defineHandler } from "void";
-import { requireAuth } from "void/auth";
 import { and, asc, db, eq, inArray } from "void/db";
 import { testResults } from "@schema";
-import { tenantScopeForUserBySlugs } from "@/lib/scope";
+import { resolveTenantApiScope } from "@/lib/tenant-api-scope";
 
 const PREVIEW_LIMIT = 5;
 
@@ -38,15 +37,9 @@ const BUCKETS: Array<{ key: BucketKey; statuses: string[] }> = [
  * for the given run. Used by the runs list badge popovers.
  */
 export const GET = defineHandler(async (c) => {
-  const user = requireAuth(c);
-  const teamSlug = c.req.param("teamSlug");
-  const projectSlug = c.req.param("projectSlug");
-  const runId = c.req.param("runId");
-  if (!teamSlug || !projectSlug || !runId) {
-    return c.json({ error: "Not found" }, 404);
-  }
-  const scope = await tenantScopeForUserBySlugs(user.id, teamSlug, projectSlug);
-  if (!scope) return c.json({ error: "Not found" }, 404);
+  const ctx = await resolveTenantApiScope(c);
+  if (ctx instanceof Response) return ctx;
+  const { scope, runId } = ctx;
 
   const buckets = await Promise.all(
     BUCKETS.map((bucket) =>

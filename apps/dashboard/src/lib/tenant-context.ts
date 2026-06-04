@@ -1,11 +1,7 @@
 import type { Context } from "hono";
 import type { ResolvedActiveProject } from "@/lib/authz";
 import { getActiveProject, requireActiveProject } from "@/lib/active-project";
-import type {
-  AuthorizedProjectId,
-  AuthorizedTeamId,
-  TenantScope,
-} from "@/lib/scope";
+import { makeTenantScope, type TenantScope } from "@/lib/scope";
 
 /**
  * The two shapes every `/t/:teamSlug/p/:projectSlug/*` loader needs:
@@ -26,12 +22,12 @@ export interface TenantContext {
 }
 
 function toScope(project: ResolvedActiveProject): TenantScope {
-  return {
-    teamId: project.teamId as AuthorizedTeamId,
-    projectId: project.id as AuthorizedProjectId,
+  return makeTenantScope({
+    teamId: project.teamId,
+    projectId: project.id,
     teamSlug: project.teamSlug,
     projectSlug: project.slug,
-  };
+  });
 }
 
 export function getTenantContext(c: Context): TenantContext | null {

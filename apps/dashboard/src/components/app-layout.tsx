@@ -18,22 +18,13 @@ import { QueryProvider } from "@/components/query-provider";
 import { SidebarUserMenu } from "@/components/sidebar-user-menu";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { cn } from "@/lib/cn";
+import type {
+  ResolvedActiveProject,
+  ResolvedActiveTeam,
+  WorkspaceListItem,
+} from "@/lib/shared-bundle";
 
 type NavId = "runs" | "flaky" | "insights" | "tests";
-
-interface Team {
-  slug: string;
-  name: string;
-}
-
-interface Project {
-  slug: string;
-  name: string;
-}
-
-interface SelectedTeam extends Team {
-  role?: string;
-}
 
 function deriveActiveNav(pathname: string): NavId {
   if (/\/flaky(\/|$)/.test(pathname)) return "flaky";
@@ -43,8 +34,8 @@ function deriveActiveNav(pathname: string): NavId {
 }
 
 function buildBackToAppHref(
-  selectedTeam: SelectedTeam | null,
-  selectedProject: Project | null,
+  selectedTeam: ResolvedActiveTeam | null,
+  selectedProject: ResolvedActiveProject | null,
 ): string {
   if (selectedTeam && selectedProject) {
     return `/t/${selectedTeam.slug}/p/${selectedProject.slug}`;
@@ -150,10 +141,10 @@ export function AppLayout({ children, mode }: AppLayoutProps) {
 }
 
 interface SidebarTopProps {
-  teams: Team[];
-  teamProjects: Project[];
-  selectedTeam: SelectedTeam | null;
-  selectedProject: Project | null;
+  teams: WorkspaceListItem[];
+  teamProjects: WorkspaceListItem[];
+  selectedTeam: ResolvedActiveTeam | null;
+  selectedProject: ResolvedActiveProject | null;
 }
 
 function SidebarTop({
@@ -183,8 +174,8 @@ function SidebarTop({
 
 interface SidebarBottomProps {
   mode: "app" | "settings";
-  selectedTeam: SelectedTeam | null;
-  selectedProject: Project | null;
+  selectedTeam: ResolvedActiveTeam | null;
+  selectedProject: ResolvedActiveProject | null;
 }
 
 function SidebarBottom({
@@ -293,9 +284,9 @@ function AppSidebarMiddle({ pathname, base }: AppSidebarMiddleProps) {
 
 interface SettingsSidebarMiddleProps {
   pathname: string;
-  teams: Team[];
-  selectedTeam: SelectedTeam | null;
-  selectedProject: Project | null;
+  teams: WorkspaceListItem[];
+  selectedTeam: ResolvedActiveTeam | null;
+  selectedProject: ResolvedActiveProject | null;
 }
 
 /**
@@ -319,13 +310,13 @@ function SettingsSidebarMiddle({
   const urlTeamSlug = teamMatch?.[1] ?? null;
   const urlProjectSlug = teamMatch?.[2] ?? null;
 
-  const expandedTeam: Team | null = urlTeamSlug
+  const expandedTeam: WorkspaceListItem | null = urlTeamSlug
     ? (teams.find((t) => t.slug === urlTeamSlug) ?? {
         slug: urlTeamSlug,
         name: urlTeamSlug,
       })
     : selectedTeam;
-  const expandedProject: Project | null = urlProjectSlug
+  const expandedProject: WorkspaceListItem | null = urlProjectSlug
     ? { slug: urlProjectSlug, name: urlProjectSlug }
     : expandedTeam && selectedTeam?.slug === expandedTeam.slug
       ? selectedProject

@@ -1,8 +1,7 @@
 import { defineHandler, type InferProps } from "void";
-import { requireAuth } from "void/auth";
 import { db, desc, eq } from "void/db";
 import { projects } from "@schema";
-import { resolveTeamBySlug } from "@/lib/authz";
+import { requireMemberScope } from "@/lib/settings-scope";
 
 export type Props = InferProps<typeof loader>;
 
@@ -12,11 +11,7 @@ export type Props = InferProps<typeof loader>;
  * `./p/[projectSlug]/keys`.
  */
 export const loader = defineHandler(async (c) => {
-  const user = requireAuth(c);
-  const teamSlug = c.req.param("teamSlug");
-  if (!teamSlug) throw new Response("Not Found", { status: 404 });
-  const team = await resolveTeamBySlug(user.id, teamSlug);
-  if (!team) throw new Response("Not Found", { status: 404 });
+  const { team } = await requireMemberScope(c);
 
   const projectRows = await db
     .select({

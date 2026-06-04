@@ -1,7 +1,8 @@
 import { defineHandler } from "void";
 import { requireAuth } from "void/auth";
-import { and, db, eq, or, sql } from "void/db";
-import { teamInvites, userGithubAccounts } from "@schema";
+import { and, db, eq } from "void/db";
+import { teamInvites } from "@schema";
+import { buildInviteMatchConds, getUserIdentity } from "@/lib/auth-users";
 
 /**
  * POST /api/invites/:inviteId/decline
@@ -19,30 +20,15 @@ export const POST = defineHandler(async (c) => {
   const inviteId = c.req.param("inviteId");
   if (!inviteId) return c.json({ error: "Not found" }, 404);
 
-  const [userRow, ghRow] = await Promise.all([
-    db.run(sql`SELECT email FROM "user" WHERE id = ${user.id} LIMIT 1`),
-    db
-      .select({ githubLogin: userGithubAccounts.githubLogin })
-      .from(userGithubAccounts)
-      .where(eq(userGithubAccounts.userId, user.id))
-      .limit(1),
-  ]);
-  const email =
-    (
-      userRow.results?.[0] as { email?: string } | undefined
-    )?.email?.toLowerCase() ?? null;
-  const githubLogin = ghRow[0]?.githubLogin ?? null;
-
-  const matchConds: ReturnType<typeof eq>[] = [];
-  if (email) matchConds.push(eq(teamInvites.email, email));
-  if (githubLogin) matchConds.push(eq(teamInvites.githubLogin, githubLogin));
-  if (matchConds.length === 0) {
+  const identity = await getUserIdentity(user.id);
+  const matchConds = buildInviteMatchConds(identity);
+  if (!matchConds) {
     return c.json({ error: "Invite not addressed to this account" }, 403);
   }
 
   const result = await db
     .delete(teamInvites)
-    .where(and(eq(teamInvites.id, inviteId), or(...matchConds)));
+    .where(and(eq(teamInvites.id, inviteId), matchConds));
   // Drizzle/D1 returns a meta object; treat 0 affected rows as a 404 so a
   // caller probing for invite ids can't distinguish "exists but not yours"
   // from "doesn't exist".

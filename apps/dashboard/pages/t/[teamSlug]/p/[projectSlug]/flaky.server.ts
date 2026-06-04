@@ -1,8 +1,19 @@
 import { defineHandler, type InferProps } from "void";
 import { and, db, eq, gte, inArray, sql } from "void/db";
 import { runs, testResults, testTags } from "@schema";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import {
+  branchFragment,
+  branchJoinFragment,
+  testResultsScopeJoin,
+} from "@/lib/analytics/filters";
+import {
+  normalizeBranchFilter,
+  resolveAnalyticsWindow,
+} from "@/lib/analytics/params";
+import { latestPerTestRn } from "@/lib/analytics/per-test";
+import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
+import type { TenantScope } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -13,16 +24,7 @@ const RECENT_FAILURES = 3;
 
 type RangeKey = "7d" | "14d" | "30d";
 const RANGES: readonly RangeKey[] = ["7d", "14d", "30d"];
-const DEFAULT_RANGE: RangeKey = "14d";
-
-function parseRange(value: string | null): RangeKey {
-  if (value === "7d" || value === "14d" || value === "30d") return value;
-  return DEFAULT_RANGE;
-}
-
-function rangeToDays(r: RangeKey): number {
-  return r === "7d" ? 7 : r === "14d" ? 14 : 30;
-}
+const parseRange = makeRangeParser<RangeKey>(RANGES, "14d");
 
 export interface RankedTest {
   testId: string;
@@ -62,12 +64,12 @@ export const loader = defineHandler(async (c) => {
 
   const url = new URL(c.req.url);
   const range = parseRange(url.searchParams.get("range"));
-  const branchParam = url.searchParams.get("branch");
-  const branchAll = !branchParam || branchParam === ALL_BRANCHES;
-  const branchFilter = branchAll ? null : branchParam;
+  const { branchParam, branchFilter, branchAll } = normalizeBranchFilter(
+    url.searchParams.get("branch"),
+  );
 
-  const windowStartSec =
-    Math.floor(Date.now() / 1000) - rangeToDays(range) * 24 * 60 * 60;
+  const { windowStartSec, days } = resolveAnalyticsWindow(range);
+  const rangeDays = days ?? 0;
 
   const branches = await loadProjectBranches(scope);
 
@@ -122,18 +124,8 @@ export const loader = defineHandler(async (c) => {
 
   if (testIds.length > 0) {
     const [sparkRows, failRows, tagRows] = await Promise.all([
-      loadSparklinesAndMeta(
-        scope.projectId,
-        testIds,
-        branchFilter,
-        SPARKLINE_SIZE,
-      ),
-      loadRecentFailures(
-        scope.projectId,
-        testIds,
-        branchFilter,
-        RECENT_FAILURES,
-      ),
+      loadSparklinesAndMeta(scope, testIds, branchFilter, SPARKLINE_SIZE),
+      loadRecentFailures(scope, testIds, branchFilter, RECENT_FAILURES),
       loadTagsByTestId(scope.projectId, testIds),
     ]);
     for (const r of sparkRows) {
@@ -189,7 +181,7 @@ export const loader = defineHandler(async (c) => {
     branchAll,
     branchFilter,
     branches,
-    rangeDays: rangeToDays(range),
+    rangeDays,
     totalFlakyTests,
     truncated,
     ranked,
@@ -215,13 +207,17 @@ interface SparklineMetaRow {
  * query that returns the same shape the rwsdk version produced.
  */
 async function loadSparklinesAndMeta(
-  projectId: string,
+  scope: TenantScope,
   testIds: readonly string[],
   branch: string | null,
   sparklineSize: number,
 ): Promise<SparklineMetaRow[]> {
-  const branchSql = branch ? sql`and runs.branch = ${branch}` : sql``;
-  const joinSql = branch ? sql`inner join runs on runs.id = tr."runId"` : sql``;
+  const branchSql = branchFragment(branch);
+  // The runs join is conditional here (only needed when a branch filter is
+  // active), so this query keeps its own branchJoinFragment + tenant predicate
+  // pairing rather than testResultsScopeJoin (whose join is unconditional). The
+  // branded scope still bakes the auth-checked projectId in as a bound param.
+  const joinSql = branchJoinFragment(branch);
 
   const result = await db.run(sql`
     with ranked as (
@@ -230,13 +226,10 @@ async function loadSparklinesAndMeta(
         tr.status as status,
         tr.title as title,
         tr.file as file,
-        row_number() over (
-          partition by tr."testId"
-          order by tr."createdAt" desc
-        ) as rn
+        ${latestPerTestRn("rn")}
       from "testResults" tr
       ${joinSql}
-      where tr."projectId" = ${projectId}
+      where tr."projectId" = ${scope.projectId}
         and tr."testId" in (${sql.join(
           testIds.map((id) => sql`${id}`),
           sql`, `,
@@ -266,12 +259,12 @@ interface RecentFailureSqlRow {
 }
 
 async function loadRecentFailures(
-  projectId: string,
+  scope: TenantScope,
   testIds: readonly string[],
   branch: string | null,
   count: number,
 ): Promise<RecentFailureSqlRow[]> {
-  const branchSql = branch ? sql`and runs.branch = ${branch}` : sql``;
+  const branchSql = branchFragment(branch);
 
   const result = await db.run(sql`
     with ranked as (
@@ -285,13 +278,9 @@ async function loadRecentFailures(
         runs."commitSha" as "commitSha",
         runs.branch as branch,
         runs.actor as actor,
-        row_number() over (
-          partition by tr."testId"
-          order by tr."createdAt" desc
-        ) as rn
+        ${latestPerTestRn("rn")}
       from "testResults" tr
-      inner join runs on runs.id = tr."runId"
-      where tr."projectId" = ${projectId}
+      ${testResultsScopeJoin(scope)}
         and tr."testId" in (${sql.join(
           testIds.map((id) => sql`${id}`),
           sql`, `,

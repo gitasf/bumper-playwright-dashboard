@@ -1,41 +1,13 @@
 import { defineHandler, type InferProps } from "void";
-import { requireAuth } from "void/auth";
-import { db, eq } from "void/db";
-import { ulid } from "ulid";
-import { projects } from "@schema";
-import { requireTeamOwner } from "@/lib/authz";
 import { mutationErrorMessage } from "@/lib/action-errors";
 import { readField } from "@/lib/form";
+import { createProjectForTeam, SlugDerivationError } from "@/lib/provisioning";
+import { requireOwnerScope } from "@/lib/settings-scope";
 
 export type Props = InferProps<typeof loader>;
 
-const SLUG_MAX_LEN = 40;
-
-function slugifyName(name: string): string | null {
-  const base = name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, SLUG_MAX_LEN)
-    .replace(/-+$/, "");
-  return base.length >= 1 ? base : null;
-}
-
-function pickUniqueSlug(base: string, taken: Set<string>): string {
-  if (!taken.has(base)) return base;
-  for (let i = 2; i <= 999; i++) {
-    const suffix = `-${i}`;
-    const trimmed = base
-      .slice(0, SLUG_MAX_LEN - suffix.length)
-      .replace(/-+$/, "");
-    const candidate = `${trimmed}${suffix}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-  // Extremely unlikely — fall back to a random suffix; insert will still
-  // reject on collision and the user will see a retry error.
-  return `${base.slice(0, SLUG_MAX_LEN - 7).replace(/-+$/, "")}-${ulid().slice(-6).toLowerCase()}`;
-}
+const hereFor = (team: { slug: string }) =>
+  `/settings/teams/${team.slug}/projects/new`;
 
 /**
  * Settings → New project loader. Owner-only. The page only renders a single
@@ -43,38 +15,23 @@ function pickUniqueSlug(base: string, taken: Set<string>): string {
  * state forward via `?error=...`.
  */
 export const loader = defineHandler(async (c) => {
-  const user = requireAuth(c);
-  const teamSlug = c.req.param("teamSlug");
-  if (!teamSlug) throw new Response("Not Found", { status: 404 });
-  let team: { id: string; slug: string; name: string };
-  try {
-    team = await requireTeamOwner(user.id, teamSlug);
-  } catch {
-    throw new Response("Not Found", { status: 404 });
-  }
+  const { team } = await requireOwnerScope(c, hereFor);
   const error = new URL(c.req.url).searchParams.get("error");
   return { team, error };
 });
 
 /**
- * Settings → New project action. Owner-only. Same slug-derivation strategy
- * as team creation; uniqueness is scoped to the team (the schema enforces
- * `(teamId, slug)` uniqueness).
+ * Settings → New project action. Owner-only. Delegates the slug-pick + insert
+ * to the shared `createProjectForTeam` provisioning seam (also called by
+ * `POST /api/teams/:teamSlug/projects`); uniqueness is scoped to the team (the
+ * schema enforces `(teamId, slug)` uniqueness). This handler owns only the
+ * form-decode + error-to-`?error=` mapping.
  */
 export const action = defineHandler(async (c) => {
-  const user = requireAuth(c);
-  const teamSlug = c.req.param("teamSlug");
-  if (!teamSlug) throw new Response("Not Found", { status: 404 });
-  let team: { id: string; slug: string; name: string };
-  try {
-    team = await requireTeamOwner(user.id, teamSlug);
-  } catch {
-    throw new Response("Not Found", { status: 404 });
-  }
+  const { team, here: formUrl } = await requireOwnerScope(c, hereFor);
 
   const form = await c.req.formData();
   const name = readField(form, "name").trim();
-  const formUrl = `/settings/teams/${team.slug}/projects/new`;
 
   if (!name) {
     return c.redirect(
@@ -82,34 +39,12 @@ export const action = defineHandler(async (c) => {
     );
   }
 
-  const baseSlug = slugifyName(name);
-  if (!baseSlug) {
-    return c.redirect(
-      `${formUrl}?error=${encodeURIComponent(
-        "Name must contain at least one letter or number.",
-      )}`,
-    );
-  }
-
-  const takenSlugs = new Set(
-    (
-      await db
-        .select({ slug: projects.slug })
-        .from(projects)
-        .where(eq(projects.teamId, team.id))
-    ).map((r) => r.slug),
-  );
-  const slug = pickUniqueSlug(baseSlug, takenSlugs);
-
   try {
-    await db.insert(projects).values({
-      id: ulid(),
-      teamId: team.id,
-      slug,
-      name,
-      createdAt: Math.floor(Date.now() / 1000),
-    });
+    await createProjectForTeam(team.id, name);
   } catch (err) {
+    if (err instanceof SlugDerivationError) {
+      return c.redirect(`${formUrl}?error=${encodeURIComponent(err.message)}`);
+    }
     const friendly = mutationErrorMessage(err, {
       context: "create project failed",
       uniqueMessage: "Could not create project — please try again.",

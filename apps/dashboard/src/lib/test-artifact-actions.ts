@@ -1,7 +1,11 @@
 import { and, asc, db, eq, inArray } from "void/db";
 import { artifacts } from "@schema";
 import type { ArtifactAction } from "@/components/artifact-actions";
-import { signArtifactToken } from "@/lib/artifact-tokens";
+import {
+  signArtifactToken,
+  signedDownloadHref,
+  signedTraceViewerUrl,
+} from "@/lib/artifact-tokens";
 import type { TenantScope } from "@/lib/scope";
 
 // Order within an attempt: trace first (most useful for debugging), then
@@ -34,16 +38,6 @@ export function errorAttempt(
   return null;
 }
 
-/** Build a trace.playwright.dev link wrapping a presigned R2 GET URL. */
-export function traceViewerUrl(
-  origin: string,
-  artifactId: string,
-  token: string,
-): string {
-  const downloadUrl = `${origin}/api/artifacts/${artifactId}/download?t=${encodeURIComponent(token)}`;
-  return `https://trace.playwright.dev/?trace=${encodeURIComponent(downloadUrl)}`;
-}
-
 export interface ArtifactRow {
   id: string;
   testResultId: string;
@@ -65,15 +59,16 @@ export function toArtifactAction(
   origin: string,
   token: string,
 ): ArtifactAction {
-  const downloadHref = `/api/artifacts/${row.id}/download?t=${encodeURIComponent(token)}`;
   return {
     id: row.id,
     type: row.type,
     name: row.name,
     contentType: row.contentType,
-    downloadHref,
+    downloadHref: signedDownloadHref(row.id, token),
     traceViewerUrl:
-      row.type === "trace" ? traceViewerUrl(origin, row.id, token) : undefined,
+      row.type === "trace"
+        ? signedTraceViewerUrl(origin, row.id, token)
+        : undefined,
   };
 }
 

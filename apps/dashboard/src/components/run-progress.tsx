@@ -1,6 +1,7 @@
-import { ChevronDown, ChevronRight, SearchIcon } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "@void/react";
 import { useEffect, useMemo, useState } from "react";
+import { SearchFilterInput } from "@/components/search-filter-input";
 import {
   SegmentedControl,
   type SegmentedOption,
@@ -8,10 +9,13 @@ import {
 import { StatusGlyph } from "@/components/status-glyph";
 import { cn } from "@/lib/cn";
 import {
-  useRunProgress,
-  type RunProgressSummary,
-  type RunProgressTest,
-} from "@/lib/live-client";
+  countByStatusGroup,
+  groupAndSortTests,
+  type GroupByAxis,
+  type StatusFilter,
+} from "@/lib/group-tests-by-file";
+import { statusToken } from "@/lib/status";
+import { useRunProgress, type RunProgressTest } from "@/lib/live-client";
 import { formatDuration } from "@/lib/time-format";
 
 interface RunProgressProps {
@@ -23,26 +27,15 @@ interface RunProgressProps {
   projectSlug: string;
   /** SSR-loaded test rows. Forwarded to the hook to seed its accumulator. */
   initialTests?: RunProgressTest[];
-  /** SSR-loaded aggregate. Forwarded to the hook so counts render pre-event. */
-  initialSummary?: RunProgressSummary;
 }
-
-type StatusFilter = "all" | "passed" | "failed" | "flaky" | "skipped";
-type GroupBy = "file" | "project";
-
-const STATUS_ORDER: Record<string, number> = {
-  failed: 0,
-  timedout: 1,
-  flaky: 2,
-  queued: 3,
-  skipped: 4,
-  passed: 5,
-};
 
 /**
  * Run-detail Tests tab. Subscribes to live progress events for `run:<runId>`
  * via `useRunProgress`, merging streaming updates on top of the SSR-loaded
- * `initialTests`/`initialSummary`.
+ * `initialTests`. Owns only the per-test list; the aggregate summary (header
+ * tiles + OutcomeBar) is rendered live by the separate `<RunSummaryLive>`
+ * island, so this component derives every count it shows from its own `byId`
+ * accumulator (`statusCounts` below) rather than reading the published summary.
  *
  * Layout mirrors the design bundle's `screen-run-detail.jsx`:
  *   - Sticky filter bar — search input, status SegmentedControl with per-status
@@ -62,102 +55,32 @@ export function RunProgress({
   teamSlug,
   projectSlug,
   initialTests,
-  initialSummary,
 }: RunProgressProps) {
-  const { byId, summary: _summary } = useRunProgress(runId, {
-    initialTests,
-    initialSummary,
-  });
+  const { byId } = useRunProgress(runId, { initialTests });
   const tests = useMemo(() => Object.values(byId), [byId]);
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [groupBy, setGroupBy] = useState<GroupBy>("file");
+  const [groupBy, setGroupBy] = useState<GroupByAxis>("file");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [didAutoExpand, setDidAutoExpand] = useState(false);
 
-  // Per-status counts feed the SegmentedControl labels — re-compute from the
-  // live accumulator each render so they stay in sync with streaming updates.
-  const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = {
-      passed: 0,
-      failed: 0,
-      flaky: 0,
-      skipped: 0,
-    };
-    for (const t of tests) {
-      const key = t.status === "timedout" ? "failed" : t.status;
-      counts[key] = (counts[key] ?? 0) + 1;
-    }
-    return counts;
-  }, [tests]);
-
-  const filtered = useMemo(() => {
-    return tests.filter((t) => {
-      if (statusFilter !== "all") {
-        if (statusFilter === "failed") {
-          if (t.status !== "failed" && t.status !== "timedout") return false;
-        } else if (t.status !== statusFilter) {
-          return false;
-        }
-      }
-      if (search) {
-        const needle = search.toLowerCase();
-        if (
-          !t.title.toLowerCase().includes(needle) &&
-          !t.file.toLowerCase().includes(needle)
-        ) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [tests, statusFilter, search]);
-
-  // Group → tests, then sort groups by worst-status-first like the design.
-  const groups = useMemo(() => {
-    const map = new Map<string, RunProgressTest[]>();
-    for (const t of filtered) {
-      const key =
-        groupBy === "file" ? t.file || "Other" : (t.projectName ?? "default");
-      const bucket = map.get(key) ?? [];
-      bucket.push(t);
-      map.set(key, bucket);
-    }
-    const entries = Array.from(map.entries());
-    entries.sort((a, b) => {
-      const score = (rows: RunProgressTest[]) =>
-        rows.reduce((s, t) => {
-          if (t.status === "failed" || t.status === "timedout") return s + 4;
-          if (t.status === "flaky") return s + 2;
-          return s;
-        }, 0);
-      return score(b[1]) - score(a[1]);
-    });
-    return entries;
-  }, [filtered, groupBy]);
+  // Filter → group → order + 4-bucket counts + default-expanded keys, all from
+  // one pure engine so streaming updates re-derive everything in lockstep. The
+  // `statusCounts` feed the SegmentedControl labels; `suggestedExpanded` seeds
+  // the one-shot auto-expand below.
+  const { groups, statusCounts, suggestedExpanded } = useMemo(
+    () => groupAndSortTests(tests, { search, statusFilter, groupBy }),
+    [tests, search, statusFilter, groupBy],
+  );
 
   // Auto-expand the worst-status groups on first render. Tracks separately so
   // user toggles after the first interaction stick around.
   useEffect(() => {
     if (didAutoExpand || groups.length === 0) return;
-    const next = new Set<string>();
-    for (const [key, items] of groups.slice(0, 6)) {
-      if (
-        items.some(
-          (t) =>
-            t.status === "failed" ||
-            t.status === "timedout" ||
-            t.status === "flaky",
-        )
-      ) {
-        next.add(key);
-      }
-    }
-    if (next.size === 0 && groups[0]) next.add(groups[0][0]);
-    setExpanded(next);
+    setExpanded(suggestedExpanded);
     setDidAutoExpand(true);
-  }, [groups, didAutoExpand]);
+  }, [groups, suggestedExpanded, didAutoExpand]);
 
   function toggleGroup(key: string) {
     setExpanded((prev) => {
@@ -173,25 +96,25 @@ export function RunProgress({
     {
       value: "failed",
       label: "Failed",
-      count: statusCounts.failed ?? 0,
+      count: statusCounts.failed,
       dot: "failed",
     },
     {
       value: "flaky",
       label: "Flaky",
-      count: statusCounts.flaky ?? 0,
+      count: statusCounts.flaky,
       dot: "flaky",
     },
     {
       value: "passed",
       label: "Passed",
-      count: statusCounts.passed ?? 0,
+      count: statusCounts.passed,
       dot: "passed",
     },
     {
       value: "skipped",
       label: "Skipped",
-      count: statusCounts.skipped ?? 0,
+      count: statusCounts.skipped,
       dot: "skipped",
     },
   ];
@@ -203,20 +126,13 @@ export function RunProgress({
      * sit just below them rather than overlapping. */
     <div className="flex flex-col">
       <div className="sticky top-[84px] z-10 flex flex-wrap items-center gap-2 border-b border-line-1 bg-background px-6 py-2.5">
-        <div className="relative w-[260px]">
-          <SearchIcon
-            aria-hidden
-            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            aria-label="Filter tests"
-            className="h-7 w-full rounded-md border border-line-1 bg-card pl-8 pr-2.5 text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/24"
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter tests…"
-            type="search"
-            value={search}
-          />
-        </div>
+        <SearchFilterInput
+          aria-label="Filter tests"
+          className="w-[260px]"
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Filter tests…"
+          value={search}
+        />
 
         <SegmentedControl
           onChange={setStatusFilter}
@@ -276,7 +192,7 @@ function TestGroup({
   runId,
 }: {
   groupKey: string;
-  groupBy: GroupBy;
+  groupBy: GroupByAxis;
   tests: RunProgressTest[];
   open: boolean;
   onToggle: () => void;
@@ -284,19 +200,7 @@ function TestGroup({
   projectSlug: string;
   runId: string;
 }) {
-  const counts = useMemo(() => {
-    const c: Record<string, number> = {
-      passed: 0,
-      failed: 0,
-      flaky: 0,
-      skipped: 0,
-    };
-    for (const t of tests) {
-      const key = t.status === "timedout" ? "failed" : t.status;
-      c[key] = (c[key] ?? 0) + 1;
-    }
-    return c;
-  }, [tests]);
+  const counts = useMemo(() => countByStatusGroup(tests), [tests]);
 
   return (
     <div className="border-b border-line-1">
@@ -325,34 +229,34 @@ function TestGroup({
         <div className="flex-1" />
         <div className="flex shrink-0 items-center gap-2.5 font-mono text-[11px] tabular-nums">
           {counts.failed > 0 ? (
-            <span style={{ color: "var(--fail)" }}>{counts.failed}f</span>
+            <span style={{ color: statusToken("failed") }}>
+              {counts.failed}f
+            </span>
           ) : null}
           {counts.flaky > 0 ? (
-            <span style={{ color: "var(--flaky)" }}>{counts.flaky}~</span>
+            <span style={{ color: statusToken("flaky") }}>{counts.flaky}~</span>
           ) : null}
           {counts.skipped > 0 ? (
-            <span style={{ color: "var(--skipped)" }}>{counts.skipped}s</span>
+            <span style={{ color: statusToken("skipped") }}>
+              {counts.skipped}s
+            </span>
           ) : null}
-          <span style={{ color: "var(--pass)" }}>{counts.passed ?? 0}p</span>
+          <span style={{ color: statusToken("passed") }}>{counts.passed}p</span>
         </div>
       </button>
 
       {open ? (
         <div>
-          {[...tests]
-            .sort(
-              (a, b) =>
-                (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99),
-            )
-            .map((t) => (
-              <TestRow
-                key={t.id}
-                projectSlug={projectSlug}
-                runId={runId}
-                teamSlug={teamSlug}
-                test={t}
-              />
-            ))}
+          {/* Rows arrive pre-sorted worst-status-first from `groupAndSortTests`. */}
+          {tests.map((t) => (
+            <TestRow
+              key={t.id}
+              projectSlug={projectSlug}
+              runId={runId}
+              teamSlug={teamSlug}
+              test={t}
+            />
+          ))}
         </div>
       ) : null}
     </div>
@@ -396,7 +300,7 @@ function TestRow({
         {test.retryCount > 0 ? (
           <span
             className="shrink-0 font-mono text-[10.5px]"
-            style={{ color: "var(--flaky)" }}
+            style={{ color: statusToken("flaky") }}
           >
             ×{test.retryCount + 1}
           </span>

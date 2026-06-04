@@ -27,6 +27,23 @@ import { isSafeContentType } from "./content-types";
  *     there signals a malformed/abusive payload, not a legitimate large test.
  */
 
+/**
+ * Header the reporter stamps the protocol version onto (mirror of
+ * `WRIGHTFUL_VERSION_HEADER` in `@wrightful/reporter`). Lives here so the
+ * version contract sits next to the wire-shape contract in the one module the
+ * reporter's cross-package canary already imports.
+ */
+export const WRIGHTFUL_VERSION_HEADER = "X-Wrightful-Version";
+
+/**
+ * Versions of the streaming-ingest protocol this dashboard accepts.
+ * `api-auth.ts` reads this set to 409 unsupported reporters; the reporter's
+ * emit-side `PROTOCOL_VERSION` must be a member, which
+ * `packages/reporter/src/__tests__/contract.test.ts` asserts so the two
+ * independently-maintained literals can't drift silently across the packages.
+ */
+export const SUPPORTED_VERSIONS = new Set(["3"]);
+
 // String length caps (characters).
 const MAX = {
   ID: 1024,
@@ -201,4 +218,57 @@ export const RegisterArtifactsPayloadSchema = z.object({
 
 export type RegisterArtifactsPayload = z.infer<
   typeof RegisterArtifactsPayloadSchema
+>;
+
+/**
+ * Response-side wire schemas (server → reporter).
+ *
+ * The reporter parses these responses with inline `as` casts (see
+ * `StreamClient.openRun` / `appendResults` / `registerArtifacts` in
+ * `@wrightful/reporter`'s `client.ts`). Those casts are unchecked, so a field
+ * rename on either side would silently break the artifact-registration step
+ * that hangs off the `clientKey → testResultId` mapping. These schemas describe
+ * exactly what the reporter reads off each response and exist so
+ * `contract.test.ts` can guard the response contract the same way it guards the
+ * request payloads.
+ *
+ * They describe the *reporter-consumed* fields only — handlers may include
+ * extra fields (e.g. `duplicate`, `maxBytes` on error paths) that the reporter
+ * ignores; `.passthrough()` keeps those tolerated rather than treated as drift.
+ */
+export const OpenRunResponseSchema = z
+  .object({
+    runId: z.string().min(1),
+    runUrl: z.string().min(1).optional(),
+  })
+  .passthrough();
+export type OpenRunResponse = z.infer<typeof OpenRunResponseSchema>;
+
+export const ResultMappingSchema = z.object({
+  clientKey: z.string().min(1),
+  testResultId: z.string().min(1),
+});
+export type ResultMapping = z.infer<typeof ResultMappingSchema>;
+
+export const AppendResultsResponseSchema = z
+  .object({
+    results: z.array(ResultMappingSchema),
+  })
+  .passthrough();
+export type AppendResultsResponse = z.infer<typeof AppendResultsResponseSchema>;
+
+export const ArtifactUploadSchema = z.object({
+  artifactId: z.string().min(1),
+  uploadUrl: z.string().min(1),
+  r2Key: z.string().min(1),
+});
+export type ArtifactUpload = z.infer<typeof ArtifactUploadSchema>;
+
+export const RegisterArtifactsResponseSchema = z
+  .object({
+    uploads: z.array(ArtifactUploadSchema),
+  })
+  .passthrough();
+export type RegisterArtifactsResponse = z.infer<
+  typeof RegisterArtifactsResponseSchema
 >;

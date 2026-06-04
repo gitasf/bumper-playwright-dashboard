@@ -1,4 +1,3 @@
-import { SearchIcon } from "lucide-react";
 import { AnalyticsButtonGroup } from "@/components/analytics/button-group";
 import { FlakyTestRow } from "@/components/flaky-test-row";
 import { KpiInline } from "@/components/kpi-inline";
@@ -19,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { makeHrefBuilder } from "@/lib/page-links";
 import type { Props } from "./flaky.server";
 
 /**
@@ -43,12 +43,11 @@ export default function FlakyTestsPage({
   ranges,
 }: Props) {
   const base = `/t/${project.teamSlug}/p/${project.slug}`;
-  const rangeHref = (r: string): string => {
-    const p = new URLSearchParams();
-    p.set("range", r);
-    if (branchParam) p.set("branch", branchParam);
-    return `${pathname}?${p.toString()}`;
-  };
+  const { with: hrefWith } = makeHrefBuilder(pathname, {
+    range,
+    branch: branchParam,
+  });
+  const rangeHref = (r: string): string => hrefWith({ range: r });
 
   const totalFailures = ranked.reduce((sum, r) => sum + r.flakyCount, 0);
   const avgFlakeRate =
@@ -88,21 +87,6 @@ export default function FlakyTestsPage({
           options={ranges as readonly ("7d" | "14d" | "30d")[]}
           value={range}
         />
-      </div>
-
-      <div className="sticky top-0 z-[4] flex shrink-0 items-center gap-2.5 border-b border-border bg-background px-6 py-2.5">
-        <div className="relative max-w-[320px] flex-1">
-          <SearchIcon
-            aria-hidden
-            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            aria-label="Filter flaky tests"
-            className="h-7 w-full rounded-md border border-line-1 bg-card pl-8 pr-2.5 text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/24"
-            placeholder="Filter flaky tests…"
-            type="search"
-          />
-        </div>
       </div>
 
       {ranked.length === 0 ? (

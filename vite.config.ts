@@ -6,7 +6,7 @@ export default defineConfig({
     "*.{json,jsonc,md,yaml,yml,css}": "vp fmt --write",
   },
   fmt: {
-    ignorePatterns: ["**/worker-configuration.d.ts"],
+    ignorePatterns: ["**/worker-configuration.d.ts", "**/*.html"],
     printWidth: 80,
     tabWidth: 2,
     useTabs: false,

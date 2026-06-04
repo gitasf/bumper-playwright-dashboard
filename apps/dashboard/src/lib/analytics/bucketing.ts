@@ -95,3 +95,31 @@ export function buildEmptyBuckets(
 export function bucketKey(v: number | string): string {
   return String(v);
 }
+
+/**
+ * Left-join SQL aggregate rows onto the empty bucket skeleton.
+ *
+ * This is the single home of the otherwise-implicit key-format contract
+ * between `bucketExpr` (SQL side, in bucketing-sql.ts) and
+ * `buildEmptyBuckets`/`bucketKey` (this file): every row carries a `bucket`
+ * column produced by `bucketExpr`, and the only correct way to align it with
+ * a skeleton slot is `bucketKey(r.bucket) === shell.key`. The join key is
+ * therefore FIXED (no caller-supplied `keyOf`) — a free key selector would
+ * reopen the exact drift this concentrates. Per-row projection stays in the
+ * caller; this only returns each shell decorated with its matched row (or
+ * `undefined` for an empty bucket).
+ */
+export function alignBuckets<R extends { bucket: number | string }>(
+  segment: Segment,
+  windowStartSec: number,
+  nowSec: number,
+  rows: readonly R[],
+): { key: string; label: string; row: R | undefined }[] {
+  const shells = buildEmptyBuckets(segment, windowStartSec, nowSec);
+  const byKey = new Map(rows.map((r) => [bucketKey(r.bucket), r]));
+  return shells.map((s) => ({
+    key: s.key,
+    label: s.label,
+    row: byKey.get(s.key),
+  }));
+}

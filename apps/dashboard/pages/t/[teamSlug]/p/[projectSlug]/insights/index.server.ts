@@ -1,11 +1,15 @@
 import { defineHandler, type InferProps } from "void";
 import { and, db, eq, gte, sql } from "void/db";
 import { runs } from "@schema";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
-import { DAY_SEC, parseSegment, SEGMENTS } from "@/lib/analytics/bucketing";
+import { parseSegment, SEGMENTS } from "@/lib/analytics/bucketing";
 import { bucketExpr } from "@/lib/analytics/bucketing-sql";
-import { makeRangeParser, rangeToSeconds } from "@/lib/analytics/range";
+import {
+  normalizeBranchFilter,
+  resolveAnalyticsWindow,
+} from "@/lib/analytics/params";
+import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
+import { runScopeWhere } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -24,22 +28,22 @@ export const loader = defineHandler(async (c) => {
   const url = new URL(c.req.url);
   const range = parseRange(url.searchParams.get("range"));
   const segment = parseSegment(url.searchParams.get("segment"), "day");
-  const branchParam = url.searchParams.get("branch");
-  const branchFilter =
-    !branchParam || branchParam === ALL_BRANCHES ? null : branchParam;
-  const rangeSec = rangeToSeconds(range);
-  const days = rangeSec ? rangeSec / DAY_SEC : 30;
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  const windowStartSec = nowSec - days * DAY_SEC;
+  const { branchParam, branchFilter } = normalizeBranchFilter(
+    url.searchParams.get("branch"),
+  );
+  const {
+    nowSec,
+    windowStartSec,
+    days: windowDays,
+  } = resolveAnalyticsWindow(range);
+  const days = windowDays ?? 30;
 
   const branches = await loadProjectBranches(scope);
 
   const expr = bucketExpr(segment);
 
   const aggConditions = [
-    eq(runs.teamId, scope.teamId),
-    eq(runs.projectId, scope.projectId),
+    runScopeWhere(scope),
     gte(runs.createdAt, windowStartSec),
   ];
   if (branchFilter) aggConditions.push(eq(runs.branch, branchFilter));

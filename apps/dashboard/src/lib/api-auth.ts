@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { validateApiKey } from "@/lib/api-key";
+import { SUPPORTED_VERSIONS, WRIGHTFUL_VERSION_HEADER } from "@/lib/schemas";
 import type { ApiKey } from "@schema";
 
 declare module "void" {
@@ -44,13 +45,14 @@ export function getApiKey(c: Context): ApiKey {
 
 /**
  * Reject unsupported protocol versions. The reporter sends
- * `X-Wrightful-Version: 3`; older versions get a 409 Conflict with an
- * upgrade hint.
+ * `X-Wrightful-Version: 3`; older versions get a 409 Conflict with an upgrade
+ * hint. The accept-set and header name live in `@/lib/schemas` (the
+ * cross-package wire-contract module); the reporter's emit-side
+ * `PROTOCOL_VERSION` is asserted to be a member of `SUPPORTED_VERSIONS` by
+ * `packages/reporter/src/__tests__/contract.test.ts`.
  */
-const SUPPORTED_VERSIONS = new Set(["3"]);
-
 export function negotiateVersionOrResponse(c: Context): Response | null {
-  const v = c.req.header("X-Wrightful-Version");
+  const v = c.req.header(WRIGHTFUL_VERSION_HEADER);
   // Require the header — every supported reporter sends it on every ingest
   // request (see packages/reporter client `this.headers`). Treating a missing
   // header as "fine" let an unversioned client bypass the gate entirely.

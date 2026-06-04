@@ -1,9 +1,9 @@
+// `sql` (from the side-effect-free `void/_db` entry, not `void/db` whose `db`
+// export resolves the D1 binding) backs the `COALESCE(role, '')` expression in
+// the artifacts unique index below — safe at schema-parse time and for
+// `void db generate`.
+import { sql } from "void/_db";
 import { index, integer, sqliteTable, text, uniqueIndex } from "void/schema-d1";
-// `sql` is needed for the partial-index predicate on `runs` below. `void/db`'s
-// `db` export is a lazy Proxy (it only resolves the D1 binding on property
-// access), so importing it here is side-effect-free at schema-parse time —
-// safe for both the app build and `void db generate`.
-import { sql } from "void/db";
 
 export type MembershipRole = "owner" | "member";
 
@@ -216,6 +216,22 @@ export const runs = sqliteTable(
     reporterVersion: text("reporterVersion"),
     playwrightVersion: text("playwrightVersion"),
     createdAt: integer("createdAt").notNull(),
+    /**
+     * Liveness signal: the epoch-seconds timestamp of the most recent ingest
+     * write to this run. Initialized to `createdAt` at open (so an onBegin-only
+     * dead run is still sweepable) and bumped to "now" in the SAME D1 batch as
+     * every subsequent /results, /complete, and watchdog write — never a
+     * separate round-trip.
+     *
+     * The cron watchdog (`crons/sweep-stuck-runs.ts`) keys off THIS, not
+     * `createdAt`, via `staleRunFilter` (src/lib/scope.ts): "no write activity
+     * for N minutes" is what 'stuck' actually means, so a legitimately long
+     * suite that is still streaming results is no longer force-flipped to
+     * 'interrupted'. Nullable for migration safety on rows that predate the
+     * column; readers `coalesce(lastActivityAt, createdAt)` so a NULL is never
+     * treated as "infinitely stale".
+     */
+    lastActivityAt: integer("lastActivityAt"),
     completedAt: integer("completedAt"),
   },
   (t) => [
@@ -235,14 +251,16 @@ export const runs = sqliteTable(
       t.createdAt,
     ),
     index("runs_project_actor_idx").on(t.projectId, t.actor),
-    // Partial index for the stuck-run watchdog cron (`crons/sweep-stuck-runs.ts`:
-    // `WHERE status = 'running' AND createdAt < cutoff`). Indexing only in-flight
-    // runs turns the sweep from a cross-project scan into a tiny seek, and the
-    // index stays small (one row per live run). See
-    // docs/worklog/2026-05-29-db-performance-audit.md §3.K.
-    index("runs_running_idx")
-      .on(t.createdAt)
-      .where(sql`${t.status} = 'running'`),
+    /**
+     * Serves the watchdog sweep SELECT (`sweepStaleRuns` / `staleRunFilter`):
+     * `status = 'running' AND coalesce(lastActivityAt, createdAt) < cutoff`.
+     * Without it the sweep is a status-filtered table scan; this lets D1 seek
+     * straight to the 'running' rows (a small slice in steady state) and walk
+     * them in lastActivityAt order so the bounded `.limit` slice is cheap.
+     * (Supersedes the perf-audit's partial `runs(createdAt) WHERE running`
+     * index — the watchdog is now keyed on lastActivityAt, not createdAt.)
+     */
+    index("runs_status_lastActivityAt_idx").on(t.status, t.lastActivityAt),
   ],
 );
 
@@ -369,7 +387,10 @@ export const artifacts = sqliteTable(
     name: text("name").notNull(),
     contentType: text("contentType").notNull(),
     sizeBytes: integer("sizeBytes").notNull(),
-    /** R2 object key. Convention: `artifacts/<artifactId>/<safe-filename>`. */
+    /**
+     * R2 object key. Built by `buildArtifactR2Key` in `src/lib/artifacts.ts`:
+     * `t/<teamId>/p/<projectId>/runs/<runId>/<testResultId>/<artifactId>/<safe-filename>`.
+     */
     r2Key: text("r2Key").notNull(),
     attempt: integer("attempt").notNull().default(0),
     /**
@@ -379,12 +400,37 @@ export const artifacts = sqliteTable(
     role: text("role"),
     /**
      * Shared name used to group the three sibling images of a visual
-     * regression failure. Indexed via the partial index below.
+     * regression failure (sent alongside `role`); null for non-snapshot
+     * artifacts. Not part of the idempotency identity below.
      */
     snapshotName: text("snapshotName"),
     createdAt: integer("createdAt").notNull(),
   },
-  (t) => [index("artifacts_testResultId_idx").on(t.testResultId)],
+  (t) => [
+    index("artifacts_testResultId_idx").on(t.testResultId),
+    /**
+     * Artifact idempotency identity. A retried `/results` flush re-registers
+     * the same artifact set; this tuple is what makes two registrations "the
+     * same artifact" so the reporter's PUT overwrites one R2 object instead of
+     * minting a duplicate row + double-billing storage/egress. It is the DB
+     * mirror of `artifactIdentity()` in `src/lib/artifacts.ts` — keep the two
+     * in sync (e.g. if `snapshotName` ever joins the identity for visual diffs,
+     * add it to BOTH). `role` is nullable and SQLite treats NULLs as distinct
+     * in unique indexes, which would let role-less artifacts (the common case)
+     * dodge the constraint; `COALESCE(role, '')` collapses NULL to the empty
+     * string exactly as `artifactIdentity` does (`role ?? ""`) so the index
+     * enforces the same identity the application dedupes on and closes the
+     * lookup-before-insert race window.
+     */
+    uniqueIndex("artifacts_identity_uq").on(
+      t.projectId,
+      t.testResultId,
+      t.type,
+      t.name,
+      t.attempt,
+      sql`COALESCE(${t.role}, '')`,
+    ),
+  ],
 );
 
 // ---------- Type aliases for downstream code ----------

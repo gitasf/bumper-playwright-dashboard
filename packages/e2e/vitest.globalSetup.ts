@@ -63,7 +63,10 @@ export async function setup(project: TestProject): Promise<void> {
   project.provide("sessionCookie", fixture.sessionCookie);
   project.provide("teamSlug", fixture.teamSlug);
   project.provide("projectSlug", fixture.projectSlug);
-  project.provide("betterAuthSecret", fixture.betterAuthSecret);
+  // The forger in e2e.test.ts signs with the dashboard's *resolved* artifact
+  // secret, not the raw session secret, so they can't diverge once a dedicated
+  // ARTIFACT_TOKEN_SECRET is provisioned.
+  project.provide("artifactTokenSecret", fixture.artifactTokenSecret);
 }
 
 export function teardown(): void {
@@ -80,6 +83,6 @@ declare module "vite-plus/test" {
     sessionCookie: string;
     teamSlug: string;
     projectSlug: string;
-    betterAuthSecret: string;
+    artifactTokenSecret: string;
   }
 }
