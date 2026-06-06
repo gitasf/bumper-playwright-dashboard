@@ -154,7 +154,7 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 
 <!--VITE PLUS END-->
 
-<!--injected-by-void-v0.8.11-->
+<!--injected-by-void-v0.9.2-->
 
 ## Void
 
