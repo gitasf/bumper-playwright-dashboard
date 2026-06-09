@@ -32,6 +32,7 @@ type ServerEventOf<P extends RoomPath> = WebSocketRouteMap[P] extends {
  * `VoidSocket<P>` whose `on("message")` yields `ServerEventOf<P>`); it does NOT
  * erase to `string` / `Record<string,string>` / `unknown` like a lossy cast.
  */
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- aliases `connect` to its resolved-for-our-rooms shape; type-preserving, not lossy (see comment above)
 const connectRoom = connect as unknown as <P extends RoomPath>(
   path: P,
   options: ConnectCommonOptions & { params: ParamsOf<P> },
@@ -98,6 +99,7 @@ export function subscribeToRoom<P extends RoomPath>(
   // stored as (unknown)=>void. The socket for `path` only ever emits
   // ServerEventOf<P>, so re-narrowing the event for this subscriber is sound —
   // the single contained erasure (the public surface stays fully typed).
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the socket for `path` only emits ServerEventOf<P>; re-narrowing from the type-erased listener set is sound (see comment above)
   const fan = (event: unknown) => onEvent(event as ServerEventOf<P>);
   room.listeners.add(fan);
   room.refCount += 1;

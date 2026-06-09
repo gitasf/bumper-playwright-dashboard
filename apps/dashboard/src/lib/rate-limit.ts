@@ -45,6 +45,7 @@ export async function checkRateLimit(
   key: string | null,
 ): Promise<boolean> {
   if (key === null) return true;
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- `env` is the loosely-typed platform/worker env (callers pass `c.env` or test stubs); launder it to the binding container at this single boundary
   const limiter = (env as RateLimiterEnv)[bindingName];
   if (!limiter) return true;
   const { success } = await limiter.limit({ key });

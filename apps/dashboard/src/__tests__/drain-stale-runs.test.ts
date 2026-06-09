@@ -71,6 +71,7 @@ describe("drainStaleRuns", () => {
     // Drain wave-by-wave: a fresh wave only starts once the previous
     // `allSettled` settles, so release whatever is parked, yield the
     // event loop for the next wave to register, and repeat until done.
+    // oxlint-disable-next-line no-unmodified-loop-condition -- `done` is flipped by the awaited drain promise's `.then` above; the linter can't see the cross-async mutation
     while (!done) {
       const wave = pending;
       pending = [];

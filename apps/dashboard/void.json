@@ -7,6 +7,12 @@
   "auth": {
     "providers": ["email"]
   },
+  "sandbox": {
+    "image": "./Dockerfile.sandbox",
+    "platformImage": "REPLACE_WITH_REGISTRY/wrightful-sandbox:latest",
+    "instanceType": "standard-2",
+    "maxInstances": 20
+  },
   "routing": {
     "headers": {
       "/assets/*": ["Cache-Control: public, max-age=31536000, immutable"],

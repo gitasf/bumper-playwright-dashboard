@@ -1,5 +1,6 @@
 import { sql } from "void/db";
 import type { SqlFilterFragment } from "./filters";
+import { assertSqlIdentifier } from "./sql-identifier";
 
 /**
  * The "latest result per test" + per-test status-counter idioms, concentrated.
@@ -52,7 +53,7 @@ export function latestPerTestRn(
 ): SqlFilterFragment {
   const { testIdCol = 'tr."testId"', orderByCol = 'tr."createdAt"' } = opts;
   return sql.raw(
-    `row_number() over (partition by ${testIdCol} order by ${orderByCol} desc) as ${alias}`,
+    `row_number() over (partition by ${assertSqlIdentifier(testIdCol)} order by ${assertSqlIdentifier(orderByCol)} desc) as ${assertSqlIdentifier(alias)}`,
   ) as SqlFilterFragment;
 }
 
@@ -80,8 +81,10 @@ export function latestPerTestValue(
   opts: { alias?: string; rnCol?: string } = {},
 ): SqlFilterFragment {
   const { alias, rnCol = `"rnTime"` } = opts;
-  const expr = `max(case when ${rnCol} = 1 then ${col} end)`;
-  return sql.raw(alias ? `${expr} as ${alias}` : expr) as SqlFilterFragment;
+  const expr = `max(case when ${assertSqlIdentifier(rnCol)} = 1 then ${assertSqlIdentifier(col)} end)`;
+  return sql.raw(
+    alias ? `${expr} as ${assertSqlIdentifier(alias)}` : expr,
+  ) as SqlFilterFragment;
 }
 
 /** The four canonical per-test status buckets. */
@@ -127,7 +130,9 @@ export function statusCounter(
   opts: { alias?: string; statusCol?: string } = {},
 ): SqlFilterFragment {
   const { alias, statusCol = "status" } = opts;
-  const predicate = statusPredicate(kind, statusCol);
+  const predicate = statusPredicate(kind, assertSqlIdentifier(statusCol));
   const expr = `sum(case when ${predicate} then 1 else 0 end)`;
-  return sql.raw(alias ? `${expr} as ${alias}` : expr) as SqlFilterFragment;
+  return sql.raw(
+    alias ? `${expr} as ${assertSqlIdentifier(alias)}` : expr,
+  ) as SqlFilterFragment;
 }

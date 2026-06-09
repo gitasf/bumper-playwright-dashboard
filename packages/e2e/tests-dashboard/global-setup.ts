@@ -48,6 +48,10 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
   const fixture = await bootDashboard({
     port: PORT,
     envBackupSuffix: "playwright-dashboard-backup",
+    // Run synthetic monitors through the in-process StubExecutor (no Docker /
+    // Void Sandbox) so monitors.spec can drive a full schedule→queue→ingest
+    // cycle via the /__void dev triggers. Inert for every other spec.
+    extraEnv: { WRIGHTFUL_MONITOR_EXECUTOR: "stub" },
   });
   globalThis.__wrightfulDashboardFixture = fixture;
 
@@ -119,6 +123,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
           artifactTokenSecret: fixture.artifactTokenSecret,
           email: fixture.email,
           password: fixture.password,
+          devTriggerToken: fixture.devTriggerToken,
         },
         null,
         2,

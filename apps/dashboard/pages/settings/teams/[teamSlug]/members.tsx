@@ -68,10 +68,15 @@ export default function SettingsTeamMembersPage({
         body: JSON.stringify({ identifier: id }),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        throw new Error(body.error ?? "Could not create invite.");
+        const body: unknown = await res.json().catch(() => null);
+        const message =
+          typeof body === "object" &&
+          body !== null &&
+          "error" in body &&
+          typeof body.error === "string"
+            ? body.error
+            : "Could not create invite.";
+        throw new Error(message);
       }
       return (await res.json()) as CreateInviteResponse;
     },

@@ -34,5 +34,6 @@ import { db } from "void/db";
 export async function runBatch(
   statements: PromiseLike<unknown>[],
 ): Promise<readonly unknown[]> {
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- db.batch's heterogeneous-tuple signature can't be satisfied by a dynamic array; the single confined launder (see file doc)
   return (await db.batch(statements as never)) as readonly unknown[];
 }

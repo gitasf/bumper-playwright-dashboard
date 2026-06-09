@@ -49,13 +49,14 @@ export function outcomeBarSegments({
 >): OutcomeSegment[] {
   const sum = total ?? passed + failed + flaky + skipped;
   const denom = sum === 0 ? 1 : sum;
-  return [
+  const segments: { key: OutcomeSegment["key"]; n: number }[] = [
     { key: "passed", n: passed },
     { key: "flaky", n: flaky },
     { key: "failed", n: failed },
     { key: "skipped", n: skipped },
-  ].map((s) => ({
-    key: s.key as OutcomeSegment["key"],
+  ];
+  return segments.map((s) => ({
+    key: s.key,
     n: s.n,
     widthPercent: (s.n / denom) * 100,
     color: statusToken(s.key),

@@ -54,7 +54,6 @@ type AccountContext = Parameters<AccountAfter>[1];
 // below is loaded via a deferred dynamic import). Keep the two in sync.
 const githubClientId = process.env.AUTH_GITHUB_CLIENT_ID;
 const githubClientSecret = process.env.AUTH_GITHUB_CLIENT_SECRET;
-const githubProviderEnabled = Boolean(githubClientId && githubClientSecret);
 const openSignupAllowed = /^(true|1)$/i.test(
   process.env.ALLOW_OPEN_SIGNUP ?? "",
 );
@@ -88,11 +87,11 @@ export default defineAuth(({ defaults }) => ({
   },
   socialProviders: {
     ...defaults.socialProviders,
-    ...(githubProviderEnabled
+    ...(githubClientId && githubClientSecret
       ? {
           github: {
-            clientId: githubClientId as string,
-            clientSecret: githubClientSecret as string,
+            clientId: githubClientId,
+            clientSecret: githubClientSecret,
             // Only `user:email` (required for the email claim). The previous
             // `read:org` scope existed for GitHub-org auto-join team
             // suggestions, which were replaced by directed invites

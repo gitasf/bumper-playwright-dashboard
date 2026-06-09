@@ -97,6 +97,16 @@
   --color-failed: var(--fail);
   --color-failed-soft: var(--fail-soft);
 
+  /* Synthetic-monitor status tokens (consumed by monitor-status.tsx). */
+  --color-degraded: var(--degraded);
+  --color-degraded-soft: var(--degraded-soft);
+  --color-error: var(--error);
+  --color-error-soft: var(--error-soft);
+  --color-queued: var(--queued);
+  --color-queued-soft: var(--queued-soft);
+  --color-paused: var(--paused);
+  --color-paused-soft: var(--paused-soft);
+
   /* 4-level surface scale (bg-0 = app, bg-1 = card, bg-2 = elevated tint,
    * bg-3 = hover/active). */
   --color-bg-0: var(--bg-0);
@@ -305,6 +315,19 @@
   --failed: var(--fail);
   --failed-soft: var(--fail-soft);
 
+  /* Synthetic-monitor status palette (var() refs → follow the active theme).
+   * degraded ≈ flaky (amber / soft-fail); error ≈ fail red — distinguished from
+   * Fail by glyph + label (shape-paired, colorblind-safe), not hue; queued /
+   * paused ≈ skipped (neutral). */
+  --degraded: var(--flaky);
+  --degraded-soft: var(--flaky-soft);
+  --error: var(--fail);
+  --error-soft: var(--fail-soft);
+  --queued: var(--skipped);
+  --queued-soft: var(--skipped-soft);
+  --paused: var(--skipped);
+  --paused-soft: var(--skipped-soft);
+
   /* Chart slots (pass/fail/flaky/skipped/running) */
   --chart-1: var(--pass);
   --chart-2: var(--fail);
@@ -409,6 +432,19 @@
   --passed-soft: var(--pass-soft);
   --failed: var(--fail);
   --failed-soft: var(--fail-soft);
+
+  /* Synthetic-monitor status palette (var() refs → follow the active theme).
+   * degraded ≈ flaky (amber / soft-fail); error ≈ fail red — distinguished from
+   * Fail by glyph + label (shape-paired, colorblind-safe), not hue; queued /
+   * paused ≈ skipped (neutral). */
+  --degraded: var(--flaky);
+  --degraded-soft: var(--flaky-soft);
+  --error: var(--fail);
+  --error-soft: var(--fail-soft);
+  --queued: var(--skipped);
+  --queued-soft: var(--skipped-soft);
+  --paused: var(--skipped);
+  --paused-soft: var(--skipped-soft);
 
   --chart-1: var(--pass);
   --chart-2: var(--fail);

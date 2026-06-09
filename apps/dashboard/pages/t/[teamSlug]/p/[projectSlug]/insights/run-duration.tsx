@@ -125,7 +125,7 @@ export default function RunDurationPage({
             />
             <AnalyticsButtonGroup
               hrefFor={(r) => hrefWith({ range: r })}
-              options={ranges as readonly ("7d" | "14d" | "30d" | "90d")[]}
+              options={ranges}
               value={range}
             />
           </>

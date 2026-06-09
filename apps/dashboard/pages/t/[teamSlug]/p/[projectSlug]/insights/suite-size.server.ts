@@ -8,6 +8,7 @@ import {
   type Segment,
 } from "@/lib/analytics/bucketing";
 import { bucketExpr } from "@/lib/analytics/bucketing-sql";
+import { runRow } from "@/lib/db-run";
 import {
   normalizeBranchFilter,
   resolveAnalyticsWindow,
@@ -91,7 +92,7 @@ export const loader = defineHandler(async (c) => {
   // (projectId, createdAt) index and each first-seen check is an index seek on
   // (testId, createdAt) — instead of grouping the project's entire testResults
   // history on every render.
-  const testsAddedRow = await db.run(sql`
+  const testsAddedRow = await runRow<{ added?: number }>(sql`
     select count(*) as added
     from (
       select distinct tr."testId" as "testId"
@@ -107,8 +108,7 @@ export const loader = defineHandler(async (c) => {
         and prev."createdAt" < ${addedLookbackSec}
     )
   `);
-  const testsAdded =
-    (testsAddedRow.results?.[0] as { added?: number } | undefined)?.added ?? 0;
+  const testsAdded = testsAddedRow?.added ?? 0;
 
   const fileRows = await db
     .select({
@@ -174,6 +174,6 @@ export const loader = defineHandler(async (c) => {
     tagRows,
     pathname: url.pathname,
     segments: SEGMENTS as readonly string[],
-    ranges: RANGES as readonly string[],
+    ranges: RANGES,
   };
 });

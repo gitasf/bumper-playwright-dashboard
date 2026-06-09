@@ -107,6 +107,16 @@ export function detectCI(): CIInfo | null {
   return null;
 }
 
+/**
+ * Resolve the run's idempotency key. Precedence:
+ *   1. `WRIGHTFUL_IDEMPOTENCY_KEY` env override — set by the synthetic-monitor
+ *      container to the pre-known `monitorExecutions.id`, so the opened run is
+ *      addressable by `(projectId, idempotencyKey === execution.id)` and the
+ *      executor can resolve `runId` back from the execution without a handshake.
+ *   2. The CI build id (deterministic across re-runs of the same CI job, which
+ *      is what lets a re-run recover the same run row).
+ *   3. A random UUID for purely local runs.
+ */
 export function generateIdempotencyKey(ciBuildId: string | null | undefined) {
-  return ciBuildId || randomUUID();
+  return process.env.WRIGHTFUL_IDEMPOTENCY_KEY || ciBuildId || randomUUID();
 }

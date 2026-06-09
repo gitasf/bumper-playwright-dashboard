@@ -39,8 +39,10 @@ export function makeTenantScope(parts: {
   projectSlug: string;
 }): TenantScope {
   return {
+    /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the sole sanctioned string→branded-id launder; callers pass only auth-checked ids (see fn doc) */
     teamId: parts.teamId as AuthorizedTeamId,
     projectId: parts.projectId as AuthorizedProjectId,
+    /* oxlint-enable typescript-eslint/no-unsafe-type-assertion */
     teamSlug: parts.teamSlug,
     projectSlug: parts.projectSlug,
   };

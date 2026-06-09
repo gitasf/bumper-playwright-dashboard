@@ -38,6 +38,15 @@ export interface RunMeta {
   actor?: string | null;
   reporterVersion: string;
   playwrightVersion: string;
+  /**
+   * Synthetic-monitoring provenance — threaded straight onto the open-run
+   * `run` object. Omitted → the dashboard defaults `origin` to `"ci"`. A
+   * containerized monitor run passes `origin: "synthetic"` + the originating
+   * `monitorId` so the run links back to its `monitors.id`. Mirrors
+   * `RunMetaCommon` in apps/dashboard/src/lib/schemas.ts.
+   */
+  origin?: "ci" | "synthetic";
+  monitorId?: string | null;
 }
 
 /** Identity fields the seeder supplies per test. */
@@ -164,6 +173,11 @@ export function buildOpenRunPayload(
       playwrightVersion: meta.playwrightVersion,
       expectedTotalTests: planned.length,
       plannedTests: planned,
+      // Provenance fields are spread conditionally: a normal CI run omits them
+      // entirely (the dashboard defaults `origin` to "ci") so the standard
+      // open-run shape is unchanged; a synthetic monitor run carries both.
+      ...(meta.origin !== undefined ? { origin: meta.origin } : {}),
+      ...(meta.monitorId !== undefined ? { monitorId: meta.monitorId } : {}),
     },
   };
 }

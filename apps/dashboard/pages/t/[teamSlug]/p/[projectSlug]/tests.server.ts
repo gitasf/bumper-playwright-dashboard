@@ -1,7 +1,8 @@
 import { defineHandler, type InferProps } from "void";
-import { db, sql } from "void/db";
+import { sql } from "void/db";
 import { z } from "zod";
 import { loadProjectBranches } from "@/lib/branches-query";
+import { runRows } from "@/lib/db-run";
 import {
   branchFragment,
   searchFragment,
@@ -194,7 +195,7 @@ async function runPageQuery(
   qSql: ReturnType<typeof sql>,
   offset: number,
 ): Promise<PageQueryRow[]> {
-  const result = await db.run(sql`
+  return runRows<PageQueryRow>(sql`
     with grouped as (
       select
         tr."testId" as "testId",
@@ -213,7 +214,6 @@ async function runPageQuery(
     limit ${PAGE_SIZE}
     offset ${offset}
   `);
-  return (result.results as PageQueryRow[]) ?? [];
 }
 
 async function runAggregateQuery(
@@ -222,7 +222,7 @@ async function runAggregateQuery(
   branchSql: ReturnType<typeof sql>,
   testIds: readonly string[],
 ): Promise<Map<string, AggregateRow>> {
-  const result = await db.run(sql`
+  const rows = await runRows<AggregateRow>(sql`
     with ranked as (
       select
         tr."testId" as "testId",
@@ -259,6 +259,5 @@ async function runAggregateQuery(
     from ranked
     group by "testId"
   `);
-  const rows = (result.results as AggregateRow[]) ?? [];
   return new Map(rows.map((r) => [r.testId, r]));
 }

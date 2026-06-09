@@ -251,6 +251,96 @@ describe("reporter ↔ dashboard wire contract", () => {
   });
 });
 
+// Synthetic-monitoring provenance (run.origin + run.monitorId) is a v3
+// addition the reporter must emit for a containerized monitor run. These
+// assertions are the canary for the new fields: a hand-built synthetic
+// open-run payload and the builder's synthetic output both have to parse
+// through the dashboard's OpenRunPayloadSchema, and the dashboard must still
+// default a normal (origin-less) run to "ci".
+describe("reporter ↔ dashboard synthetic-monitoring contract", () => {
+  it("a synthetic open-run payload (origin + monitorId) parses through OpenRunPayloadSchema", () => {
+    const tests = [
+      makeTest({
+        id: "t1",
+        outcome: "expected",
+        title: "homepage loads",
+        file: "check.spec.ts",
+      }),
+    ];
+    const plannedTests = tests.map((t) => buildTestDescriptor(t, null));
+
+    const openPayload = {
+      // The container sets WRIGHTFUL_IDEMPOTENCY_KEY = monitorExecutions.id, so
+      // the opened run is addressable by (projectId, idempotencyKey).
+      idempotencyKey: "01EXEC0000000000000000000",
+      run: {
+        ciProvider: null,
+        ciBuildId: null,
+        branch: null,
+        environment: null,
+        commitSha: null,
+        commitMessage: null,
+        prNumber: null,
+        repo: null,
+        actor: null,
+        reporterVersion: "0.1.1",
+        playwrightVersion: "1.59.0",
+        expectedTotalTests: plannedTests.length,
+        plannedTests,
+        origin: "synthetic" as const,
+        monitorId: "01MON00000000000000000000",
+      },
+    };
+
+    const parsed = OpenRunPayloadSchema.safeParse(openPayload);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.run.origin).toBe("synthetic");
+    expect(parsed.success && parsed.data.run.monitorId).toBe(
+      "01MON00000000000000000000",
+    );
+  });
+
+  it("buildOpenRunPayload threads origin + monitorId onto the run object", () => {
+    const open = buildOpenRunPayload(
+      {
+        idempotencyKey: "01EXEC0000000000000000000",
+        reporterVersion: "0.1.0",
+        playwrightVersion: "1.59.1",
+        origin: "synthetic",
+        monitorId: "01MON00000000000000000000",
+      },
+      [{ testId: "t1", title: "a", file: "check.spec.ts", projectName: null }],
+    );
+
+    expect(open.run.origin).toBe("synthetic");
+    expect(open.run.monitorId).toBe("01MON00000000000000000000");
+
+    const parsed = OpenRunPayloadSchema.safeParse(open);
+    expect(parsed.success).toBe(true);
+  });
+
+  it("buildOpenRunPayload omits the provenance fields on a normal CI run", () => {
+    const open = buildOpenRunPayload(
+      {
+        idempotencyKey: "ci-build-123",
+        reporterVersion: "0.1.0",
+        playwrightVersion: "1.59.1",
+      },
+      [{ testId: "t1", title: "a", file: "a.spec.ts", projectName: null }],
+    );
+
+    // A standard CI run leaves both fields off the wire entirely; the
+    // dashboard defaults `origin` to "ci" server-side. Parsing must still
+    // succeed and `monitorId` must remain absent.
+    expect("origin" in open.run).toBe(false);
+    expect("monitorId" in open.run).toBe(false);
+
+    const parsed = OpenRunPayloadSchema.safeParse(open);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.run.origin).toBeUndefined();
+  });
+});
+
 // The plain-data builders (payload.ts) are the third producer of the v3 wire
 // shape — fed by the local history seeder (apps/dashboard/scripts/seed),
 // which has only synthetic data and no Playwright runtime. Before they

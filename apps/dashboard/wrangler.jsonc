@@ -11,6 +11,16 @@
   // here — those collide with Void's runtime.
   "name": "wrightful-dashboard-void",
   "compatibility_date": "2026-05-22",
+  // Don't build the monitor sandbox container image on `vite dev`/preview. The
+  // `sandbox` block in void.json adds a Cloudflare container binding, and the
+  // Cloudflare plugin otherwise builds `Dockerfile.sandbox` (FROM
+  // docker.io/cloudflare/sandbox) at every dev boot — slow, and it needs Docker
+  // Hub reachability, which flakes in CI and broke the e2e dashboard-fixture
+  // boot. Local dev + tests use the in-process StubExecutor
+  // (WRIGHTFUL_MONITOR_EXECUTOR=stub), never the real container, so the build is
+  // pure overhead here. This is a dev/preview-only switch — `void deploy` still
+  // ships the container via the sandbox `platformImage`.
+  "dev": { "enable_containers": false },
   "ratelimits": [
     {
       // Unauthenticated /api/auth/* (void auth). Keyed by IP + pathname as a

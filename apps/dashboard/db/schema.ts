@@ -233,11 +233,33 @@ export const runs = sqliteTable(
      */
     lastActivityAt: integer("lastActivityAt"),
     completedAt: integer("completedAt"),
+    /**
+     * Where this run came from. `'ci'` (default) — a normal reporter run from
+     * CI/local. `'synthetic'` — produced by a scheduled synthetic monitor (see
+     * `monitors`). Lets the runs list / insights include or separate synthetic
+     * traffic. Existing rows default to `'ci'`.
+     */
+    origin: text("origin").notNull().default("ci"),
+    /**
+     * For `origin = 'synthetic'`, the `monitors.id` this run belongs to. A
+     * LOGICAL foreign key (no `.references()`) — declared without a Drizzle FK
+     * to avoid a `runs` ↔ `monitors` cascade cycle in the generated migration,
+     * matching the existing logical-FK precedent (`memberships.userId`). Null
+     * for CI runs. A deleted monitor cascades its `monitorExecutions`; the run
+     * itself is retained with a dangling `monitorId` (harmless — readers treat
+     * a missing monitor gracefully).
+     */
+    monitorId: text("monitorId"),
   },
   (t) => [
     uniqueIndex("runs_project_idempotency_key_idx").on(
       t.projectId,
       t.idempotencyKey,
+    ),
+    index("runs_project_monitor_created_at_idx").on(
+      t.projectId,
+      t.monitorId,
+      t.createdAt,
     ),
     index("runs_project_created_at_idx").on(t.projectId, t.createdAt),
     index("runs_project_branch_created_at_idx").on(
@@ -433,6 +455,117 @@ export const artifacts = sqliteTable(
   ],
 );
 
+// ---------- Synthetic monitoring ----------
+
+/**
+ * A synthetic monitor: user-authored Playwright (v1: `type = 'browser'`) run on
+ * a schedule. Reserved `type`s ('http' | 'tcp' | 'ping') let the later
+ * Checkly-style uptime family reuse this row + the scheduler + execution record
+ * with a lighter executor. Run-scoped: carries denormalized `teamId` AND
+ * `projectId` like `runs`, so tenant isolation needs no join.
+ */
+export const monitors = sqliteTable(
+  "monitors",
+  {
+    id: text("id").primaryKey(),
+    teamId: text("teamId")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    projectId: text("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** Discriminator: 'browser' (v1). Reserved: 'http' | 'tcp' | 'ping'. */
+    type: text("type").notNull(),
+    /** 0/1 — paused monitors keep their row but are skipped by the sweep. */
+    enabled: integer("enabled").notNull().default(1),
+    /** Playwright spec source for `type = 'browser'`; null for non-browser types. */
+    source: text("source"),
+    /** Type-specific config as JSON (e.g. browser: timeout/workers; http: url/assertions). */
+    config: text("config"),
+    intervalSeconds: integer("intervalSeconds").notNull(),
+    /** 'round_robin' | 'parallel' — reserved for multi-location; v1 single origin. */
+    schedulingStrategy: text("schedulingStrategy")
+      .notNull()
+      .default("round_robin"),
+    /** Retries/anti-flapping config as JSON. Reserved (not consumed in v1). */
+    retryConfig: text("retryConfig"),
+    /**
+     * Epoch-seconds of the next due execution; the sweep's seek key. Null means
+     * "not scheduled" (paused / never armed). Advanced transactionally in the
+     * sweep's D1 batch BEFORE enqueue so a double cron tick can't double-fire.
+     */
+    nextRunAt: integer("nextRunAt"),
+    lastEnqueuedAt: integer("lastEnqueuedAt"),
+    lastRunAt: integer("lastRunAt"),
+    /** Terminal state of the most recent execution: pass|degraded|fail|error|running. */
+    lastStatus: text("lastStatus"),
+    /** void-managed `user.id` of the creator. Logical FK — see schema header. */
+    createdBy: text("createdBy").notNull(),
+    createdAt: integer("createdAt").notNull(),
+    updatedAt: integer("updatedAt").notNull(),
+  },
+  (t) => [
+    uniqueIndex("monitors_project_name_idx").on(t.projectId, t.name),
+    index("monitors_project_created_at_idx").on(t.projectId, t.createdAt),
+    /**
+     * The sweep SELECT (`enabled = 1 AND nextRunAt <= cutoff`) seeks straight to
+     * the due slice and walks it in nextRunAt order, mirroring how
+     * `runs_status_lastActivityAt_idx` serves the stuck-run watchdog.
+     */
+    index("monitors_enabled_next_run_at_idx").on(t.enabled, t.nextRunAt),
+  ],
+);
+
+/**
+ * One row per scheduled attempt of a monitor. For `type = 'browser'`, `runId`
+ * links to the full `runs` row the in-container reporter streamed (so the rich
+ * run/test UI is reused); lighter uptime types fill result fields inline (added
+ * later). `runId` is a LOGICAL ref (no `.references()`) to avoid a FK cycle and
+ * so a deleted run leaves the execution row intact with a null link.
+ */
+export const monitorExecutions = sqliteTable(
+  "monitorExecutions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    monitorId: text("monitorId")
+      .notNull()
+      .references(() => monitors.id, { onDelete: "cascade" }),
+    scheduledFor: integer("scheduledFor").notNull(),
+    startedAt: integer("startedAt"),
+    completedAt: integer("completedAt"),
+    /** queued | running | pass | degraded | fail | error. */
+    state: text("state").notNull(),
+    attempt: integer("attempt").notNull().default(0),
+    /** Logical ref to `runs.id` for browser executions; null otherwise. */
+    runId: text("runId"),
+    durationMs: integer("durationMs"),
+    errorMessage: text("errorMessage"),
+    createdAt: integer("createdAt").notNull(),
+  },
+  (t) => [
+    index("monitorExecutions_monitor_created_at_idx").on(
+      t.monitorId,
+      t.createdAt,
+    ),
+    index("monitorExecutions_project_created_at_idx").on(
+      t.projectId,
+      t.createdAt,
+    ),
+    /**
+     * Serves the stuck-execution reaper SELECT (`sweepStaleExecutions`):
+     * `state IN ('queued','running') AND createdAt < cutoff` ORDER BY createdAt.
+     * Mirrors how `runs_status_lastActivityAt_idx` serves the stuck-run watchdog
+     * — without it the reaper is a state-filtered table scan; this lets D1 seek
+     * the small non-terminal slice in steady state and walk it in createdAt order.
+     */
+    index("monitorExecutions_state_created_at_idx").on(t.state, t.createdAt),
+  ],
+);
+
 // ---------- Type aliases for downstream code ----------
 
 export type Team = typeof teams.$inferSelect;
@@ -448,3 +581,5 @@ export type TestTag = typeof testTags.$inferSelect;
 export type TestAnnotation = typeof testAnnotations.$inferSelect;
 export type TestResultAttempt = typeof testResultAttempts.$inferSelect;
 export type Artifact = typeof artifacts.$inferSelect;
+export type Monitor = typeof monitors.$inferSelect;
+export type MonitorExecution = typeof monitorExecutions.$inferSelect;

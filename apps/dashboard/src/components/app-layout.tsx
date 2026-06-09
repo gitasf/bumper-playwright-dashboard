@@ -5,6 +5,7 @@ import {
   FlaskConical,
   KeyRound,
   List,
+  Radar,
   Settings,
   TriangleAlert,
   UserRound,
@@ -24,9 +25,10 @@ import type {
   WorkspaceListItem,
 } from "@/lib/shared-bundle";
 
-type NavId = "runs" | "flaky" | "insights" | "tests";
+type NavId = "runs" | "monitors" | "flaky" | "insights" | "tests";
 
 function deriveActiveNav(pathname: string): NavId {
+  if (/\/monitors(\/|$)/.test(pathname)) return "monitors";
   if (/\/flaky(\/|$)/.test(pathname)) return "flaky";
   if (/\/insights(\/|$)/.test(pathname)) return "insights";
   if (/\/tests(\/|$)/.test(pathname)) return "tests";
@@ -232,6 +234,12 @@ function AppSidebarMiddle({ pathname, base }: AppSidebarMiddleProps) {
   }[] = base
     ? [
         { href: base, label: "Runs", icon: CheckSquare, id: "runs" },
+        {
+          href: `${base}/monitors`,
+          label: "Monitors",
+          icon: Radar,
+          id: "monitors",
+        },
         {
           href: `${base}/flaky`,
           label: "Flaky tests",

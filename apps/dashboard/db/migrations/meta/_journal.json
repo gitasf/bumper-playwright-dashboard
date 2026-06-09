@@ -8,6 +8,20 @@
       "when": 1780585296171,
       "tag": "20260604150136_modern_lila_cheney",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1780851799276,
+      "tag": "20260607170319_watery_mimic",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1780951799647,
+      "tag": "20260608204959_faulty_vulcan",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,14 @@
+# Build context for Dockerfile.sandbox. The image installs everything via npm and
+# COPYs nothing from the context, so exclude the heavy + sensitive dirs to keep
+# the local `vp dev` build context tiny and to keep secrets (.env.local) out of
+# the Docker build entirely.
+node_modules
+.void
+dist
+build
+.wrangler
+coverage
+*.log
+.env
+.env.*
+.DS_Store

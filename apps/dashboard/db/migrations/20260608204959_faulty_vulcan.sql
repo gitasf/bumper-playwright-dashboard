@@ -1,0 +1,1 @@
+CREATE INDEX `monitorExecutions_state_created_at_idx` ON `monitorExecutions` (`state`,`createdAt`);

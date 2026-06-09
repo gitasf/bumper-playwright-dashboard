@@ -17,7 +17,13 @@
  * the local D1 + reapply migrations), not a Durable-Object state wipe.
  */
 import { type ChildProcess, execSync, spawn } from "node:child_process";
-import { existsSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -27,6 +33,16 @@ const ROOT = resolve(__dirname, "../../..");
 const DASHBOARD_DIR = resolve(ROOT, "apps/dashboard");
 const REPORTER_DIR = resolve(ROOT, "packages/reporter");
 const ENV_LOCAL_PATH = resolve(DASHBOARD_DIR, ".env.local");
+/**
+ * Where Void persists the dev-trigger token (see `getOrCreateDevTriggerToken`
+ * in the void plugin). Written during `vp dev` config when the trigger
+ * endpoints are wired, so it exists by the time `waitForServer` returns.
+ */
+const DEV_TRIGGER_TOKEN_PATH = resolve(
+  DASHBOARD_DIR,
+  ".void",
+  "dev-trigger-token",
+);
 
 export interface BootOptions {
   /** TCP port the dev server should listen on. */
@@ -59,6 +75,15 @@ export interface BootOptions {
   userName?: string;
   /** Distinct suffix so concurrent suites don't collide on the .env.local backup. */
   envBackupSuffix?: string;
+  /**
+   * Extra `KEY=value` env pairs appended to the generated `.env.local`. Lets a
+   * caller opt the booted dashboard into behavior a spec needs — e.g. the
+   * Playwright UI suite sets `WRIGHTFUL_MONITOR_EXECUTOR=stub` so the synthetic
+   * monitors queue consumer runs the in-process `StubExecutor` (no Docker /
+   * Void Sandbox) and the schedule→queue→ingest pipeline is exercisable in CI.
+   * Keep these local-only and side-effect-free for unrelated specs.
+   */
+  extraEnv?: Record<string, string>;
 }
 
 export interface DashboardFixture {
@@ -81,6 +106,14 @@ export interface DashboardFixture {
   artifactTokenSecret: string;
   email: string;
   password: string;
+  /**
+   * The per-project dev-trigger token Void persists at
+   * `<dashboard>/.void/dev-trigger-token`. Send it as the `x-void-dev-trigger`
+   * header to manually fire the `/__void/scheduled` (cron) and `/__void/queue`
+   * (queue consumer) dev endpoints — how the monitors spec drives one scheduled
+   * cycle without waiting on real Cloudflare cron / queue delivery.
+   */
+  devTriggerToken: string;
   /** Kills the dev server and restores `.env.local`. Idempotent. */
   teardown: () => void;
 }
@@ -245,6 +278,9 @@ export async function bootDashboard(
         // satisfy the provider resolver without ever being used.
         `AUTH_GITHUB_CLIENT_ID=e2e-unused-github-client-id`,
         `AUTH_GITHUB_CLIENT_SECRET=e2e-unused-github-client-secret`,
+        // Caller-supplied opt-ins (e.g. WRIGHTFUL_MONITOR_EXECUTOR=stub). Written
+        // last so a caller can override a default above if it ever needs to.
+        ...Object.entries(options.extraEnv ?? {}).map(([k, v]) => `${k}=${v}`),
       ].join("\n") + "\n";
     writeFileSync(ENV_LOCAL_PATH, envLocal, "utf8");
 
@@ -286,6 +322,23 @@ export async function bootDashboard(
       throw err;
     }
     log("  Dashboard ready.");
+
+    // Read the dev-trigger token Void wrote during `vp dev` config. It must
+    // exist by now (it's written before the server accepts requests); retry a
+    // few times only to ride out a filesystem-flush race on slow CI disks.
+    let devTriggerToken = "";
+    for (let i = 0; i < 10 && !devTriggerToken; i++) {
+      try {
+        devTriggerToken = readFileSync(DEV_TRIGGER_TOKEN_PATH, "utf8").trim();
+      } catch {
+        await sleep(500);
+      }
+    }
+    if (!devTriggerToken) {
+      throw new Error(
+        `dev-trigger token not found at ${DEV_TRIGGER_TOKEN_PATH} after server boot — the /__void/{scheduled,queue} dev triggers can't be authorized.`,
+      );
+    }
 
     log("Step 5: Sign up + create team/project/key over HTTP");
     const request = makeRequester(url);
@@ -389,6 +442,7 @@ export async function bootDashboard(
       artifactTokenSecret,
       email,
       password,
+      devTriggerToken,
       teardown,
     };
   } catch (err) {

@@ -84,6 +84,6 @@ export const loader = defineHandler(async (c) => {
     pathname: url.pathname,
     aggRows,
     segments: SEGMENTS as readonly string[],
-    ranges: RANGES as readonly string[],
+    ranges: RANGES,
   };
 });

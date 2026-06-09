@@ -145,6 +145,14 @@ const RunMetaCommon = {
   playwrightVersion: z.string().max(MAX.VERSION).nullable().optional(),
   expectedTotalTests: z.number().int().min(0).nullable().optional(),
   plannedTests: z.array(PlannedTestSchema).max(MAX_PLANNED_TESTS).default([]),
+  /**
+   * Synthetic-monitoring provenance. `origin` defaults to `"ci"` server-side
+   * when absent (a normal reporter run); `"synthetic"` marks a run produced by
+   * a scheduled monitor, in which case `monitorId` carries the originating
+   * `monitors.id`. Both optional so the standard CI reporter omits them.
+   */
+  origin: z.enum(["ci", "synthetic"]).optional(),
+  monitorId: z.string().max(MAX.ID).nullable().optional(),
 };
 
 // Unix seconds. Optional and only honored in dev — production handlers

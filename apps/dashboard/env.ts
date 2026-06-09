@@ -75,6 +75,60 @@ export default defineEnv({
    */
   ALLOW_OPEN_SIGNUP: boolean().default(false),
 
+  // ---------- Synthetic monitoring ----------
+
+  /**
+   * Max due monitors the sweep cron enqueues per invocation. Bounds the cheap
+   * select+enqueue pass so a backlog can't blow the 30s sub-hour cron CPU
+   * budget; the backlog drains across successive 1-minute ticks. Mirrors
+   * `WRIGHTFUL_SWEEP_BATCH_SIZE`. Default 200.
+   */
+  WRIGHTFUL_MONITOR_SWEEP_BATCH_SIZE: number().default(200),
+
+  /**
+   * Per-project cap on the number of monitors. A coarse abuse/cost guardrail —
+   * each monitor multiplies scheduled browser-container runs. Default 25.
+   */
+  WRIGHTFUL_MONITOR_MAX_PER_PROJECT: number().default(25),
+
+  /**
+   * Floor on a monitor's interval. Cloudflare cron granularity is 1 minute and
+   * sub-minute scheduling needs a different primitive (Durable Object alarms),
+   * so 60 is the v1 floor; also a cost guard against 10s-interval browser runs.
+   */
+  WRIGHTFUL_MONITOR_MIN_INTERVAL_SECONDS: number().default(60),
+
+  /**
+   * Which `MonitorExecutor` the queue consumer uses. `'sandbox'` (default) runs
+   * the user's Playwright in a Void Sandbox container. `'stub'` synthesizes a
+   * deterministic run in-process with no container — used by tests and local
+   * dev so the full schedule→queue→ingest pipeline is exercisable without Docker.
+   */
+  WRIGHTFUL_MONITOR_EXECUTOR: string().default("sandbox"),
+
+  /**
+   * Hard per-execution wall-clock cap (seconds) for a synthetic browser run.
+   * Bounds container cost and stops a runaway user script. Default 300 (5 min).
+   *
+   * Coupled to `WRIGHTFUL_MONITOR_EXECUTION_STALE_MINUTES`: the reaper cutoff
+   * must stay above `maxRetries × this + queue dwell` or a legitimately
+   * slow/retrying execution gets reaped mid-flight. If you raise this, raise the
+   * stale window too (defaults: 3 × 5 min = 15 min, comfortably under 30 min).
+   */
+  WRIGHTFUL_MONITOR_MAX_DURATION_SECONDS: number().default(300),
+
+  /**
+   * Minutes a monitor execution can sit non-terminal (`queued`/`running`) before
+   * the reaper cron flips it to `error`. Covers an enqueue send that failed
+   * (stuck `queued`) or a Worker evicted mid-run (stuck `running`); without it
+   * those rows leak forever and skew uptime. Also bounds the synthetic-key
+   * sweeper's orphan window. Must comfortably exceed a full retry lifecycle
+   * (`maxRetries` × `MAX_DURATION_SECONDS` + queue dwell) so a legitimately
+   * slow/retrying execution is never reaped mid-flight. Default 30 — mirrors
+   * `WRIGHTFUL_RUN_STALE_MINUTES`, and well past 3 × 5 min.
+   */
+  WRIGHTFUL_MONITOR_EXECUTION_STALE_MINUTES: number().default(30),
+
   /**
    * OPTIONAL override for the secret authenticating the server's internal
    * DO-to-DO room-publish POST (ingest → `void/ws` room `onRequest` → broadcast).

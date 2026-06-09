@@ -1,5 +1,6 @@
 import { db, eq, or, sql } from "void/db";
 import { teamInvites, userGithubAccounts } from "@schema";
+import { runRow, runRows } from "@/lib/db-run";
 
 /**
  * The single home for reads against the **void-owned** Better Auth tables
@@ -78,7 +79,9 @@ export interface UserAuthProfile {
  */
 export async function getUserIdentity(userId: string): Promise<UserIdentity> {
   const [userRow, githubRow] = await Promise.all([
-    db.run(sql`select email from "user" where id = ${userId} limit 1`),
+    runRow<{ email?: string }>(
+      sql`select email from "user" where id = ${userId} limit 1`,
+    ),
     db
       .select({ githubLogin: userGithubAccounts.githubLogin })
       .from(userGithubAccounts)
@@ -86,8 +89,7 @@ export async function getUserIdentity(userId: string): Promise<UserIdentity> {
       .limit(1),
   ]);
 
-  const rawEmail = (userRow.results?.[0] as { email?: string } | undefined)
-    ?.email;
+  const rawEmail = userRow?.email;
   return {
     email: rawEmail ? rawEmail.toLowerCase() : null,
     githubLogin: githubRow[0]?.githubLogin ?? null,
@@ -115,15 +117,12 @@ export async function getUsersByIds(
       chunk.map((id) => sql`${id}`),
       sql`, `,
     );
-    const rows = await db.run(
-      sql`select id, email, name, image from "user" where id in (${idList})`,
-    );
-    const results = (rows.results ?? []) as Array<{
+    const results = await runRows<{
       id: string;
       email: string;
       name: string;
       image: string | null;
-    }>;
+    }>(sql`select id, email, name, image from "user" where id in (${idList})`);
     for (const r of results) {
       out.set(r.id, { email: r.email, name: r.name, image: r.image });
     }
@@ -139,10 +138,9 @@ export async function getUsersByIds(
 export async function getUserAccounts(
   userId: string,
 ): Promise<UserAccountRow[]> {
-  const accountsRaw = await db.run(
+  return runRows<UserAccountRow>(
     sql`select providerId, createdAt from account where userId = ${userId}`,
   );
-  return (accountsRaw.results ?? []) as UserAccountRow[];
 }
 
 /**

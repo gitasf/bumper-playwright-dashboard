@@ -221,6 +221,15 @@ export default class WrightfulReporter implements Reporter {
 
     const ci = detectCI();
     this.ci = ci;
+    // Synthetic-monitoring overrides. A scheduled monitor launches this suite
+    // in a container with `WRIGHTFUL_RUN_ORIGIN=synthetic`, `WRIGHTFUL_MONITOR_ID`
+    // = the monitor row's id, and `WRIGHTFUL_IDEMPOTENCY_KEY` = the pre-known
+    // execution id (honored inside generateIdempotencyKey). Threading origin +
+    // monitorId onto the open-run payload makes the resulting run attributable
+    // to its monitor execution; absent these, a normal CI run omits them and the
+    // dashboard defaults `origin` to "ci".
+    const runOrigin = resolveRunOrigin(process.env.WRIGHTFUL_RUN_ORIGIN);
+    const monitorId = process.env.WRIGHTFUL_MONITOR_ID || null;
     const payload = {
       idempotencyKey: generateIdempotencyKey(ci?.ciBuildId),
       run: {
@@ -237,6 +246,8 @@ export default class WrightfulReporter implements Reporter {
         playwrightVersion: this.playwrightVersion,
         expectedTotalTests: plannedTests.length,
         plannedTests,
+        origin: runOrigin,
+        monitorId,
       },
     };
 
@@ -682,6 +693,16 @@ function shouldCollectArtifacts(mode: ArtifactMode, test: TestCase): boolean {
   // `failed` mode: upload for failed or flaky tests.
   const outcome = test.outcome();
   return outcome === "unexpected" || outcome === "flaky";
+}
+
+/**
+ * Map the `WRIGHTFUL_RUN_ORIGIN` env value to the wire `origin` enum. Only the
+ * literal `"synthetic"` flips the origin; anything else (unset, empty, or an
+ * unexpected value) falls back to `"ci"` — the safe default for an ordinary
+ * reporter run, matching the dashboard's server-side default.
+ */
+function resolveRunOrigin(raw: string | undefined): "ci" | "synthetic" {
+  return raw === "synthetic" ? "synthetic" : "ci";
 }
 
 function mapFullResultStatus(

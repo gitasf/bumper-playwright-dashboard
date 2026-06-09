@@ -1,5 +1,5 @@
 import { defineHandler, type InferProps } from "void";
-import { db, sql } from "void/db";
+import { sql } from "void/db";
 import {
   parseSegment,
   SEGMENTS,
@@ -13,6 +13,7 @@ import {
 } from "@/lib/analytics/params";
 import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
+import { runRow, runRows } from "@/lib/db-run";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -71,7 +72,7 @@ export const loader = defineHandler(async (c) => {
   const branches = await loadProjectBranches(scope);
   const branchSql = branchFragment(branchFilter);
 
-  const perBucketResult = await db.run(sql`
+  const perBucket = await runRows<PerBucketDurationRow>(sql`
     with ranked as (
       select
         ${expr} as bucket,
@@ -93,9 +94,8 @@ export const loader = defineHandler(async (c) => {
     from ranked
     group by bucket
   `);
-  const perBucket = (perBucketResult.results as PerBucketDurationRow[]) ?? [];
 
-  const overallResult = await db.run(sql`
+  const overall: OverallDurationStats = (await runRow<OverallDurationStats>(sql`
     with ranked as (
       select
         runs."durationMs" as duration,
@@ -113,10 +113,7 @@ export const loader = defineHandler(async (c) => {
       ${percentilePick(0.9)} as p90,
       ${percentilePick(0.95)} as p95
     from ranked
-  `);
-  const overall: OverallDurationStats = (overallResult.results?.[0] as
-    | OverallDurationStats
-    | undefined) ?? {
+  `)) ?? {
     cnt: 0,
     p50: null,
     p90: null,
@@ -145,6 +142,6 @@ export const loader = defineHandler(async (c) => {
     overall,
     pathname: url.pathname,
     segments: SEGMENTS as readonly string[],
-    ranges: RANGES as readonly string[],
+    ranges: RANGES,
   };
 });

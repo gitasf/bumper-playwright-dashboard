@@ -1,6 +1,7 @@
 import { defineHandler, type InferProps } from "void";
-import { db, sql } from "void/db";
+import { sql } from "void/db";
 import { loadProjectBranches } from "@/lib/branches-query";
+import { runRow, runRows } from "@/lib/db-run";
 import { DAY_SEC } from "@/lib/analytics/bucketing";
 import { bucketExpr, percentilePick } from "@/lib/analytics/bucketing-sql";
 import {
@@ -98,7 +99,12 @@ export const loader = defineHandler(async (c) => {
   const qSql = searchFragment(q || null);
 
   // Totals: max duration + count of non-skipped + distinct testIds.
-  const totalsResult = await db.run(sql`
+  const totalsRow =
+    (await runRow<{
+      maxDur?: number | null;
+      n?: number;
+      unique?: number;
+    }>(sql`
     select
       max(tr."durationMs") as "maxDur",
       count(*) as n,
@@ -109,11 +115,7 @@ export const loader = defineHandler(async (c) => {
       and tr.status != 'skipped'
       ${branchSql}
       ${qSql}
-  `);
-  const totalsRow =
-    (totalsResult.results?.[0] as
-      | { maxDur?: number | null; n?: number; unique?: number }
-      | undefined) ?? {};
+  `)) ?? {};
   const totals: TotalsRow = {
     totalResults: totalsRow.n ?? 0,
     maxDurationMs: totalsRow.maxDur ?? 0,
@@ -125,7 +127,7 @@ export const loader = defineHandler(async (c) => {
 
   let histogram: HistogramRow[] = [];
   if (totals.totalResults > 0) {
-    const histResult = await db.run(sql`
+    histogram = await runRows<HistogramRow>(sql`
       select
         cast(
           case
@@ -142,7 +144,6 @@ export const loader = defineHandler(async (c) => {
         ${qSql}
       group by bin
     `);
-    histogram = (histResult.results as HistogramRow[]) ?? [];
   }
 
   const totalPages = Math.max(
@@ -154,7 +155,7 @@ export const loader = defineHandler(async (c) => {
 
   let bottlenecks: BottleneckRow[] = [];
   if (totals.totalUniqueTests > 0) {
-    const bottleneckResult = await db.run(sql`
+    bottlenecks = await runRows<BottleneckRow>(sql`
       with filtered as (
         select
           tr."testId" as "testId",
@@ -199,7 +200,6 @@ export const loader = defineHandler(async (c) => {
       limit ${PAGE_SIZE}
       offset ${offset}
     `);
-    bottlenecks = (bottleneckResult.results as BottleneckRow[]) ?? [];
   }
 
   const pageTestIds = bottlenecks.map((r) => r.testId);
@@ -207,7 +207,11 @@ export const loader = defineHandler(async (c) => {
   if (pageTestIds.length > 0) {
     const sparkStart = nowSec - SPARKLINE_DAYS * DAY_SEC;
     const branchSparkSql = branchFragment(branchFilter);
-    const sparkResult = await db.run(sql`
+    const sparkRows = await runRows<{
+      testId: string;
+      day: number;
+      avg: number;
+    }>(sql`
       select
         tr."testId" as "testId",
         cast(${bucketExpr("day", sql`tr."createdAt"`)} as integer) as day,
@@ -224,9 +228,6 @@ export const loader = defineHandler(async (c) => {
       group by tr."testId", day
       order by tr."testId" asc, day asc
     `);
-    const sparkRows =
-      (sparkResult.results as { testId: string; day: number; avg: number }[]) ??
-      [];
     const sparkMap = new Map<string, SparklinePoint[]>();
     for (const r of sparkRows) {
       const list = sparkMap.get(r.testId) ?? [];

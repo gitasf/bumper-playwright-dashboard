@@ -321,13 +321,9 @@ function BarHitbox({ point }: { point: RunHistoryPoint }) {
     );
   }
 
-  if (interactive) {
+  if (point.href) {
     return (
-      <Link
-        href={point.href as string}
-        aria-label={point.label}
-        className={className}
-      >
+      <Link href={point.href} aria-label={point.label} className={className}>
         {contents}
       </Link>
     );

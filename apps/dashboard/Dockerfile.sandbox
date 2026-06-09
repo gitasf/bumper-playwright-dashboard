@@ -1,0 +1,51 @@
+# Synthetic-monitoring sandbox image (Void Sandbox / Cloudflare Container).
+#
+# Runs ONE user-authored Playwright spec per execution. At runtime the
+# SandboxExecutor (src/lib/monitors/sandbox-executor.ts) writes
+#   /work/playwright.config.ts   (generatePlaywrightConfig — registers @wrightful/reporter)
+#   /work/tests/check.spec.ts    (the user's monitors.source, verbatim)
+# then `sandbox.exec("npx playwright test")` with the WRIGHTFUL_* env that makes
+# the reporter stream a run into /api/runs linked to the execution.
+#
+# MUST extend the Cloudflare Sandbox base image — it provides the control server
+# + ENTRYPOINT that getSandbox()/exec()/writeFile() talk to. We only add a CMD-
+# free layer of tools on top (do NOT override ENTRYPOINT). The base tag MUST
+# match the installed @cloudflare/sandbox npm version (currently 0.10.2) — bump
+# both together. The base is node-slim-based, so npm + apt are available.
+#
+# Chromium-ONLY (no Firefox/WebKit) to keep the image small → faster cold start +
+# well under the 50 GB account image cap. The reporter is a PUBLISHED, zero-
+# runtime-dep npm package, so it installs normally — no workspace vendoring.
+#
+# Wired into void.json#sandbox. Local dev (`vp dev`) builds this once via Docker,
+# then caches it ([r] to rebuild). For `void deploy`, build + push and set
+# void.json#sandbox.platformImage to the pushed reference:
+#   docker build -f apps/dashboard/Dockerfile.sandbox --platform linux/amd64 \
+#     -t <registry>/wrightful-sandbox:latest apps/dashboard
+#   docker push <registry>/wrightful-sandbox:latest
+
+# Match @cloudflare/sandbox npm version. Variants: :<v>, :<v>-python, etc.
+ARG SANDBOX_VERSION=0.10.2
+FROM docker.io/cloudflare/sandbox:${SANDBOX_VERSION}
+
+# Pin Playwright to the version monitors are authored against; keep in lockstep
+# with the reporter's `@playwright/test` peer (>=1.40) when bumping.
+ARG PLAYWRIGHT_VERSION=1.58.2
+
+WORKDIR /work
+
+# Minimal manifest so installs land in /work/node_modules and the executor's
+# `npx playwright test` (run with cwd /work) resolves the runner + reporter.
+RUN printf '{ "name": "wrightful-sandbox-run", "private": true }\n' > package.json
+
+# Install the test runner + the published reporter, then ONLY the Chromium
+# browser and its OS dependencies (the slim part — no Firefox/WebKit).
+RUN npm install --no-audit --no-fund \
+      "@playwright/test@${PLAYWRIGHT_VERSION}" \
+      "@wrightful/reporter@0.1.1" \
+  && npx playwright install --with-deps chromium \
+  && npm cache clean --force
+
+# NO ENTRYPOINT/CMD override — the Cloudflare Sandbox base owns the control
+# server that the executor drives via sandbox.exec(...). The executor calls
+# sandbox.destroy() when the run finishes.

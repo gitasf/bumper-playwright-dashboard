@@ -1,5 +1,6 @@
 import { sql } from "void/db";
 import type { Segment } from "./bucketing";
+import { assertSqlIdentifier } from "./sql-identifier";
 
 /** Drizzle `SQL` fragment — the exact return type of `sql\`…\`` template literal. */
 export type SqlBucketExpr = ReturnType<typeof sql<number | string>>;
@@ -92,8 +93,11 @@ export function percentilePick(
   quantile: number,
   cols: PercentilePickCols = {},
 ): SqlBucketExpr {
-  const { rn = "rn", cnt = "cnt", value = "duration" } = cols;
+  const rn = assertSqlIdentifier(cols.rn ?? "rn");
+  const cnt = assertSqlIdentifier(cols.cnt ?? "cnt");
+  const value = assertSqlIdentifier(cols.value ?? "duration");
   const q = quantile.toFixed(2);
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- retypes sql.raw's `SQL<unknown>` to the bucket-expr generic; column refs are guarded (assertSqlIdentifier) and the raw text stays byte-for-byte (a `sql\`${raw}\`` wrapper would change the emitted SQL)
   return sql.raw(
     `min(case when ${rn} = max(1, cast(round(${cnt} * ${q}) as integer)) then ${value} end)`,
   ) as SqlBucketExpr;

@@ -60,7 +60,7 @@ export const sql = sqlImpl as unknown as {
 export const db = new Proxy(
   {},
   {
-    get(_target, prop: string) {
+    get(_target, prop: string | symbol) {
       throw new Error(
         `void/db.db.${String(prop)} was accessed in a unit test that doesn't mock it. ` +
           "Pure-function tests must not exercise the database; for DB-touching " +

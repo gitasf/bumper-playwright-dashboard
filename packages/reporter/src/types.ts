@@ -70,6 +70,17 @@ export interface OpenRunPayload {
     playwrightVersion: string;
     expectedTotalTests: number;
     plannedTests: PlannedTestDescriptor[];
+    /**
+     * Synthetic-monitoring provenance. Mirrors `RunMetaCommon` in
+     * apps/dashboard/src/lib/schemas.ts. Omitted on a normal CI reporter run
+     * (the dashboard defaults `origin` to `"ci"` server-side); set to
+     * `"synthetic"` with the originating `monitorId` when a scheduled monitor
+     * launches this suite in a container. See KEY DESIGN in CLAUDE notes:
+     * the container sets `WRIGHTFUL_RUN_ORIGIN`/`WRIGHTFUL_MONITOR_ID` so the
+     * opened run is attributable to its monitor execution.
+     */
+    origin?: "ci" | "synthetic";
+    monitorId?: string | null;
   };
 }
 

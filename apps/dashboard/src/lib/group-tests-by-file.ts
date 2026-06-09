@@ -68,6 +68,13 @@ function worseOf(a: string, b: string): string {
  * "Other" group — defensive for rows that somehow slipped through without a
  * file path.
  */
+function isCountKey(
+  counts: FileGroupCounts,
+  status: string,
+): status is keyof FileGroupCounts {
+  return status in counts;
+}
+
 export function groupTestsByFile(tests: RunProgressTest[]): FileGroup[] {
   const map = new Map<string, FileGroup>();
 
@@ -97,8 +104,7 @@ export function groupTestsByFile(tests: RunProgressTest[]): FileGroup[] {
       map.set(key, group);
     }
     group.tests.push(test);
-    const bucketKey = test.status as keyof FileGroupCounts;
-    if (bucketKey in group.counts) group.counts[bucketKey] += 1;
+    if (isCountKey(group.counts, test.status)) group.counts[test.status] += 1;
     group.durationMs += test.durationMs;
     group.worstStatus = worseOf(
       group.worstStatus,

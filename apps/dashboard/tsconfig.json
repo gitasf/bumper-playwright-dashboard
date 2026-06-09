@@ -20,6 +20,7 @@
       "@schema": ["./db/schema.ts"],
       "@schema/*": ["./db/schema/*"],
       "void/routes": ["./.void/routes.d.ts"],
+      "void/queues": ["./.void/queues.d.ts"],
       "@/*": ["./src/*"]
     }
   },
@@ -34,5 +35,10 @@
     "auth.ts",
     "env.ts"
   ],
-  "files": ["./.void/routes.d.ts", "./.void/db.d.ts", "./.void/env.d.ts"]
+  "files": [
+    "./.void/routes.d.ts",
+    "./.void/db.d.ts",
+    "./.void/env.d.ts",
+    "./.void/queues.d.ts"
+  ]
 }

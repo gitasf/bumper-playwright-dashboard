@@ -4,6 +4,7 @@ import { ulid } from "ulid";
 import { apiKeys } from "@schema";
 import { AuthzError, resolveOwnedProject } from "@/lib/settings-scope";
 import { readBodyField } from "@/lib/form";
+import { SYNTHETIC_KEY_LABEL_PREFIX } from "@/lib/monitors/synthetic-key";
 import { mintToken, sha256Hex } from "@/lib/token-crypto";
 
 /**
@@ -32,6 +33,19 @@ export const POST = defineHandler(async (c) => {
   }
   if (label.length > 60) {
     return c.json({ error: "Label is too long" }, 400);
+  }
+  // Reserve the synthetic-monitor label namespace. The orphaned-key sweeper
+  // (`sweep-synthetic-keys`) identifies its keys solely by this label prefix and
+  // hard-deletes them once aged out, so a user key sharing the prefix would be
+  // silently destroyed. SQLite `LIKE` is ASCII-case-insensitive, so reject
+  // case-insensitively to match what the sweeper would catch.
+  if (label.toLowerCase().startsWith(SYNTHETIC_KEY_LABEL_PREFIX)) {
+    return c.json(
+      {
+        error: `Label cannot start with "${SYNTHETIC_KEY_LABEL_PREFIX}" — that prefix is reserved.`,
+      },
+      400,
+    );
   }
 
   const token = mintToken(24, "wrf_");

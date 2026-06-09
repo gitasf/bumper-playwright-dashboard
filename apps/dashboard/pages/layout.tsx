@@ -1,3 +1,4 @@
+// oxlint-disable-next-line import/no-unassigned-import -- global stylesheet side-effect import (Tailwind + theme tokens + fonts)
 import "@/styles.css";
 
 /**

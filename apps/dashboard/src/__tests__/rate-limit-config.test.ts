@@ -34,10 +34,10 @@ function readText(relativeFromAppRoot: string): string {
  * `wrangler.jsonc` contains no `//` or comma-before-`}` sequences inside any
  * string value (asserted indirectly — `JSON.parse` would throw otherwise).
  */
-function parseJsonc<T>(text: string): T {
+function parseJsonc(text: string): unknown {
   const withoutComments = text.replace(/^\s*\/\/.*$/gm, "");
   const withoutTrailingCommas = withoutComments.replace(/,(\s*[}\]])/g, "$1");
-  return JSON.parse(withoutTrailingCommas) as T;
+  return JSON.parse(withoutTrailingCommas);
 }
 
 interface RateLimitEntry {
@@ -46,9 +46,9 @@ interface RateLimitEntry {
   simple: { limit: number; period: number };
 }
 
-const wrangler = parseJsonc<{ ratelimits: RateLimitEntry[] }>(
-  readText("wrangler.jsonc"),
-);
+const wrangler = parseJsonc(readText("wrangler.jsonc")) as {
+  ratelimits: RateLimitEntry[];
+};
 
 describe("rate-limit config ⇆ code", () => {
   it("declares a wrangler ratelimits entry for every referenced binding name and vice-versa", () => {
