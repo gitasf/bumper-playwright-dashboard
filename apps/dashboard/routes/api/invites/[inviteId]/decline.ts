@@ -3,6 +3,7 @@ import { requireAuth } from "void/auth";
 import { and, db, eq } from "void/db";
 import { teamInvites } from "@schema";
 import { buildInviteMatchConds, getUserIdentity } from "@/lib/auth-users";
+import { changedRows } from "@/lib/db-batch";
 
 /**
  * POST /api/invites/:inviteId/decline
@@ -29,11 +30,12 @@ export const POST = defineHandler(async (c) => {
   const result = await db
     .delete(teamInvites)
     .where(and(eq(teamInvites.id, inviteId), matchConds));
-  // Drizzle/D1 returns a meta object; treat 0 affected rows as a 404 so a
-  // caller probing for invite ids can't distinguish "exists but not yours"
-  // from "doesn't exist".
-  const meta = (result as { meta?: { changes?: number } }).meta;
-  if (meta && typeof meta.changes === "number" && meta.changes === 0) {
+  // Treat 0 affected rows as a 404 so a caller probing for invite ids can't
+  // distinguish "exists but not yours" from "doesn't exist". `changedRows`
+  // reads the affected count across both backends (D1 `meta.changes`, Postgres
+  // `rowCount`/`affectedRows`) — without it, PG always read 0 and this 404
+  // probe-guard would silently never fire.
+  if (changedRows(result) === 0) {
     return c.json({ error: "Not found" }, 404);
   }
   return c.json({ ok: true });

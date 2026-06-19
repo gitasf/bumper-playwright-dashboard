@@ -259,11 +259,11 @@ export const actions = {
     // testResults, …) via their `onDelete: "cascade"` FKs, so the old explicit
     // `db.delete(apiKeys)` is redundant and dropped.
     try {
-      await runBatch([
-        db.delete(projects).where(eq(projects.teamId, team.id)),
-        db.delete(memberships).where(eq(memberships.teamId, team.id)),
-        db.delete(teamInvites).where(eq(teamInvites.teamId, team.id)),
-        db.delete(teamsTable).where(eq(teamsTable.id, team.id)),
+      await runBatch((tx) => [
+        tx.delete(projects).where(eq(projects.teamId, team.id)),
+        tx.delete(memberships).where(eq(memberships.teamId, team.id)),
+        tx.delete(teamInvites).where(eq(teamInvites.teamId, team.id)),
+        tx.delete(teamsTable).where(eq(teamsTable.id, team.id)),
       ]);
     } catch (err) {
       logger.error("delete team failed", {

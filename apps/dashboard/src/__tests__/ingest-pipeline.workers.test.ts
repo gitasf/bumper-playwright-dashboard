@@ -14,8 +14,8 @@ import type {
 /**
  * The ingest pipeline's three run-scoped entry points — `openRun`,
  * `appendRunResults`, `completeRun` — ARE the deep module: each hides
- * verify-ownership -> resolve ids -> compose a heterogeneous `db.batch` ->
- * extract the summary from the LAST batch row -> bump team activity ->
+ * verify-ownership -> resolve ids -> compose a heterogeneous `db.transaction` ->
+ * extract the summary from the LAST statement's row -> bump team activity ->
  * broadcast. The leaf pure helpers (computeAggregateDelta, mergeRunStatus,
  * buildChangedTests, summaryFromBatchResults, reconcileAndBroadcast) each have
  * their own unit suite, but the *orchestration glue that wires them together*
@@ -24,24 +24,24 @@ import type {
  * queued rows, that appendRunResults feeds prevStatus -> delta -> the broadcast
  * summary — was reachable only by booting a real run end-to-end.
  *
- * The first concrete consumer of the still-unbuilt real-D1 harness is the
+ * The first concrete consumer of the still-unbuilt real-Postgres harness is the
  * deepest, highest-blast-radius module: this file. Rather than stand up a whole
- * SQLite/miniflare D1 binding (better-sqlite3's Drizzle driver has no `batch`,
- * the pipeline's atomicity boundary), we reuse the project's established
- * mock-the-D1-boundary idiom (see db-batch.test.ts / reconcile-and-broadcast.
- * test.ts): mock `void/db` so the query builders are controllable thenables and
- * `db.batch` is a spy, and mock `@/realtime/publish`'s room broadcasters. That makes the
- * orchestration reachable and pins these invariants:
+ * pglite/Postgres binding (the pipeline's atomicity boundary is a real
+ * `db.transaction`), we reuse the project's established mock-the-PG-boundary
+ * idiom (see db-batch.test.ts): mock `void/db` so the query builders are
+ * controllable thenables and `db.transaction` runs the builder against a
+ * recording tx executor, and mock `@/realtime/publish`'s room broadcasters. That
+ * makes the orchestration reachable and pins these invariants:
  *   - openRun: duplicate idempotencyKey returns { duplicate: true } WITHOUT a
  *     fresh runs insert, but still prefills this shard's planned rows;
- *   - appendRunResults: the delta UPDATE is appended LAST in the batch on a
- *     real delta, swapped for a liveness-bump UPDATE on a no-op delta, and the
- *     broadcast summary is exactly batchResults[last][0];
+ *   - appendRunResults: the delta UPDATE is appended LAST in the transaction on
+ *     a real delta, swapped for a liveness-bump UPDATE on a no-op delta, and the
+ *     broadcast summary is exactly txResults[last][0];
  *   - completeRun / appendRunResults: ownership miss returns { kind: "notFound" }
- *     with no batch and no broadcast.
- * The D1 transaction's atomicity (durable decision #10) lives at the boundary
- * and is out of scope; this covers the assembly/ordering/summary-extraction
- * glue — the part the pure-helper suites cannot reach.
+ *     with no transaction and no broadcast.
+ * The Postgres transaction's atomicity (durable decision #10) lives at the
+ * boundary and is out of scope; this covers the assembly/ordering/summary-
+ * extraction glue — the part the pure-helper suites cannot reach.
  */
 
 // ─── Controllable void/db mock ───────────────────────────────────────────────
@@ -49,23 +49,54 @@ import type {
 // Every builder method returns the SAME chainable node so chains like
 // `db.select(c).from(t).where(w).limit(1)` and `db.update(t).set(s).where(w)
 // .returning(cols)` resolve to one statement object. Each node is also a
-// thenable: directly-awaited statements (the idempotency/ownership SELECTs,
-// resolveTestResultIds' SELECT, bumpTeamActivity's UPDATE, the single-prefill
-// INSERT) dequeue from `awaitResults`; statements that are instead pushed into a
-// `db.batch([...])` are never awaited, so they don't consume a queued result —
-// the batch's own `batchSpy` decides what comes back.
+// thenable, and resolves its rows differently depending on which executor built
+// it:
+//   - statements built off the pooled `db` (the idempotency/ownership SELECTs,
+//     resolveTestResultIds' SELECT, bumpTeamActivity's UPDATE) dequeue from the
+//     `awaitResults` FIFO when awaited directly;
+//   - statements built off the transaction executor `tx` (the prefill INSERT,
+//     the per-test upsert/replace, the usage bump, and the summary UPDATE) are
+//     awaited IN ORDER by `runBatch`'s `for (const stmt of build(tx))` loop and
+//     each resolves to `txStatementResult` — the per-statement row-set the
+//     transaction yields. The pipeline reads ONLY the LAST statement's result as
+//     the broadcast summary (txResults[last][0]), and the intermediate writes'
+//     results are unread; returning the SAME configured value for every tx
+//     statement therefore pins the summary contract without coupling the fixture
+//     to the (production-internal) write-statement COUNT. Awaiting a tx statement
+//     also RECORDS it (in await order) into `txStatements`, the array the
+//     assertions inspect — replacing the old `db.batch` call-args, since Postgres
+//     builds each statement against `tx` and runs them inside `db.transaction`
+//     rather than handing an array to `batch`.
+//
+// `runBatch` is Postgres-only now: it calls `db.transaction(fn)` and runs each
+// statement inside it (NO `db.batch`). So the boundary spy here is
+// `transactionSpy`, and the fake `db` exposes `.transaction`, not `.batch`.
 
-const batchSpy = vi.fn<(statements: unknown[]) => Promise<unknown[]>>();
-
-/** FIFO of rows each *directly awaited* statement resolves to, in call order. */
+/** FIFO of rows each *directly awaited* (pooled-`db`) statement resolves to. */
 let awaitResults: unknown[][] = [];
+
+/**
+ * Row-set every transaction statement resolves to. Since the pipeline reads only
+ * the LAST statement's result (the summary), one value per test suffices: set it
+ * to the summary row-set the transaction's final (summary) statement returns.
+ */
+let txStatementResult: unknown[] = [];
+
+/** Statements built against the tx executor, captured in await (== run) order. */
+let txStatements: BuilderNode[] = [];
 
 type BuilderNode = Record<string, unknown> & {
   __kind: string;
   then: (onFulfilled?: (value: unknown) => unknown) => Promise<unknown>;
 };
 
-function makeBuilder(kind: string): BuilderNode {
+/**
+ * Build a chainable thenable node. `inTx` selects which result a node yields when
+ * awaited: pooled-`db` nodes dequeue `awaitResults`; transaction nodes resolve to
+ * `txStatementResult` AND record themselves into `txStatements` so the tests can
+ * inspect the ordered statement list the transaction ran.
+ */
+function makeBuilder(kind: string, inTx: boolean): BuilderNode {
   const node = { __kind: kind } as BuilderNode;
   const chain = () => node;
   // Every method Drizzle exposes on the chains this pipeline builds.
@@ -82,22 +113,43 @@ function makeBuilder(kind: string): BuilderNode {
   ] as const) {
     node[m] = chain;
   }
-  // Thenable: awaiting a statement directly dequeues the next configured
-  // result-set. A statement collected into db.batch is never awaited.
   node.then = (onFulfilled?: (value: unknown) => unknown) => {
+    if (inTx) {
+      // runBatch awaits tx statements in order — record + resolve the configured
+      // per-statement row-set (only the last one is read, as the summary).
+      txStatements.push(node);
+      return Promise.resolve(
+        onFulfilled ? onFulfilled(txStatementResult) : txStatementResult,
+      );
+    }
     const rows = awaitResults.shift() ?? [];
     return Promise.resolve(onFulfilled ? onFulfilled(rows) : rows);
   };
   return node;
 }
 
+/** The transaction executor passed to `db.transaction`'s callback. */
+const txExec = {
+  insert: () => makeBuilder("insert", true),
+  update: () => makeBuilder("update", true),
+  delete: () => makeBuilder("delete", true),
+  select: () => makeBuilder("select", true),
+};
+
+// `db.transaction(fn)` runs the builder's statements inside the transaction:
+// `runBatch` does `for (const stmt of build(tx)) out.push(await stmt)`, so we
+// invoke `fn(txExec)` and return its result (the awaited per-statement results).
+const transactionSpy = vi.fn((fn: (tx: typeof txExec) => unknown): unknown =>
+  fn(txExec),
+);
+
 vi.mock("void/db", () => ({
   db: {
-    batch: batchSpy,
-    select: () => makeBuilder("select"),
-    insert: () => makeBuilder("insert"),
-    update: () => makeBuilder("update"),
-    delete: () => makeBuilder("delete"),
+    transaction: transactionSpy,
+    select: () => makeBuilder("select", false),
+    insert: () => makeBuilder("insert", false),
+    update: () => makeBuilder("update", false),
+    delete: () => makeBuilder("delete", false),
   },
   and: (...args: unknown[]) => ({ __op: "and", args }),
   eq: (...args: unknown[]) => ({ __op: "eq", args }),
@@ -173,19 +225,23 @@ function result(over: Partial<TestResultInput> = {}): TestResultInput {
 }
 
 beforeEach(() => {
-  batchSpy.mockReset();
+  transactionSpy.mockClear();
   broadcastProjectSpy.mockReset();
   broadcastProjectSpy.mockResolvedValue(undefined);
   broadcastRunSpy.mockReset();
   broadcastRunSpy.mockResolvedValue(undefined);
   awaitResults = [];
+  txStatementResult = [];
+  txStatements = [];
 });
 
 describe("openRun", () => {
   it("on a fresh open: inserts the run + prefill in one batch and broadcasts the initial snapshot", async () => {
     // [0] idempotency SELECT → no existing run; [1] bumpTeamActivity UPDATE.
     awaitResults = [[], []];
-    batchSpy.mockResolvedValue([[{ inserted: 1 }], [{ inserted: 1 }]]);
+    // openRun discards the open transaction's results (it synthesizes the
+    // snapshot inline), so the per-statement result is irrelevant here — the
+    // default empty row-set is fine.
     const payload: OpenRunPayload = {
       idempotencyKey: "key-1",
       run: {
@@ -199,11 +255,10 @@ describe("openRun", () => {
     expect(typeof out.runId).toBe("string");
     expect(out.runId.length).toBeGreaterThan(0);
     // One run insert + one prefill insert chunk + the usage-meter bump (also an
-    // insert/upsert) → batched together (atomic open).
-    expect(batchSpy).toHaveBeenCalledTimes(1);
-    const batched = batchSpy.mock.calls[0]![0] as BuilderNode[];
-    expect(batched).toHaveLength(3);
-    expect(batched.every((s) => s.__kind === "insert")).toBe(true);
+    // insert/upsert) → run together in one atomic open transaction.
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
+    expect(txStatements).toHaveLength(3);
+    expect(txStatements.every((s) => s.__kind === "insert")).toBe(true);
     // Initial snapshot is synthesized inline (no DB read) and broadcast to the
     // run room — totals reflect the planned-test count, status "running".
     expect(broadcastRunSpy).toHaveBeenCalledTimes(1);
@@ -253,9 +308,10 @@ describe("openRun", () => {
     const out = await openRun(scope, payload, NOW);
 
     expect(out).toEqual({ runId: "run-existing", duplicate: true });
-    // No fresh run insert, no prefill batch, and no broadcast on the duplicate
-    // path — the winning shard already created the run and sent the snapshot.
-    expect(batchSpy).not.toHaveBeenCalled();
+    // No fresh run insert, no prefill transaction, and no broadcast on the
+    // duplicate path — the winning shard already created the run and sent the
+    // snapshot.
+    expect(transactionSpy).not.toHaveBeenCalled();
     expect(broadcastRunSpy).not.toHaveBeenCalled();
   });
 
@@ -277,7 +333,7 @@ describe("openRun", () => {
     const out = await openRun(scope, payload, NOW);
 
     expect(out).toEqual({ runId: "run-existing", duplicate: true });
-    expect(batchSpy).not.toHaveBeenCalled();
+    expect(transactionSpy).not.toHaveBeenCalled();
     expect(broadcastRunSpy).not.toHaveBeenCalled();
   });
 });
@@ -291,17 +347,19 @@ describe("appendRunResults", () => {
     const out = await appendRunResults(scope, "run-x", payload, NOW);
 
     expect(out).toEqual({ kind: "notFound" });
-    expect(batchSpy).not.toHaveBeenCalled();
+    expect(transactionSpy).not.toHaveBeenCalled();
     expect(broadcastRunSpy).not.toHaveBeenCalled();
   });
 
-  it("on a real delta: appends the delta UPDATE LAST and broadcasts batchResults[last][0]", async () => {
+  it("on a real delta: appends the delta UPDATE LAST and broadcasts txResults[last][0]", async () => {
     // [0] ownership SELECT → owned; [1] resolveTestResultIds SELECT → no prior
     // rows (fresh inserts, so a real +totalTests delta UPDATE is emitted).
     awaitResults = [[{ id: "run-1" }], []];
     const persisted = summaryRow({ totalTests: 1, passed: 1, failed: 0 });
-    // The batch result array: writes... then the summary statement's row LAST.
-    batchSpy.mockResolvedValue([[{ written: 1 }], [persisted]]);
+    // The summary-producing statement is appended LAST, so its row is the FINAL
+    // per-statement result (txResults[last][0]) — exactly the old "summary is the
+    // last batch row" contract, now read off the transaction.
+    txStatementResult = [persisted];
     const payload: AppendResultsPayload = { results: [result()] };
 
     const out = await appendRunResults(scope, "run-1", payload, NOW);
@@ -311,14 +369,13 @@ describe("appendRunResults", () => {
     // clientKey-less result → empty mapping, but the row was still written.
     expect(out.mapping).toEqual([]);
 
-    expect(batchSpy).toHaveBeenCalledTimes(1);
-    const batched = batchSpy.mock.calls[0]![0] as BuilderNode[];
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
     // The LAST statement is the delta UPDATE (.returning the summary), NOT a
     // SELECT — a real delta took the UPDATE branch of the deltaStmt ?? SELECT.
-    expect(batched.at(-1)!.__kind).toBe("update");
+    expect(txStatements.at(-1)!.__kind).toBe("update");
 
-    // The broadcast summary is exactly the LAST batch row — proving the
-    // batchResults[last][0] contract end-to-end through the entry point. It goes
+    // The broadcast summary is exactly the LAST transaction row — proving the
+    // txResults[last][0] contract end-to-end through the entry point. It goes
     // to the run room via broadcastRunUpdate's single publish point.
     expect(broadcastRunSpy).toHaveBeenCalledTimes(1);
     const [runId, event] = broadcastRunSpy.mock.calls[0]! as [
@@ -350,7 +407,7 @@ describe("appendRunResults", () => {
       [{ id: "tr-1", testId: "t1", status: "passed" }],
     ];
     const persisted = summaryRow({ status: "running" });
-    batchSpy.mockResolvedValue([[{ written: 1 }], [persisted]]);
+    txStatementResult = [persisted];
     const payload: AppendResultsPayload = {
       results: [result({ testId: "t1", status: "passed" })],
     };
@@ -358,10 +415,9 @@ describe("appendRunResults", () => {
     const out = await appendRunResults(scope, "run-1", payload, NOW);
 
     expect(out.kind).toBe("ok");
-    const batched = batchSpy.mock.calls[0]![0] as BuilderNode[];
     // No delta → the summary statement is the liveness-bump UPDATE appended
     // last (it still `.returning()`s the summary), NOT a read-only SELECT.
-    expect(batched.at(-1)!.__kind).toBe("update");
+    expect(txStatements.at(-1)!.__kind).toBe("update");
     expect(broadcastRunSpy).toHaveBeenCalledTimes(1);
     const [, event] = broadcastRunSpy.mock.calls[0]! as [
       string,
@@ -370,10 +426,10 @@ describe("appendRunResults", () => {
     expect(event.summary).toEqual(persisted);
   });
 
-  it("returns notFound when the run vanished mid-batch (summary statement matched no row)", async () => {
+  it("returns notFound when the run vanished mid-transaction (summary statement matched no row)", async () => {
     awaitResults = [[{ id: "run-1" }], []];
     // Final statement produced no row → summaryFromBatchResults yields null.
-    batchSpy.mockResolvedValue([[{ written: 1 }], []]);
+    txStatementResult = [];
     const payload: AppendResultsPayload = { results: [result()] };
 
     const out = await appendRunResults(scope, "run-1", payload, NOW);
@@ -384,7 +440,7 @@ describe("appendRunResults", () => {
 
   it("threads clientKey → assigned id into the returned mapping", async () => {
     awaitResults = [[{ id: "run-1" }], []];
-    batchSpy.mockResolvedValue([[{ written: 1 }], [summaryRow()]]);
+    txStatementResult = [summaryRow()];
     const payload: AppendResultsPayload = {
       results: [result({ testId: "t1", clientKey: "ck-1" })],
     };
@@ -407,27 +463,26 @@ describe("completeRun", () => {
     const out = await completeRun(scope, "run-x", payload, NOW);
 
     expect(out).toEqual({ kind: "notFound" });
-    expect(batchSpy).not.toHaveBeenCalled();
+    expect(transactionSpy).not.toHaveBeenCalled();
     expect(broadcastRunSpy).not.toHaveBeenCalled();
   });
 
-  it("runs the status-flip + recompute in one batch and returns the merged status from the summary", async () => {
+  it("runs the status-flip + recompute in one transaction and returns the merged status from the summary", async () => {
     // [0] ownership SELECT → owned; [1] bumpTeamActivity UPDATE.
     awaitResults = [[{ id: "run-1" }], []];
     // The merged status comes back on the recompute's .returning() row (LAST).
     const merged = summaryRow({ status: "failed", completedAt: NOW });
-    batchSpy.mockResolvedValue([[{ flipped: 1 }], [merged]]);
+    txStatementResult = [merged];
     const payload: CompleteRunPayload = { status: "passed", durationMs: 250 };
 
     const out = await completeRun(scope, "run-1", payload, NOW);
 
     expect(out).toEqual({ kind: "ok", status: "failed" });
-    expect(batchSpy).toHaveBeenCalledTimes(1);
-    const batched = batchSpy.mock.calls[0]![0] as BuilderNode[];
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
     // status-flip UPDATE first, recompute UPDATE last (reconcileAndBroadcast).
-    expect(batched).toHaveLength(2);
-    expect(batched[0]!.__kind).toBe("update");
-    expect(batched[1]!.__kind).toBe("update");
+    expect(txStatements).toHaveLength(2);
+    expect(txStatements[0]!.__kind).toBe("update");
+    expect(txStatements[1]!.__kind).toBe("update");
     expect(broadcastRunSpy).toHaveBeenCalledTimes(1);
     const [, event] = broadcastRunSpy.mock.calls[0]! as [
       string,
@@ -440,7 +495,7 @@ describe("completeRun", () => {
   it("falls back to the payload status when the recompute returns no row", async () => {
     awaitResults = [[{ id: "run-1" }], []];
     // Recompute matched no row → summary null → caller reports payload.status.
-    batchSpy.mockResolvedValue([[{ flipped: 0 }], []]);
+    txStatementResult = [];
     const payload: CompleteRunPayload = { status: "passed", durationMs: 0 };
 
     const out = await completeRun(scope, "run-1", payload, NOW);

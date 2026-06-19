@@ -43,6 +43,22 @@ jobs:
           cat check-output.log
           exit "${code:-0}"
 
+      # Schema/migration drift guard: `pnpm db:generate` (void db generate) must
+      # be a no-op on a clean tree. If it isn't, someone edited db/schema.ts
+      # without regenerating the migration. (`vp check` above typechecks the app
+      # against the Postgres schema — the only backend.)
+      - name: Schema/migration drift (db:generate must be a no-op)
+        run: |
+          pnpm --filter @wrightful/dashboard run db:generate
+          paths="apps/dashboard/db/schema.ts apps/dashboard/db/migrations"
+          if [ -n "$(git status --porcelain -- $paths)" ]; then
+            echo "::error::Schema drift: run 'pnpm --filter @wrightful/dashboard db:generate' and commit the result."
+            git status --porcelain -- $paths
+            git --no-pager diff -- $paths
+            exit 1
+          fi
+          echo "✓ db/migrations is in sync with db/schema.ts"
+
   test-reporter:
     name: Reporter Tests
     runs-on: ubuntu-latest
@@ -107,6 +123,51 @@ jobs:
           name: coverage-dashboard
           path: apps/dashboard/coverage
           if-no-files-found: ignore
+
+  # Real-Postgres integration leg. The pglite lane (in `test-dashboard`) is fast
+  # but cannot reproduce node-postgres result shapes — most importantly int8
+  # (`count`/`sum`/bigint) and `numeric` come back as STRINGS on the production
+  # driver, numbers on pglite (see src/__tests__/pg-integration.test.ts). This
+  # job runs the SAME suite against a real `postgres:16` service container via
+  # `PG_TEST_URL`, so a result-shape/SQL divergence the surrogate hides fails CI
+  # here. `pg` is already transitive (drizzle-orm/node-postgres), so no extra dep.
+  test-postgres:
+    name: Postgres Integration (real engine)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wrightful
+          POSTGRES_PASSWORD: wrightful
+          POSTGRES_DB: wrightful_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wrightful"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Void codegen
+        run: pnpm --filter @wrightful/dashboard exec void prepare
+
+      - name: Postgres integration test (real node-postgres)
+        env:
+          PG_TEST_URL: postgres://wrightful:wrightful@localhost:5432/wrightful_test
+        run: pnpm --filter @wrightful/dashboard exec vp test run src/__tests__/pg-integration.test.ts
 
   build-dashboard:
     name: Dashboard Build

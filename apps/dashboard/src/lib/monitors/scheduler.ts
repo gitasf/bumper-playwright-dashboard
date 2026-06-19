@@ -164,9 +164,9 @@ export async function sweepDueMonitors(opts: {
   const plan = planMonitorSweep(due, opts.now, ulid);
 
   const nowSeconds = opts.now;
-  const statements = [
+  await runBatch((tx) => [
     ...plan.executions.map((e) =>
-      db.insert(monitorExecutions).values({
+      tx.insert(monitorExecutions).values({
         id: e.id,
         projectId: e.projectId,
         monitorId: e.monitorId,
@@ -177,13 +177,12 @@ export async function sweepDueMonitors(opts: {
       }),
     ),
     ...plan.monitorUpdates.map((u) =>
-      db
+      tx
         .update(monitors)
         .set({ nextRunAt: u.nextRunAt, lastEnqueuedAt: u.lastEnqueuedAt })
         .where(eq(monitors.id, u.id)),
     ),
-  ];
-  await runBatch(statements);
+  ]);
 
   // Pair each job with its monitor row (plan.jobs is index-aligned with `due` —
   // see `planMonitorSweep`) so the enqueue callback can route by `monitor.type`.

@@ -40,30 +40,36 @@ export function httpResponseTimeBuckets(opts: {
   monitorId: string;
   windowStartSec: number;
 }): Promise<ResponseTimeBucketRow[]> {
+  // Every numeric output is `cast(… as integer)`: the hour bucket and the
+  // window-function counts are `int8`/`bigint` on Postgres, which node-postgres
+  // returns as STRINGS (the row types here claim `number`). Casting to `int4`
+  // makes BOTH drivers parse them to numbers. This raw `runRows` path bypasses
+  // Drizzle's field decoders, so the cast must live in the SQL, not `.mapWith`.
+  // Hour index (~5e5) and per-hour counts/durations comfortably fit int4.
   return runRows<ResponseTimeBucketRow>(sql`
     with ranked as (
       select
-        monitorExecutions."createdAt" / 3600 as bucket,
-        monitorExecutions."durationMs" as duration,
+        cast("monitorExecutions"."createdAt" / 3600 as integer) as bucket,
+        "monitorExecutions"."durationMs" as duration,
         row_number() over (
-          partition by monitorExecutions."createdAt" / 3600
-          order by monitorExecutions."durationMs"
+          partition by "monitorExecutions"."createdAt" / 3600
+          order by "monitorExecutions"."durationMs"
         ) as rn,
         count(*) over (
-          partition by monitorExecutions."createdAt" / 3600
+          partition by "monitorExecutions"."createdAt" / 3600
         ) as cnt
-      from monitorExecutions
-      where monitorExecutions."projectId" = ${opts.scope.projectId}
-        and monitorExecutions."monitorId" = ${opts.monitorId}
-        and monitorExecutions."statusCode" is not null
-        and monitorExecutions."durationMs" is not null
-        and monitorExecutions."createdAt" >= ${opts.windowStartSec}
+      from "monitorExecutions"
+      where "monitorExecutions"."projectId" = ${opts.scope.projectId}
+        and "monitorExecutions"."monitorId" = ${opts.monitorId}
+        and "monitorExecutions"."statusCode" is not null
+        and "monitorExecutions"."durationMs" is not null
+        and "monitorExecutions"."createdAt" >= ${opts.windowStartSec}
     )
     select
       bucket,
-      max(cnt) as cnt,
-      ${percentilePick(0.5)} as p50,
-      ${percentilePick(0.95)} as p95
+      cast(max(cnt) as integer) as cnt,
+      cast(${percentilePick(0.5)} as integer) as p50,
+      cast(${percentilePick(0.95)} as integer) as p95
     from ranked
     group by bucket
     order by bucket
@@ -101,18 +107,21 @@ export async function httpUptimeWindows(opts: {
   const d1 = opts.nowSec - DAY_SEC;
   const d7 = opts.nowSec - 7 * DAY_SEC;
   const d30 = opts.nowSec - 30 * DAY_SEC;
+  // `cast(… as integer)` on each sum: `sum(int)` is `int8` on Postgres, which
+  // node-postgres returns as a string; int4 parses to a number on both drivers.
+  // (Raw `runRow` path — cast in SQL, not `.mapWith`. Window counts fit int4.)
   const row = await runRow<RawUptimeRow>(sql`
     select
-      sum(case when monitorExecutions."createdAt" >= ${d1} and monitorExecutions.state in ('pass','degraded') then 1 else 0 end) as u1,
-      sum(case when monitorExecutions."createdAt" >= ${d1} and monitorExecutions.state in ('pass','degraded','fail') then 1 else 0 end) as c1,
-      sum(case when monitorExecutions."createdAt" >= ${d7} and monitorExecutions.state in ('pass','degraded') then 1 else 0 end) as u7,
-      sum(case when monitorExecutions."createdAt" >= ${d7} and monitorExecutions.state in ('pass','degraded','fail') then 1 else 0 end) as c7,
-      sum(case when monitorExecutions.state in ('pass','degraded') then 1 else 0 end) as u30,
-      sum(case when monitorExecutions.state in ('pass','degraded','fail') then 1 else 0 end) as c30
-    from monitorExecutions
-    where monitorExecutions."projectId" = ${opts.scope.projectId}
-      and monitorExecutions."monitorId" = ${opts.monitorId}
-      and monitorExecutions."createdAt" >= ${d30}
+      cast(sum(case when "monitorExecutions"."createdAt" >= ${d1} and "monitorExecutions".state in ('pass','degraded') then 1 else 0 end) as integer) as u1,
+      cast(sum(case when "monitorExecutions"."createdAt" >= ${d1} and "monitorExecutions".state in ('pass','degraded','fail') then 1 else 0 end) as integer) as c1,
+      cast(sum(case when "monitorExecutions"."createdAt" >= ${d7} and "monitorExecutions".state in ('pass','degraded') then 1 else 0 end) as integer) as u7,
+      cast(sum(case when "monitorExecutions"."createdAt" >= ${d7} and "monitorExecutions".state in ('pass','degraded','fail') then 1 else 0 end) as integer) as c7,
+      cast(sum(case when "monitorExecutions".state in ('pass','degraded') then 1 else 0 end) as integer) as u30,
+      cast(sum(case when "monitorExecutions".state in ('pass','degraded','fail') then 1 else 0 end) as integer) as c30
+    from "monitorExecutions"
+    where "monitorExecutions"."projectId" = ${opts.scope.projectId}
+      and "monitorExecutions"."monitorId" = ${opts.monitorId}
+      and "monitorExecutions"."createdAt" >= ${d30}
   `);
   return {
     d1: { up: row?.u1 ?? 0, countable: row?.c1 ?? 0 },

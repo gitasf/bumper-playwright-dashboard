@@ -69,15 +69,15 @@ export const POST = defineHandler(async (c) => {
     return c.json({ ok: true, teamId: invite.teamId });
   }
 
-  await runBatch([
-    db.insert(memberships).values({
+  await runBatch((tx) => [
+    tx.insert(memberships).values({
       id: ulid(),
       userId: user.id,
       teamId: invite.teamId,
       role: invite.role,
       createdAt: now,
     }),
-    db.delete(teamInvites).where(eq(teamInvites.id, invite.id)),
+    tx.delete(teamInvites).where(eq(teamInvites.id, invite.id)),
   ]);
 
   // Audit the genuine join only (the idempotent re-accept branch above creates

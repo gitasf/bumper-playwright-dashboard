@@ -156,15 +156,15 @@ export const action = defineHandler(async (c) => {
   }
 
   try {
-    await runBatch([
-      db.insert(memberships).values({
+    await runBatch((tx) => [
+      tx.insert(memberships).values({
         id: ulid(),
         userId: user.id,
         teamId: invite.teamId,
         role: invite.role,
         createdAt: Math.floor(Date.now() / 1000),
       }),
-      db.delete(teamInvites).where(eq(teamInvites.id, invite.id)),
+      tx.delete(teamInvites).where(eq(teamInvites.id, invite.id)),
     ]);
   } catch {
     return c.redirect(

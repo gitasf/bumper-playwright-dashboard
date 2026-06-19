@@ -1,17 +1,29 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Wrangler fallback config. Void manages the worker entry, bindings, and
-  // deploy lifecycle via `void.json` + inferred D1/KV/R2 imports. This file
-  // exists only for the binding types Void's config schema doesn't accept:
+  // GENERATED SOURCE — `wrangler.jsonc` is generated from THIS file by
+  // scripts/gen-wrangler.mjs (run in the dev/build/deploy pre-hooks, like
+  // apply-dialect.mjs materializes void.json + db/migrations). Edit the template,
+  // not the generated `wrangler.jsonc` (which is gitignored).
   //
-  //   - Cloudflare-native rate limiters (`ratelimits` block)
-  //   - Cloudflare Email Service send binding (`send_email` block)
+  // This file carries the static, shared worker config Void's own schema can't
+  // express — Cloudflare-native rate limiters (`ratelimits`) and the Email
+  // Service send binding (`send_email`). Deployment-specific bindings with real
+  // resource IDs are injected from env vars at generate time, so this committed
+  // OSS template holds NO account-specific values (see the marker below).
   //
-  // Void picks this file up at deploy time and merges these blocks into the
-  // generated worker manifest. Do NOT add `main`, `migrations`, or DO bindings
-  // here — those collide with Void's runtime.
-  "name": "wrightful-dashboard-void",
+  // Two deploy models:
+  //   - `void deploy` (managed platform): Void provisions D1/R2/Hyperdrive and
+  //     merges these blocks. Leave the CF_* env vars unset — the generated file
+  //     is then the generic fallback, identical to before.
+  //   - `wrangler deploy` (your own Cloudflare account): set CF_* env vars
+  //     (see .env.example / SELF-HOSTING.md) and gen-wrangler injects the real
+  //     bindings below.
+  //
+  // Do NOT add `main`, `migrations`, `assets`, or Durable Object bindings here —
+  // Void sets those programmatically and they collide with its runtime.
+  "name": "__CF_WORKER_NAME__",
   "compatibility_date": "2026-05-22",
+  "compatibility_flags": ["nodejs_compat"],
   // Don't build the monitor sandbox container image on `vite dev`/preview. The
   // `sandbox` block in void.json adds a Cloudflare container binding, and the
   // Cloudflare plugin otherwise builds `Dockerfile.sandbox` (FROM
@@ -93,4 +105,13 @@
       "simple": { "limit": 1200, "period": 60 },
     },
   ],
+  // ── Own-account (`wrangler deploy`) bindings ───────────────────────────────
+  // gen-wrangler.mjs replaces the marker line below with real bindings when the
+  // matching CF_* env vars are set (so no account IDs live in this template):
+  //   • "hyperdrive"  → { binding: HYPERDRIVE, id: $CF_HYPERDRIVE_ID }  (the Postgres DB)
+  //   • "r2_buckets"  → { binding: STORAGE, bucket_name: $CF_R2_BUCKET }
+  // Unset (e.g. `void deploy`) → the marker is removed and this file is the
+  // generic fallback. Queues / Durable Objects / the sandbox container are
+  // inferred and managed by Void — don't declare them here.
+  // __CF_OWN_ACCOUNT_BINDINGS__
 }

@@ -72,32 +72,31 @@ describe("summaryFromBatchResults", () => {
 /**
  * Head-of-batch counterpart to `summaryFromBatchResults`: reads how many rows a
  * non-`.returning()` statement (e.g. `finalizeStaleRun`'s guarded status flip)
- * changed, from its `meta.changes`. `reconcileAndBroadcast` uses this to suppress
- * the redundant terminal broadcast on a no-op finalize, so the read shape +
- * missing-count fallback get pinned in one place.
+ * changed — `rowCount` on node-postgres, `affectedRows` on pglite.
+ * `reconcileAndBroadcast` uses this to suppress the redundant terminal broadcast
+ * on a no-op finalize, so the read shape + missing-count fallback get pinned in
+ * one place.
  */
 describe("statementChangedRows", () => {
-  it("reads meta.changes when the flip matched rows", () => {
-    // Drizzle passes a `run`-method statement's raw D1Result straight through.
-    expect(statementChangedRows({ success: true, meta: { changes: 1 } })).toBe(
-      1,
-    );
+  it("reads rowCount (node-postgres) when the flip matched rows", () => {
+    expect(statementChangedRows({ rowCount: 1 })).toBe(1);
+  });
+
+  it("reads affectedRows (pglite) when the flip matched rows", () => {
+    expect(statementChangedRows({ affectedRows: 1 })).toBe(1);
   });
 
   it("returns 0 when a guarded WHERE matched nothing (the no-op finalize)", () => {
-    expect(statementChangedRows({ success: true, meta: { changes: 0 } })).toBe(
-      0,
-    );
+    expect(statementChangedRows({ rowCount: 0 })).toBe(0);
   });
 
-  it("defaults to 0 for shapes without meta.changes (conservative no-op)", () => {
-    // A `.returning()` UPDATE yields a rows array, not a D1Result; an absent or
-    // non-numeric count must read as "nothing changed" so a broadcast guarded on
-    // ">0" stays silent rather than firing on a malformed result.
+  it("defaults to 0 for shapes without a count (conservative no-op)", () => {
+    // A `.returning()` UPDATE yields a rows array, not a driver result; an absent
+    // or non-numeric count must read as "nothing changed" so a broadcast guarded
+    // on ">0" stays silent rather than firing on a malformed result.
     expect(statementChangedRows([{ id: "row" }])).toBe(0);
     expect(statementChangedRows(undefined)).toBe(0);
     expect(statementChangedRows({})).toBe(0);
-    expect(statementChangedRows({ meta: {} })).toBe(0);
-    expect(statementChangedRows({ meta: { changes: "1" } })).toBe(0);
+    expect(statementChangedRows({ rowCount: "1" })).toBe(0);
   });
 });

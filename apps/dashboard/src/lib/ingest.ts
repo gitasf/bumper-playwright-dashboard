@@ -10,7 +10,8 @@ import {
   testTags,
   teams,
 } from "@schema";
-import { isUniqueViolation, runBatch } from "@/lib/db-batch";
+import type { BatchExecutor } from "@/lib/db-batch";
+import { changedRows, isUniqueViolation, runBatch } from "@/lib/db-batch";
 import { maybePostGithubCheck } from "@/lib/github-checks";
 import { runByIdWhere, staleRunFilter, type TenantScope } from "@/lib/scope";
 import { monthStartSeconds, usageBumpStatement } from "@/lib/usage";
@@ -43,24 +44,25 @@ export type RunAggregateSummary = RunProgressEvent["summary"];
 
 /**
  * Streaming ingest pipeline. Every write carries `teamId AND projectId` for
- * logical tenant isolation, and `db.batch` is the atomicity boundary (Drizzle
- * wraps D1's batch API, running every statement in a single transaction on the
- * writer node). Realtime broadcasts go through the `void/ws` rooms — the run
- * room (`run:<runId>`) and the project room (`project:<projectId>`) — via
+ * logical tenant isolation, and `runBatch` (a Postgres `db.transaction`) is the
+ * atomicity boundary. Realtime broadcasts go through the `void/ws` rooms — the
+ * run room (`run:<runId>`) and the project room (`project:<projectId>`) — via
  * `@/realtime/publish` (ADR 0001).
  *
  * See `docs/worklog/void-migration-consolidated.md` for the architecture
- * decisions behind the single-D1 model.
+ * decisions behind the single-database model.
  */
 
-// D1 caps the parameter count per statement at 100. Match the previous DO
-// cadence (99) so chunk sizes stay identical.
-const MAX_PARAMS_PER_STATEMENT = 99;
+// Postgres per-statement bound-parameter ceiling (65535). Drives multi-row-insert
+// chunk size: each statement in a `db.transaction` is its own round-trip, so the
+// large ceiling keeps a big flush to a couple of statements (~4600 rows each)
+// rather than hundreds of round-trips.
+const PG_MAX_BOUND_PARAMS = 65_535;
 
 /**
  * Slice `items` into consecutive sub-arrays of at most `size` (always ≥1, so a
  * pathological `size <= 0` still makes progress one item at a time rather than
- * looping forever). The single home for fixed-size chunking — both the D1
+ * looping forever). The single home for fixed-size chunking — both the
  * param-cap chunker (`chunkByParams`) and the watchdog's bounded-concurrency
  * drain (`drainStaleRuns`) compute their per-chunk count and hand it here.
  */
@@ -75,19 +77,20 @@ export function chunkBySize<T>(items: T[], size: number): T[][] {
 
 /**
  * Split `rows` into sub-arrays whose `.values(chunk)` multi-row insert stays
- * under D1's per-statement parameter ceiling, given the number of columns each
- * row binds. Hides the `Math.floor(99 / columnsPerRow)` arithmetic behind one
- * call so the 100-param cap lives in exactly one place.
+ * under Postgres's per-statement parameter ceiling, given the number of columns
+ * each row binds. Hides the `Math.floor(maxParams / columnsPerRow)` arithmetic
+ * behind one call so the cap lives in exactly one place.
  *
  * Prefer `chunkInsertRows` for real inserts — it derives `columnsPerRow` from
  * the row shape so the count can't drift from the row literal. This lower-level
  * form is kept for the unit test that asserts the chunking math directly.
  */
-export function chunkByParams<T>(rows: T[], columnsPerRow: number): T[][] {
-  return chunkBySize(
-    rows,
-    Math.floor(MAX_PARAMS_PER_STATEMENT / columnsPerRow),
-  );
+export function chunkByParams<T>(
+  rows: T[],
+  columnsPerRow: number,
+  maxParams: number = PG_MAX_BOUND_PARAMS,
+): T[][] {
+  return chunkBySize(rows, Math.floor(maxParams / columnsPerRow));
 }
 
 /**
@@ -134,7 +137,7 @@ export async function resolveTestResultIds(
   // chunks are independent reads, so they run concurrently — a max-size batch
   // is ~52 chunks, which serialized would add ~1s of pure round-trip latency
   // to the flush.
-  const idsPerChunk = MAX_PARAMS_PER_STATEMENT - 2;
+  const idsPerChunk = PG_MAX_BOUND_PARAMS - 2;
   const chunkRows = await Promise.all(
     chunkBySize(testIds, idsPerChunk).map((chunk) =>
       db
@@ -174,6 +177,7 @@ export function buildQueuePrefillStatements(
     projectName?: string | null | undefined;
   }>,
   nowSeconds: number,
+  exec: BatchExecutor = db,
 ) {
   if (plannedTests.length === 0) return [];
   const rows = plannedTests.map((p) => ({
@@ -198,7 +202,7 @@ export function buildQueuePrefillStatements(
   // own slice of planned tests without clobbering rows another shard already
   // created or completed.
   return chunkInsertRows(rows).map((chunk) =>
-    db.insert(testResults).values(chunk).onConflictDoNothing(),
+    exec.insert(testResults).values(chunk).onConflictDoNothing(),
   );
 }
 
@@ -218,6 +222,7 @@ export function buildResultInsertStatements(
   nowSeconds: number,
   existingIds: Map<string, string>,
   assignedIds: Map<string, string>,
+  exec: BatchExecutor = db,
 ) {
   const insertRows: Array<{
     id: string;
@@ -275,7 +280,7 @@ export function buildResultInsertStatements(
 
     if (existingIds.has(result.testId)) {
       statements.push(
-        db
+        exec
           .update(testResults)
           .set({
             title: result.title,
@@ -297,7 +302,7 @@ export function buildResultInsertStatements(
           ),
       );
       statements.push(
-        db
+        exec
           .delete(testTags)
           .where(
             and(
@@ -307,7 +312,7 @@ export function buildResultInsertStatements(
           ),
       );
       statements.push(
-        db
+        exec
           .delete(testAnnotations)
           .where(
             and(
@@ -338,7 +343,7 @@ export function buildResultInsertStatements(
     // Per-attempt rows are fully owned by this result. Re-send re-creates
     // the set so the reporter staying idempotent under flush retry.
     statements.push(
-      db
+      exec
         .delete(testResultAttempts)
         .where(
           and(
@@ -380,16 +385,16 @@ export function buildResultInsertStatements(
   }
 
   for (const chunk of chunkInsertRows(insertRows)) {
-    statements.push(db.insert(testResults).values(chunk));
+    statements.push(exec.insert(testResults).values(chunk));
   }
   for (const chunk of chunkInsertRows(tagRows)) {
-    statements.push(db.insert(testTags).values(chunk));
+    statements.push(exec.insert(testTags).values(chunk));
   }
   for (const chunk of chunkInsertRows(annotationRows)) {
-    statements.push(db.insert(testAnnotations).values(chunk));
+    statements.push(exec.insert(testAnnotations).values(chunk));
   }
   for (const chunk of chunkInsertRows(attemptRows)) {
-    statements.push(db.insert(testResultAttempts).values(chunk));
+    statements.push(exec.insert(testResultAttempts).values(chunk));
   }
   return { statements, mapping };
 }
@@ -470,6 +475,7 @@ export function aggregateDeltaStatement(
   runId: string,
   delta: AggregateDelta,
   nowSeconds: number,
+  exec: BatchExecutor = db,
 ) {
   if (
     delta.totalTests === 0 &&
@@ -480,7 +486,7 @@ export function aggregateDeltaStatement(
   ) {
     return null;
   }
-  return db
+  return exec
     .update(runs)
     .set({
       totalTests: sql`${runs.totalTests} + ${delta.totalTests}`,
@@ -509,8 +515,9 @@ export function activityBumpStatement(
   scope: TenantScope,
   runId: string,
   nowSeconds: number,
+  exec: BatchExecutor = db,
 ) {
-  return db
+  return exec
     .update(runs)
     .set({ lastActivityAt: nowSeconds })
     .where(runByIdWhere(scope, runId))
@@ -535,11 +542,12 @@ function statusMatchSql(statuses: readonly string[]) {
 export function aggregateRecomputeStatement(
   scope: { projectId: string },
   runId: string,
+  exec: BatchExecutor = db,
 ) {
   const projectId = scope.projectId;
   const bucketCount = (statuses: readonly string[]) =>
     sql`(SELECT COUNT(*) FROM "testResults" WHERE "projectId" = ${projectId} AND "runId" = ${runId} AND ${statusMatchSql(statuses)})`;
-  return db
+  return exec
     .update(runs)
     .set({
       totalTests: sql`(SELECT COUNT(*) FROM "testResults" WHERE "projectId" = ${projectId} AND "runId" = ${runId})`,
@@ -578,23 +586,13 @@ export function summaryFromBatchResults(
 
 /**
  * Read how many rows a non-`.returning()` statement changed, from its element in
- * a `db.batch` result. Drizzle passes a `run`-method statement's raw D1 result
- * straight through, so the element is a `D1Result` whose `meta.changes` is the
- * affected-row count (0 when a guarded `WHERE` matched nothing). Defaults to 0
- * for any shape that doesn't carry `meta.changes` — a missing count reads as
- * "nothing changed", the conservative answer for the no-op guard.
- *
- * This is the head-of-batch counterpart to `summaryFromBatchResults` (which owns
- * the tail-row cast): the single typed home for "did the guarded UPDATE flip a
- * row?", so `reconcileAndBroadcast` can suppress the follow-up broadcast on a
- * no-op finalize without each terminal path hand-poking at `meta.changes`.
+ * a batch/transaction result. The dialect-specific shape (D1 `meta.changes`,
+ * node-postgres `rowCount`, pglite `affectedRows`) is owned by `changedRows`
+ * (`@/lib/db-batch`); this is the run-scoped alias kept so `reconcileAndBroadcast`
+ * reads "did the guarded UPDATE flip a row?" through a name local to the ingest
+ * pipeline (the head-of-batch counterpart to `summaryFromBatchResults`).
  */
-export function statementChangedRows(batchResult: unknown): number {
-  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- D1 batch element is `unknown`; read `meta.changes` defensively (single typed home, see fn doc)
-  const meta = (batchResult as { meta?: { changes?: number } } | undefined)
-    ?.meta;
-  return typeof meta?.changes === "number" ? meta.changes : 0;
-}
+export const statementChangedRows = changedRows;
 
 /**
  * Run a heterogeneous write batch whose LAST statement produces the broadcast
@@ -623,10 +621,15 @@ export function statementChangedRows(batchResult: unknown): number {
  * `runBatch` (`@/lib/db-batch`), which this routes through.
  */
 export async function runBatchWithSummary(
-  writes: PromiseLike<unknown>[],
-  summary: PromiseLike<unknown>,
+  build: (exec: BatchExecutor) => {
+    writes: PromiseLike<unknown>[];
+    summary: PromiseLike<unknown>;
+  },
 ): Promise<RunAggregateSummary | null> {
-  const batchResults = await runBatch([...writes, summary]);
+  const batchResults = await runBatch((tx) => {
+    const { writes, summary } = build(tx);
+    return [...writes, summary];
+  });
   return summaryFromBatchResults(batchResults);
 }
 
@@ -641,7 +644,7 @@ export async function runBatchWithSummary(
  * `.returning()` row as the summary.
  *
  * Both terminal paths differ ONLY in the status-flip statement (completeRun
- * merges severity in SQL + max()'s duration/completedAt; finalizeStaleRun flips
+ * merges severity in SQL + greatest()'s duration/completedAt; finalizeStaleRun flips
  * to "interrupted" guarded on status="running"), so the caller passes that one
  * statement and the recompute scope; everything downstream of the write — append
  * recompute, batch, extract last row, broadcast-iff-present — lives here once
@@ -665,13 +668,13 @@ export async function runBatchWithSummary(
  */
 export async function reconcileAndBroadcast(
   runId: string,
-  statusUpdate: PromiseLike<unknown>,
+  buildStatusUpdate: (exec: BatchExecutor) => PromiseLike<unknown>,
   recomputeScope: { projectId: string },
   opts?: { requireStatusFlip?: boolean },
 ): Promise<RunAggregateSummary | null> {
-  const batchResults = await runBatch([
-    statusUpdate,
-    aggregateRecomputeStatement(recomputeScope, runId),
+  const batchResults = await runBatch((tx) => [
+    buildStatusUpdate(tx),
+    aggregateRecomputeStatement(recomputeScope, runId, tx),
   ]);
   const summary = summaryFromBatchResults(batchResults);
 
@@ -927,31 +930,31 @@ export async function openRun(
   const runId = ulid();
   const plannedTests = payload.run.plannedTests ?? [];
 
-  const runInsert = db
-    .insert(runs)
-    .values(buildRunInsertValues(runId, scope, payload, nowSeconds));
-
-  // Meter the run open in the SAME batch as the row insert — usage is bumped
-  // atomically with the data it counts. Only the fresh-open path bumps (a
-  // duplicate re-open of a sharded suite / CI re-run does not create a new run).
-  const usageBump = usageBumpStatement(
-    scope.teamId,
-    monthStartSeconds(nowSeconds),
-    { runs: 1 },
-    nowSeconds,
-  );
-  const stmts = [
-    runInsert,
-    ...buildQueuePrefillStatements(scope, runId, plannedTests, nowSeconds),
-    ...(usageBump ? [usageBump] : []),
-  ];
+  const runValues = buildRunInsertValues(runId, scope, payload, nowSeconds);
   try {
-    if (stmts.length === 1) {
-      await stmts[0];
-    } else {
-      // D1 batch atomicity: all-or-nothing.
-      await runBatch(stmts);
-    }
+    // All-or-nothing: the run insert, the queued-test prefill, and the usage
+    // meter bump (run open) commit atomically — `db.batch` on D1, one
+    // `db.transaction` on Postgres (see `runBatch`). Every statement is built
+    // against the passed executor so it enrolls in that boundary.
+    await runBatch((tx) => [
+      tx.insert(runs).values(runValues),
+      ...buildQueuePrefillStatements(
+        scope,
+        runId,
+        plannedTests,
+        nowSeconds,
+        tx,
+      ),
+      ...((u) => (u ? [u] : []))(
+        usageBumpStatement(
+          scope.teamId,
+          monthStartSeconds(nowSeconds),
+          { runs: 1 },
+          nowSeconds,
+          tx,
+        ),
+      ),
+    ]);
   } catch (err) {
     // Lost the SELECT-then-INSERT race: sharded suites share one
     // idempotencyKey and open concurrently BY DESIGN, so the loser's insert
@@ -1137,41 +1140,49 @@ export async function appendRunResults(
   const testIds = results.map((r) => r.testId);
   const { existingIds, assignedIds, prevStatusByTestId } =
     await resolveTestResultIds(scope, runId, testIds);
-  const { statements, mapping } = buildResultInsertStatements(
-    scope,
-    runId,
-    results,
-    nowSeconds,
-    existingIds,
-    assignedIds,
-  );
   // Meter FRESH testResults rows only (testIds not already present on this run),
   // so a re-streamed/retried flush doesn't double-count. Joins the same batch.
   const freshResultCount = results.reduce(
     (n, r) => (existingIds.has(r.testId) ? n : n + 1),
     0,
   );
-  const usageBump = usageBumpStatement(
-    scope.teamId,
-    monthStartSeconds(nowSeconds),
-    { testResults: freshResultCount },
-    nowSeconds,
-  );
-  if (usageBump) statements.push(usageBump);
-  const deltaStmt = aggregateDeltaStatement(
-    scope,
-    runId,
-    computeAggregateDelta(results, prevStatusByTestId),
-    nowSeconds,
-  );
-  // Both branches still advance `lastActivityAt`: the delta UPDATE sets it
-  // alongside the counters; the no-delta branch is a liveness-only UPDATE
-  // (not a read-only SELECT) so a zero-bucket-change flush still counts as
-  // activity for `staleRunFilter`.
-  const summaryStmt =
-    deltaStmt ?? activityBumpStatement(scope, runId, nowSeconds);
-
-  const summary = await runBatchWithSummary(statements, summaryStmt);
+  const delta = computeAggregateDelta(results, prevStatusByTestId);
+  // The clientKey→testResultId map is produced while building the statements;
+  // capture it from inside the batch builder for the post-batch artifact step.
+  let mapping: ResultMapping[] = [];
+  // One atomic write: the per-test upsert/replace statements, the usage meter
+  // bump, and the summary-producing statement (LAST), built against the batch
+  // executor so they enroll in the same `db.batch`(D1)/`db.transaction`(PG).
+  const summary = await runBatchWithSummary((tx) => {
+    const built = buildResultInsertStatements(
+      scope,
+      runId,
+      results,
+      nowSeconds,
+      existingIds,
+      assignedIds,
+      tx,
+    );
+    mapping = built.mapping;
+    const usageBump = usageBumpStatement(
+      scope.teamId,
+      monthStartSeconds(nowSeconds),
+      { testResults: freshResultCount },
+      nowSeconds,
+      tx,
+    );
+    // Both summary branches still advance `lastActivityAt`: the delta UPDATE
+    // sets it alongside the counters; the no-delta branch is a liveness-only
+    // UPDATE (not a read-only SELECT) so a zero-bucket-change flush still
+    // counts as activity for `staleRunFilter`.
+    const summaryStmt =
+      aggregateDeltaStatement(scope, runId, delta, nowSeconds, tx) ??
+      activityBumpStatement(scope, runId, nowSeconds, tx);
+    return {
+      writes: usageBump ? [...built.statements, usageBump] : built.statements,
+      summary: summaryStmt,
+    };
+  });
   await bumpTeamActivity(scope.teamId, nowSeconds);
 
   if (!summary) return { kind: "notFound" };
@@ -1317,20 +1328,26 @@ export async function completeRun(
   // between a SELECT and a separate UPDATE. The merge rule itself lives in one
   // place (`mergeRunStatusSql`, the SQL twin of `mergeRunStatus`).
   const statusExpr = mergeRunStatusSql(payload.status);
-  const statusUpdate = db
-    .update(runs)
-    .set({
-      status: statusExpr,
-      durationMs: sql`max(${runs.durationMs}, ${payload.durationMs})`,
-      completedAt: sql`max(coalesce(${runs.completedAt}, 0), ${completedAt})`,
-      // /complete is an ingest write too — keep the liveness signal monotonic
-      // so a late straggler /results racing this can't look stale to the
-      // watchdog. Set in the same statement; no extra round-trip.
-      lastActivityAt: nowSeconds,
-    })
-    .where(runByIdWhere(scope, runId));
-
-  const summary = await reconcileAndBroadcast(runId, statusUpdate, scope);
+  const summary = await reconcileAndBroadcast(
+    runId,
+    (tx) =>
+      tx
+        .update(runs)
+        .set({
+          status: statusExpr,
+          // Postgres `max` is an aggregate; the scalar "larger of two" is
+          // `greatest` (SQLite's 2-arg `max` does not exist here).
+          durationMs: sql`greatest(${runs.durationMs}, ${payload.durationMs})`,
+          completedAt: sql`greatest(coalesce(${runs.completedAt}, 0), ${completedAt})`,
+          // /complete is an ingest write too — keep the liveness signal
+          // monotonic so a late straggler /results racing this can't look
+          // stale to the watchdog. Set in the same statement; no extra
+          // round-trip.
+          lastActivityAt: nowSeconds,
+        })
+        .where(runByIdWhere(scope, runId)),
+    scope,
+  );
   await bumpTeamActivity(scope.teamId, nowSeconds);
   // Best-effort GitHub check run (no-op unless the App is configured + the
   // repo's org installed it). Awaited per the no-fire-and-forget rule; it
@@ -1363,20 +1380,23 @@ export async function finalizeStaleRun(
   run: { id: string; projectId: string; teamId: string },
   completedAt: number,
 ): Promise<void> {
-  const statusUpdate = db
-    .update(runs)
-    .set({ status: "interrupted", completedAt, lastActivityAt: completedAt })
-    .where(
-      and(
-        eq(runs.projectId, run.projectId),
-        eq(runs.id, run.id),
-        eq(runs.status, "running"),
-      ),
-    );
-
   await reconcileAndBroadcast(
     run.id,
-    statusUpdate,
+    (tx) =>
+      tx
+        .update(runs)
+        .set({
+          status: "interrupted",
+          completedAt,
+          lastActivityAt: completedAt,
+        })
+        .where(
+          and(
+            eq(runs.projectId, run.projectId),
+            eq(runs.id, run.id),
+            eq(runs.status, "running"),
+          ),
+        ),
     { projectId: run.projectId },
     { requireStatusFlip: true },
   );

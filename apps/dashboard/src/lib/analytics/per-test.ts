@@ -131,7 +131,12 @@ export function statusCounter(
 ): SqlFilterFragment {
   const { alias, statusCol = "status" } = opts;
   const predicate = statusPredicate(kind, assertSqlIdentifier(statusCol));
-  const expr = `sum(case when ${predicate} then 1 else 0 end)`;
+  // `cast(… as integer)`: `sum(int)` is `int8` on Postgres, which node-postgres
+  // returns as a STRING; casting to `int4` makes BOTH drivers parse it to a JS
+  // number. (These counters run through the raw `runRows` path, which bypasses
+  // Drizzle's field decoders — so the cast must be in SQL, not `.mapWith`.)
+  // Per-test status counts comfortably fit int4.
+  const expr = `cast(sum(case when ${predicate} then 1 else 0 end) as integer)`;
   return sql.raw(
     alias ? `${expr} as ${assertSqlIdentifier(alias)}` : expr,
   ) as SqlFilterFragment;

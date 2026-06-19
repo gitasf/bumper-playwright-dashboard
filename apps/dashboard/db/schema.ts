@@ -1,16 +1,27 @@
+// GENERATED FILE — DO NOT EDIT.
+// Produced from `db/schema.d1.ts` by `scripts/gen-pg-schema.mjs` (`pnpm db:generate`).
+// The D1 schema is the single source of truth; this is its Postgres twin.
+// The only divergence is `integer` -> `bigint` for the columns in
+// `db/dialect-columns.mjs` (see that file for why). Drift is caught by
+// `src/__tests__/schema-parity.test.ts`.
+
 // `sql` (from the side-effect-free `void/_db` entry, not `void/db` whose `db`
 // export resolves the D1 binding) backs the `COALESCE(role, '')` expression in
 // the artifacts unique index below — safe at schema-parse time and for
 // `void db generate`.
 import { sql } from "void/_db";
 import {
+  bigint,
   index,
   integer,
+  pgTable,
   primaryKey,
-  sqliteTable,
   text,
   uniqueIndex,
-} from "void/schema-d1";
+} from "void/schema-pg";
+
+/** epoch-seconds / external 64-bit ids / cumulative counters — see db/dialect-columns.mjs. */
+const big = (name: string) => bigint(name, { mode: "number" });
 
 /**
  * A user's role within a team. The column is `text().$type<MembershipRole>()`,
@@ -47,14 +58,14 @@ export type MembershipRole = "owner" | "member" | "viewer";
 
 // ---------- Tenancy ----------
 
-export const teams = sqliteTable(
+export const teams = pgTable(
   "teams",
   {
     id: text("id").primaryKey(),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
-    createdAt: integer("createdAt").notNull(),
-    lastActivityAt: integer("lastActivityAt"),
+    createdAt: big("createdAt").notNull(),
+    lastActivityAt: big("lastActivityAt"),
     /**
      * Billing tier — drives which limit set `checkQuota` (`src/lib/usage.ts`)
      * enforces. `'free'` (default) → the env-configured `WRIGHTFUL_FREE_*`
@@ -81,7 +92,7 @@ export const teams = sqliteTable(
   ],
 );
 
-export const projects = sqliteTable(
+export const projects = pgTable(
   "projects",
   {
     id: text("id").primaryKey(),
@@ -90,7 +101,7 @@ export const projects = sqliteTable(
       .references(() => teams.id, { onDelete: "cascade" }),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
     /**
      * The project's CODEOWNERS file contents, source of the CODEOWNERS-derived
      * leg of test ownership (roadmap 2.3). Populated automatically from the
@@ -102,7 +113,7 @@ export const projects = sqliteTable(
      */
     codeownersFile: text("codeownersFile"),
     /** Epoch-seconds the `codeownersFile` was last set (manually or via ingest). */
-    codeownersUpdatedAt: integer("codeownersUpdatedAt"),
+    codeownersUpdatedAt: big("codeownersUpdatedAt"),
   },
   (t) => [uniqueIndex("projects_team_slug_idx").on(t.teamId, t.slug)],
 );
@@ -112,7 +123,7 @@ export const projects = sqliteTable(
  * column but is declared without a Drizzle .references() call so this
  * schema can be migrated independently of void's auth bootstrap.
  */
-export const memberships = sqliteTable(
+export const memberships = pgTable(
   "memberships",
   {
     id: text("id").primaryKey(),
@@ -121,7 +132,7 @@ export const memberships = sqliteTable(
       .notNull()
       .references(() => teams.id, { onDelete: "cascade" }),
     role: text("role").$type<MembershipRole>().notNull(),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
   },
   (t) => [
     uniqueIndex("memberships_user_team_idx").on(t.userId, t.teamId),
@@ -129,7 +140,7 @@ export const memberships = sqliteTable(
   ],
 );
 
-export const teamInvites = sqliteTable(
+export const teamInvites = pgTable(
   "teamInvites",
   {
     id: text("id").primaryKey(),
@@ -140,8 +151,8 @@ export const teamInvites = sqliteTable(
     role: text("role").$type<MembershipRole>().notNull(),
     /** `user.id` of the inviter. No .references() — see schema doc-comment. */
     createdBy: text("createdBy").notNull(),
-    createdAt: integer("createdAt").notNull(),
-    expiresAt: integer("expiresAt").notNull(),
+    createdAt: big("createdAt").notNull(),
+    expiresAt: big("expiresAt").notNull(),
     /** Directed invite: matched against the signed-in user's email. */
     email: text("email"),
     /**
@@ -166,7 +177,7 @@ export const teamInvites = sqliteTable(
  * because membership is team-scoped; a group can only contain members of its
  * own team (enforced at write time + re-intersected at read time).
  */
-export const memberGroups = sqliteTable(
+export const memberGroups = pgTable(
   "memberGroups",
   {
     id: text("id").primaryKey(),
@@ -176,8 +187,8 @@ export const memberGroups = sqliteTable(
     name: text("name").notNull(),
     /** `user.id` of the creator. Logical FK — see schema header. */
     createdBy: text("createdBy").notNull(),
-    createdAt: integer("createdAt").notNull(),
-    updatedAt: integer("updatedAt").notNull(),
+    createdAt: big("createdAt").notNull(),
+    updatedAt: big("updatedAt").notNull(),
   },
   (t) => [uniqueIndex("memberGroups_team_name_idx").on(t.teamId, t.name)],
 );
@@ -188,7 +199,7 @@ export const memberGroups = sqliteTable(
  * with the group; a member leaving the team is dropped by the
  * `setGroupMembers` write (and re-intersected with live members on read).
  */
-export const memberGroupMembers = sqliteTable(
+export const memberGroupMembers = pgTable(
   "memberGroupMembers",
   {
     groupId: text("groupId")
@@ -208,13 +219,13 @@ export const memberGroupMembers = sqliteTable(
  * numeric id) but not the human-readable login, which we need to resolve
  * directed-by-github-handle invites. Populated by a sign-in hook in auth.ts.
  */
-export const userGithubAccounts = sqliteTable(
+export const userGithubAccounts = pgTable(
   "userGithubAccounts",
   {
     /** void-managed `user.id`. Logical FK; not declared here. */
     userId: text("userId").primaryKey(),
     githubLogin: text("githubLogin").notNull(),
-    updatedAt: integer("updatedAt").notNull(),
+    updatedAt: big("updatedAt").notNull(),
   },
   (t) => [index("userGithubAccounts_githubLogin_idx").on(t.githubLogin)],
 );
@@ -224,7 +235,7 @@ export const userGithubAccounts = sqliteTable(
  * "back to where you were" behavior across sessions. Soft-references project
  * + team so deletes don't break sign-in.
  */
-export const userState = sqliteTable("userState", {
+export const userState = pgTable("userState", {
   userId: text("userId").primaryKey(),
   lastTeamId: text("lastTeamId").references(() => teams.id, {
     onDelete: "set null",
@@ -232,12 +243,12 @@ export const userState = sqliteTable("userState", {
   lastProjectId: text("lastProjectId").references(() => projects.id, {
     onDelete: "set null",
   }),
-  updatedAt: integer("updatedAt").notNull(),
+  updatedAt: big("updatedAt").notNull(),
 });
 
 // ---------- API keys ----------
 
-export const apiKeys = sqliteTable(
+export const apiKeys = pgTable(
   "apiKeys",
   {
     id: text("id").primaryKey(),
@@ -252,9 +263,9 @@ export const apiKeys = sqliteTable(
      * with constant time to avoid timing leaks across thousands of keys.
      */
     keyPrefix: text("keyPrefix").notNull(),
-    createdAt: integer("createdAt").notNull(),
-    lastUsedAt: integer("lastUsedAt"),
-    revokedAt: integer("revokedAt"),
+    createdAt: big("createdAt").notNull(),
+    lastUsedAt: big("lastUsedAt"),
+    revokedAt: big("revokedAt"),
   },
   (t) => [
     index("apiKeys_project_idx").on(t.projectId),
@@ -275,7 +286,7 @@ export const apiKeys = sqliteTable(
  * gate ingest against the team's tier limits; the `rollup-usage` cron
  * recomputes a period's counters from the authoritative rows to correct drift.
  */
-export const usageCounters = sqliteTable(
+export const usageCounters = pgTable(
   "usageCounters",
   {
     id: text("id").primaryKey(),
@@ -283,12 +294,12 @@ export const usageCounters = sqliteTable(
       .notNull()
       .references(() => teams.id, { onDelete: "cascade" }),
     /** UTC start-of-month epoch-seconds — the rolling billing window key. */
-    periodStart: integer("periodStart").notNull(),
+    periodStart: big("periodStart").notNull(),
     runsCount: integer("runsCount").notNull().default(0),
     testResultsCount: integer("testResultsCount").notNull().default(0),
-    artifactBytes: integer("artifactBytes").notNull().default(0),
+    artifactBytes: big("artifactBytes").notNull().default(0),
     artifactCount: integer("artifactCount").notNull().default(0),
-    updatedAt: integer("updatedAt").notNull(),
+    updatedAt: big("updatedAt").notNull(),
   },
   (t) => [
     // The upsert conflict target AND the seek key for `checkQuota` /
@@ -306,7 +317,7 @@ export const usageCounters = sqliteTable(
  * the org/user the App is installed on — the resolution key from a run's
  * `repo` ("owner/name") to the installation that can post a check on it.
  */
-export const githubInstallations = sqliteTable(
+export const githubInstallations = pgTable(
   "githubInstallations",
   {
     id: text("id").primaryKey(),
@@ -314,11 +325,11 @@ export const githubInstallations = sqliteTable(
       .notNull()
       .references(() => teams.id, { onDelete: "cascade" }),
     /** GitHub's numeric installation id — what we mint installation tokens for. */
-    installationId: integer("installationId").notNull(),
+    installationId: big("installationId").notNull(),
     /** The org/user login the App is installed on (the `repo` owner segment). */
     accountLogin: text("accountLogin").notNull(),
-    createdAt: integer("createdAt").notNull(),
-    updatedAt: integer("updatedAt").notNull(),
+    createdAt: big("createdAt").notNull(),
+    updatedAt: big("updatedAt").notNull(),
   },
   (t) => [
     uniqueIndex("githubInstallations_installationId_idx").on(t.installationId),
@@ -331,7 +342,7 @@ export const githubInstallations = sqliteTable(
 
 // ---------- Test data (runs and children) ----------
 
-export const runs = sqliteTable(
+export const runs = pgTable(
   "runs",
   {
     id: text("id").primaryKey(),
@@ -370,7 +381,7 @@ export const runs = sqliteTable(
     status: text("status").notNull(),
     reporterVersion: text("reporterVersion"),
     playwrightVersion: text("playwrightVersion"),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
     /**
      * Liveness signal: the epoch-seconds timestamp of the most recent ingest
      * write to this run. Initialized to `createdAt` at open (so an onBegin-only
@@ -386,8 +397,8 @@ export const runs = sqliteTable(
      * column; readers `coalesce(lastActivityAt, createdAt)` so a NULL is never
      * treated as "infinitely stale".
      */
-    lastActivityAt: integer("lastActivityAt"),
-    completedAt: integer("completedAt"),
+    lastActivityAt: big("lastActivityAt"),
+    completedAt: big("completedAt"),
     /**
      * Where this run came from. `'ci'` (default) — a normal reporter run from
      * CI/local. `'synthetic'` — produced by a scheduled synthetic monitor (see
@@ -410,7 +421,7 @@ export const runs = sqliteTable(
      * path (`completeRun` / `finalizeStaleRun` → `maybePostGithubCheck`) PATCH
      * the existing check on a re-complete instead of POSTing a duplicate.
      */
-    githubCheckRunId: integer("githubCheckRunId"),
+    githubCheckRunId: big("githubCheckRunId"),
   },
   (t) => [
     uniqueIndex("runs_project_idempotency_key_idx").on(
@@ -447,7 +458,7 @@ export const runs = sqliteTable(
   ],
 );
 
-export const testResults = sqliteTable(
+export const testResults = pgTable(
   "testResults",
   {
     id: text("id").primaryKey(),
@@ -467,7 +478,7 @@ export const testResults = sqliteTable(
     errorMessage: text("errorMessage"),
     errorStack: text("errorStack"),
     workerIndex: integer("workerIndex"),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
   },
   (t) => [
     index("testResults_testId_createdAt_idx").on(t.testId, t.createdAt),
@@ -492,7 +503,7 @@ export const testResults = sqliteTable(
   ],
 );
 
-export const testTags = sqliteTable(
+export const testTags = pgTable(
   "testTags",
   {
     id: text("id").primaryKey(),
@@ -514,7 +525,7 @@ export const testTags = sqliteTable(
   ],
 );
 
-export const testAnnotations = sqliteTable(
+export const testAnnotations = pgTable(
   "testAnnotations",
   {
     id: text("id").primaryKey(),
@@ -530,7 +541,7 @@ export const testAnnotations = sqliteTable(
   (t) => [index("testAnnotations_testResultId_idx").on(t.testResultId)],
 );
 
-export const testResultAttempts = sqliteTable(
+export const testResultAttempts = pgTable(
   "testResultAttempts",
   {
     id: text("id").primaryKey(),
@@ -545,7 +556,7 @@ export const testResultAttempts = sqliteTable(
     durationMs: integer("durationMs").notNull(),
     errorMessage: text("errorMessage"),
     errorStack: text("errorStack"),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
   },
   (t) => [
     // No standalone (testResultId) index — it's a prefix of the unique
@@ -558,7 +569,7 @@ export const testResultAttempts = sqliteTable(
   ],
 );
 
-export const artifacts = sqliteTable(
+export const artifacts = pgTable(
   "artifacts",
   {
     id: text("id").primaryKey(),
@@ -589,7 +600,7 @@ export const artifacts = sqliteTable(
      * artifacts. Not part of the idempotency identity below.
      */
     snapshotName: text("snapshotName"),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
   },
   (t) => [
     index("artifacts_testResultId_idx").on(t.testResultId),
@@ -634,7 +645,7 @@ export const artifacts = sqliteTable(
  * with a lighter executor. Run-scoped: carries denormalized `teamId` AND
  * `projectId` like `runs`, so tenant isolation needs no join.
  */
-export const monitors = sqliteTable(
+export const monitors = pgTable(
   "monitors",
   {
     id: text("id").primaryKey(),
@@ -679,15 +690,15 @@ export const monitors = sqliteTable(
      * "not scheduled" (paused / never armed). Advanced transactionally in the
      * sweep's D1 batch BEFORE enqueue so a double cron tick can't double-fire.
      */
-    nextRunAt: integer("nextRunAt"),
-    lastEnqueuedAt: integer("lastEnqueuedAt"),
-    lastRunAt: integer("lastRunAt"),
+    nextRunAt: big("nextRunAt"),
+    lastEnqueuedAt: big("lastEnqueuedAt"),
+    lastRunAt: big("lastRunAt"),
     /** Terminal state of the most recent execution: pass|degraded|fail|error|running. */
     lastStatus: text("lastStatus"),
     /** void-managed `user.id` of the creator. Logical FK — see schema header. */
     createdBy: text("createdBy").notNull(),
-    createdAt: integer("createdAt").notNull(),
-    updatedAt: integer("updatedAt").notNull(),
+    createdAt: big("createdAt").notNull(),
+    updatedAt: big("updatedAt").notNull(),
   },
   (t) => [
     uniqueIndex("monitors_project_name_idx").on(t.projectId, t.name),
@@ -708,7 +719,7 @@ export const monitors = sqliteTable(
  * later). `runId` is a LOGICAL ref (no `.references()`) to avoid a FK cycle and
  * so a deleted run leaves the execution row intact with a null link.
  */
-export const monitorExecutions = sqliteTable(
+export const monitorExecutions = pgTable(
   "monitorExecutions",
   {
     id: text("id").primaryKey(),
@@ -718,9 +729,9 @@ export const monitorExecutions = sqliteTable(
     monitorId: text("monitorId")
       .notNull()
       .references(() => monitors.id, { onDelete: "cascade" }),
-    scheduledFor: integer("scheduledFor").notNull(),
-    startedAt: integer("startedAt"),
-    completedAt: integer("completedAt"),
+    scheduledFor: big("scheduledFor").notNull(),
+    startedAt: big("startedAt"),
+    completedAt: big("completedAt"),
     /** queued | running | pass | degraded | fail | error. */
     state: text("state").notNull(),
     attempt: integer("attempt").notNull().default(0),
@@ -742,7 +753,7 @@ export const monitorExecutions = sqliteTable(
      */
     resultDetail: text("resultDetail"),
     errorMessage: text("errorMessage"),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
   },
   (t) => [
     index("monitorExecutions_monitor_created_at_idx").on(
@@ -777,7 +788,7 @@ export const monitorExecutions = sqliteTable(
  * isolation needs no join. `createdBy` is the void-managed `user.id` of the
  * actor — a LOGICAL FK (no `.references()`), matching `monitors.createdBy`.
  */
-export const quarantinedTests = sqliteTable(
+export const quarantinedTests = pgTable(
   "quarantinedTests",
   {
     id: text("id").primaryKey(),
@@ -795,7 +806,7 @@ export const quarantinedTests = sqliteTable(
     mode: text("mode").notNull().$type<"skip" | "soft">().default("skip"),
     /** void-managed `user.id` of the creator. Logical FK — see schema header. */
     createdBy: text("createdBy").notNull(),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
   },
   (t) => [
     // One quarantine entry per (project, test). Re-quarantining the same test
@@ -828,7 +839,7 @@ export const quarantinedTests = sqliteTable(
  * isolation needs no join. `owner` is an OPAQUE label — a team handle
  * (`@team/web`) or an email — never resolved against `user`/`memberships`.
  */
-export const testOwners = sqliteTable(
+export const testOwners = pgTable(
   "testOwners",
   {
     id: text("id").primaryKey(),
@@ -844,7 +855,7 @@ export const testOwners = sqliteTable(
      * (reserved — v1 derives these on the fly, never inserts them).
      */
     source: text("source").$type<"manual" | "codeowners">().notNull(),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
   },
   (t) => [
     // One row per (project, test, owner) — assigning the same owner twice is an
@@ -893,7 +904,7 @@ export const testOwners = sqliteTable(
  * `actorUserId` is the void-managed `user.id` of the actor — a LOGICAL FK (no
  * `.references()`), matching `memberships.userId` / `monitors.createdBy`.
  */
-export const auditLog = sqliteTable(
+export const auditLog = pgTable(
   "auditLog",
   {
     id: text("id").primaryKey(),
@@ -925,7 +936,7 @@ export const auditLog = sqliteTable(
     targetId: text("targetId"),
     /** Extra structured context as a JSON string (serialized by `recordAudit`). */
     metadata: text("metadata"),
-    createdAt: integer("createdAt").notNull(),
+    createdAt: big("createdAt").notNull(),
   },
   (t) => [
     // Serves the reverse-chron viewer page: WHERE teamId = ? ORDER BY createdAt

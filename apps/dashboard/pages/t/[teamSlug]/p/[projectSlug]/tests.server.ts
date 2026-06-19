@@ -158,8 +158,11 @@ export const loader = defineHandler.withValidator({
       runAggregateQuery(scope, windowStartSec, branchSql, tagSql, testIds),
       loadQuarantineByTestId(scope.projectId, testIds),
     ]);
-    for (const q of quarantineRows) {
-      quarantinedByTestId[q.testId] = { mode: q.mode, reason: q.reason };
+    for (const quarantine of quarantineRows) {
+      quarantinedByTestId[quarantine.testId] = {
+        mode: quarantine.mode,
+        reason: quarantine.reason,
+      };
     }
     rows = testIds.flatMap((id) => {
       const a = aggById.get(id);

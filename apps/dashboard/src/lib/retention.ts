@@ -68,12 +68,14 @@ async function deleteRowsByIds(
   projectId: string,
   ids: string[],
 ): Promise<void> {
-  const ops = chunkBySize(ids, ID_DELETE_CHUNK).map((chunk) =>
-    db
-      .delete(table)
-      .where(and(eq(table.projectId, projectId), inArray(table.id, chunk))),
+  if (ids.length === 0) return;
+  await runBatch((tx) =>
+    chunkBySize(ids, ID_DELETE_CHUNK).map((chunk) =>
+      tx
+        .delete(table)
+        .where(and(eq(table.projectId, projectId), inArray(table.id, chunk))),
+    ),
   );
-  if (ops.length > 0) await runBatch(ops);
 }
 
 /** Sweep one project's artifacts older than `cutoff` (R2 objects, then rows). */

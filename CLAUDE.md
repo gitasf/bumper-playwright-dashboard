@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Wrightful
 
-Wrightful is a Playwright test reporting dashboard. A custom Playwright reporter streams test results live to a [Void](https://void.cloud)-based dashboard on Cloudflare that stores auth/tenancy and test data in a single SQLite-backed D1 database (via Drizzle) and artifacts in R2. Realtime run progress is broadcast over `void/live`.
+Wrightful is a Playwright test reporting dashboard. A custom Playwright reporter streams test results live to a [Void](https://void.cloud)-based dashboard on Cloudflare that stores auth/tenancy and test data in a Postgres database (via Drizzle, over Cloudflare Hyperdrive in production) and artifacts in R2. Realtime run progress is broadcast over `void/ws` rooms.
 
 ## Monorepo Structure
 
 pnpm workspace, `apps/*` + `packages/*`:
 
-- **`apps/dashboard`** — the dashboard app (`@wrightful/dashboard`), built on [Void](https://void.cloud) (a fullstack Vite plugin + deploy platform for Cloudflare). Hono file-based API routing (`routes/`) + Inertia-style server-rendered pages (`pages/` + `@void/react`) with co-located `*.server.ts` loaders/actions. **Single D1 database + Drizzle** (`void/db`, schema in `db/schema.ts`) holds everything — users, teams, projects, memberships, API keys, invites, runs, and derived tables; tenant isolation is logical (every run-scoped query filters by `teamId AND projectId`). R2 for artifact bytes. Styled with Tailwind v4 + Base UI primitives wrapped as a local component library in `src/components/ui/`. Dashboard auth is Better Auth via `void/auth` (sessions, email + password, optional GitHub OAuth); API auth is Bearer API keys. Serves the streaming ingest + artifact API (`/api/runs/*`, `/api/artifacts/*`) and the tenant-scoped UI (`/t/:teamSlug/p/:projectSlug/…`).
+- **`apps/dashboard`** — the dashboard app (`@wrightful/dashboard`), built on [Void](https://void.cloud) (a fullstack Vite plugin + deploy platform for Cloudflare). Hono file-based API routing (`routes/`) + Inertia-style server-rendered pages (`pages/` + `@void/react`) with co-located `*.server.ts` loaders/actions. **Postgres + Drizzle** (`void/db`, Postgres over Cloudflare Hyperdrive in prod / a direct `DATABASE_URL` in local dev; schema source `db/schema.ts`, pg-core) holds everything — users, teams, projects, memberships, API keys, invites, runs, and derived tables; tenant isolation is logical (every run-scoped query filters by `teamId AND projectId`). See `SELF-HOSTING.md` for the Postgres + own-account deploy specifics. R2 for artifact bytes. Styled with Tailwind v4 + Base UI primitives wrapped as a local component library in `src/components/ui/`. Dashboard auth is Better Auth via `void/auth` (sessions, email + password, optional GitHub OAuth); API auth is Bearer API keys. Serves the streaming ingest + artifact API (`/api/runs/*`, `/api/artifacts/*`) and the tenant-scoped UI (`/t/:teamSlug/p/:projectSlug/…`).
 - **`packages/reporter`** — Playwright reporter (`@wrightful/reporter`). Streams results + artifacts to the dashboard as each test completes. Built with tsdown via `vp pack`. Per-test emission: one row per test at its final outcome, with retries aggregated into `flaky`. Opt-in `postPrComment` upserts a GitHub PR summary comment from CI.
 - **`packages/e2e`** — Playwright E2E tests. Two suites: a **demo suite** (`tests/`, `playwright.config.ts`) that drives a sample app to generate reports for dogfooding (uses the reporter when `WRIGHTFUL_URL` / `WRIGHTFUL_TOKEN` is set), and the **canonical dashboard suite** (`tests-dashboard/`, `playwright.dashboard.config.ts`, self-booting on `:5189`). Both the dashboard Playwright suite and the Vitest e2e suite (`src/e2e.test.ts`) boot a real Void dashboard via the shared `src/dashboard-fixture.ts` (`bootDashboard` — `.env.local` + `void db reset`). Run the dashboard suite with `pnpm --filter @wrightful/e2e test:dashboard`.
 
@@ -44,14 +44,19 @@ pnpm check:fix                          # vp check --fix
 # Local setup (.env.local + demo team/project/API key over HTTP)
 pnpm setup:local
 
-# Database — Drizzle migrations in apps/dashboard/db/migrations/.
-#   void db generate   # generate a migration from db/schema.ts (production)
+# Database — Postgres only. Committed migrations in apps/dashboard/db/migrations/.
+#   pnpm db:generate   # = void db generate (regenerate migrations from db/schema.ts)
 #   void db push       # push schema directly (prototyping)
 # Migrations are applied on `void deploy`. There is no separate migrate step
-# in the deploy pipeline beyond that.
+# in the deploy pipeline beyond that. For a remote own-account DB, use
+# pnpm db:migrate:remote (see SELF-HOSTING.md).
 
 # Deploy
-pnpm deploy                             # void deploy (auto-provisions D1/KV/R2)
+pnpm deploy                             # void deploy (Void managed platform; auto-provisions Postgres/Hyperdrive/R2)
+pnpm deploy:cf                          # own-account Cloudflare (vp build && wrangler deploy)
+# Own-account wrangler.jsonc is GENERATED by scripts/gen-wrangler.mjs from
+# wrangler.template.jsonc (injects CF_* deployment IDs); do NOT hand-edit it.
+# Remote DB migrations: pnpm db:migrate:remote. See SELF-HOSTING.md.
 ```
 
 ## Key Architecture Details
@@ -60,17 +65,17 @@ pnpm deploy                             # void deploy (auto-provisions D1/KV/R2)
 
 **Streaming ingest flow**: `@wrightful/reporter` loads in the user's `playwright.config.ts`. At `onBegin` it opens a run via `POST /api/runs`; per-test `onTestEnd` events buffer until the test is done (all retries finished) and then flush in batches via `POST /api/runs/:id/results`. Each response returns `clientKey → testResultId`, which the reporter uses to register + PUT artifacts via `POST /api/artifacts/register` (which returns a relative worker upload URL — bytes stream through the worker into R2, there is no presigned R2 endpoint). `onEnd` calls `POST /api/runs/:id/complete` to set the terminal status.
 
-**Ingest is a deep module.** The route handlers under `routes/api/runs/*` are auth + translation only — the verify-ownership → batch → summary → activity-bump → broadcast pipeline lives behind `openRun` / `appendRunResults` / `completeRun` in `src/lib/ingest.ts`. Multi-statement writes go through D1 `db.batch([...])` for atomicity; statements are chunked to ≤99 params each.
+**Ingest is a deep module.** The route handlers under `routes/api/runs/*` are auth + translation only — the verify-ownership → batch → summary → activity-bump → broadcast pipeline lives behind `openRun` / `appendRunResults` / `completeRun` in `src/lib/ingest.ts`. Multi-statement writes go through `runBatch` (a `db.transaction`) for atomicity; statements are chunked under Postgres's 65535 bound-param ceiling.
 
 **Shared schema contract**: Wire types live in both `packages/reporter/src/types.ts` (TypeScript interfaces) and `apps/dashboard/src/lib/schemas.ts` (Zod). Keep them in sync when changing the API contract — `packages/reporter/src/__tests__/contract.test.ts` is the canary that imports the dashboard's Zod schemas and parses reporter-built payloads through them.
 
-**Data layer**: one D1, one query builder (Drizzle), accessed via `db` from `void/db` with tables from `@schema`.
+**Data layer**: one query builder (Drizzle) over Postgres, accessed via `db` from `void/db` with tables from `@schema`. Postgres result-shape coercions (node-postgres returns `int8`/`numeric` as strings, where pglite returns numbers) live in `numericSql` (`src/lib/db/sql-ops.ts`) and the raw-read `cast(… as integer)` idiom; atomic multi-statement writes go through `runBatch` (`src/lib/db-batch.ts`), raw reads through `runRows` (`src/lib/db-run.ts`), and analytics time-bucketing through `src/lib/analytics/bucketing-sql.ts`. The real-`postgres:16` CI leg + `src/__tests__/pg-integration.test.ts` guard result-shape parity (the fast pglite lane hides the int8-as-string trap).
 
 - **Tenant tables** — `runs`, `testResults`, `testResultAttempts`, `testTags`, `testAnnotations`, `artifacts`. Every one carries denormalized `teamId` (on `runs`) and `projectId` so scope is enforced without joins.
 - **Control tables** — `teams`, `projects`, `memberships`, `teamInvites`, `apiKeys`, `userGithubAccounts`.
-- **Better Auth tables** (`user`, `session`, `account`, `verification`) are **owned by `void/auth`** — bootstrapped idempotently against the same D1 and intentionally NOT declared in `db/schema.ts`. Cross-table joins to them use raw SQL.
+- **Better Auth tables** (`user`, `session`, `account`, `verification`) are **owned by `void/auth`** — bootstrapped idempotently against the same database and intentionally NOT declared in the schema source. Cross-table joins to them use raw SQL.
 - **Tenant isolation is logical, enforced by the type system.** There is no per-team DO boundary; every query against a run-scoped table **must** filter by `projectId` (and usually `teamId`). The branded `AuthorizedProjectId` / `AuthorizedTeamId` on `TenantScope` (`src/lib/scope.ts`) make the auth-checked ids impossible to bypass.
-- **Realtime** — `src/live.ts` defines a single `void/live` stream; ingest handlers call `publishRunUpdate(runId, event)` (topic `run:<runId>`) after each write. Run-detail/list islands subscribe via `useRunProgress(runId)`.
+- **Realtime** — `void/ws` rooms (run + project rooms); ingest handlers call `publishRunUpdate(runId, event)` after each write. Run-detail/list islands subscribe via `useRunRoom` / `useProjectRoom`.
 
 **Auth**: API key auth via `Authorization: Bearer <key>`. Keys are SHA-256 hashed, looked up by 8-char prefix, then hash-compared. Defined in `apps/dashboard/src/lib/api-key.ts` / `src/lib/api-auth.ts`.
 
@@ -125,7 +130,7 @@ Two auth systems coexist:
 
 See existing entries in `docs/worklog/` for the expected level of detail. Err on the side of being thorough — these are the project's source of truth for decision context.
 
-Before substantive work, read `docs/worklog/void-migration-consolidated.md` — it records the rwsdk → Void migration and the durable architectural decisions (single D1 over per-team DOs, logical tenancy, void/live realtime) that should not be re-litigated. Worklogs dated before the migration describe the prior rwsdk/Durable-Object/Kysely architecture and are historical.
+Before substantive work, read `docs/worklog/void-migration-consolidated.md` — it records the rwsdk → Void migration and the durable architectural decisions (a single shared database with logical tenancy rather than per-team DOs, `void/ws` realtime rooms) that should not be re-litigated. (The store itself was later moved from D1 to Postgres — see `docs/worklog/2026-06-16-postgres-only.md` — but "single shared store, logical tenancy" is the durable call.) Worklogs dated before the migration describe the prior rwsdk/Durable-Object/Kysely architecture and are historical.
 
 ## Tooling Notes
 

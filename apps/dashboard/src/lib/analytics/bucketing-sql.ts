@@ -50,9 +50,19 @@ export function bucketExpr(
   segment: Segment,
   col: SqlColumnRef = RUNS_CREATED_AT,
 ): SqlBucketExpr {
+  // Day/week buckets are integer division of a non-negative unix epoch by a
+  // constant (the divisor stays inlined raw text — see the text-affinity note
+  // above). The month bucket can't be fixed-second division, so it uses
+  // `to_char(to_timestamp(ts) AT TIME ZONE 'UTC', 'YYYY-MM')`. `to_timestamp`
+  // returns a `timestamptz` that `to_char` would otherwise render in the session
+  // TimeZone; the `AT TIME ZONE 'UTC'` pin labels in UTC instead, matching the
+  // JS skeleton (`buildEmptyBuckets` uses getUTC*) so `bucketing.ts` stays
+  // timezone-agnostic.
   if (segment === "day") return sql<number | string>`${col} / 86400`;
   if (segment === "week") return sql<number | string>`${col} / 604800`;
-  return sql<number | string>`strftime('%Y-%m', ${col}, 'unixepoch')`;
+  return sql<
+    number | string
+  >`to_char(to_timestamp(${col}) AT TIME ZONE 'UTC', 'YYYY-MM')`;
 }
 
 /** Column names a {@link percentilePick} reads off the upstream ranked CTE. */
@@ -69,10 +79,11 @@ export interface PercentilePickCols {
  * Discrete-percentile picker over a pre-ranked CTE.
  *
  * Emits the fiddly, correctness-sensitive idiom
- * `min(case when <rn> = max(1, cast(round(<cnt> * q) as integer)) then <value> end)`
+ * `min(case when <rn> = greatest(1, cast(round(<cnt> * q) as integer)) then <value> end)`
  * once, so callers don't re-state it per pick. It selects the value at the
- * discrete rank `round(cnt * q)`, clamped to `[1..cnt]` by the `max(1, …)` so a
- * single-row partition still resolves (rank 0 would never match `rn`).
+ * discrete rank `round(cnt * q)`, clamped to `[1..cnt]` by the `greatest(1, …)`
+ * (Postgres's scalar max — bare 2-arg `max` is SQLite-only) so a single-row
+ * partition still resolves (rank 0 would never match `rn`).
  *
  * UPSTREAM INVARIANT — the caller's CTE must define, over one partition:
  *   - `<rn>` = `row_number() over (partition by … order by <value>)` (ASC), and
@@ -99,6 +110,6 @@ export function percentilePick(
   const q = quantile.toFixed(2);
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- retypes sql.raw's `SQL<unknown>` to the bucket-expr generic; column refs are guarded (assertSqlIdentifier) and the raw text stays byte-for-byte (a `sql\`${raw}\`` wrapper would change the emitted SQL)
   return sql.raw(
-    `min(case when ${rn} = max(1, cast(round(${cnt} * ${q}) as integer)) then ${value} end)`,
+    `min(case when ${rn} = greatest(1, cast(round(${cnt} * ${q}) as integer)) then ${value} end)`,
   ) as SqlBucketExpr;
 }

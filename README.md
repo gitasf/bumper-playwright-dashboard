@@ -3,7 +3,7 @@
 A Playwright test reporting dashboard. Ships as two pieces:
 
 - **`@wrightful/reporter`** — Playwright reporter that streams results and artifacts to the dashboard live as each test completes.
-- **`@wrightful/dashboard`** — a Cloudflare app built on [Void](https://void.cloud) (Vite + React, server-rendered pages; a single D1 database via Drizzle for auth/tenancy and test data; R2 for artifacts) that ingests results, serves the UI, runs synthetic monitors, and exposes a query/export API.
+- **`@wrightful/dashboard`** — a Cloudflare app built on [Void](https://void.cloud) (Vite + React, server-rendered pages; a Postgres database (over Cloudflare Hyperdrive) via Drizzle for auth/tenancy and test data; R2 for artifacts) that ingests results, serves the UI, runs synthetic monitors, and exposes a query/export API.
 
 ## Features
 
@@ -15,7 +15,7 @@ A Playwright test reporting dashboard. Ships as two pieces:
 
 ## Deploy your own dashboard
 
-The dashboard runs on Cloudflare Workers (one Worker + a D1 database + an R2 bucket). The recommended path is to deploy to **your own Cloudflare account** with `wrangler` — the build output is a standard Worker. A one-command `void deploy` to Void's managed platform also works but is still early. See **[`SELF-HOSTING.md`](./SELF-HOSTING.md)** for both, step by step.
+The dashboard runs on Cloudflare Workers (one Worker + a Postgres database reached over Hyperdrive + an R2 bucket). The recommended path is to deploy to **your own Cloudflare account** with `wrangler` — the build output is a standard Worker. You bring your own Postgres; [Neon](https://neon.tech) has a free tier that's plenty for self-hosting, and [PlanetScale Postgres](https://planetscale.com) is a good scale-up. A one-command `void deploy` to Void's managed platform also works but is still early. See **[`SELF-HOSTING.md`](./SELF-HOSTING.md)** for both, step by step.
 
 In short, once deployed:
 
@@ -51,9 +51,11 @@ Results appear in the dashboard live as tests complete. Shards converge on a sin
 
 ## Local development
 
+The dashboard is Postgres-only. `pnpm setup:local` boots a local Postgres via Docker (`apps/dashboard/docker-compose.pg.yml`) and writes a matching `DATABASE_URL` — or set `DATABASE_URL` yourself (e.g. a free [Neon](https://neon.tech) branch) to skip Docker.
+
 ```bash
 pnpm install
-pnpm setup:local                                # .env.local + demo team/project/API key + example monitors
+pnpm setup:local                                # local Postgres + .env.local + demo team/project/API key + monitors
 pnpm dev                                        # dashboard on localhost:5173
 
 # Need additional API keys for local testing? Mint them from the dashboard

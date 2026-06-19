@@ -26,9 +26,12 @@ export function escapeLike(value: string): string {
  * SQLite defines no default escape character, so without this fragment a
  * search for `100%` compiled to `%100\%%`, which matches a literal backslash
  * followed by anything — i.e. effectively nothing.
+ *
+ * Uses `ILIKE` (Postgres case-insensitive LIKE) so the comparison is
+ * case-insensitive, matching how the search box is expected to behave.
  */
 export function likeEscaped(column: LikeColumn, pattern: string) {
-  return sql`${column} like ${pattern} escape '\\'`;
+  return sql`${column} ilike ${pattern} escape '\\'`;
 }
 
 /**

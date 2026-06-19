@@ -3,6 +3,7 @@ import { and, db, eq, inArray, sql } from "void/db";
 import { projects, testOwners, testResults } from "@schema";
 import type { TestOwner } from "@schema";
 import { matchOwners, parseCodeowners } from "@/lib/codeowners";
+import { runRows } from "@/lib/db-run";
 import type { TenantScope } from "@/lib/scope";
 
 /**
@@ -143,22 +144,21 @@ async function latestFilePerTestId(
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (testIds.length === 0) return out;
-  // `max(createdAt)` groups to one row per testId; SQLite's bare-column +
-  // aggregate "latest row" idiom returns the `file` from the max-createdAt row.
-  const rows = await db
-    .select({
-      testId: testResults.testId,
-      file: testResults.file,
-      latest: sql<number>`max(${testResults.createdAt})`,
-    })
-    .from(testResults)
-    .where(
-      and(
-        eq(testResults.projectId, scope.projectId),
-        inArray(testResults.testId, testIds),
-      ),
-    )
-    .groupBy(testResults.testId);
+  // Latest `file` per testId. Postgres (unlike SQLite) rejects a bare
+  // non-grouped column alongside an aggregate/GROUP BY, so use DISTINCT ON:
+  // order by createdAt desc and keep the first (newest) row per testId.
+  const rows = await runRows<{ testId: string; file: string }>(sql`
+    select distinct on (${testResults.testId})
+      ${testResults.testId} as "testId",
+      ${testResults.file} as "file"
+    from ${testResults}
+    where ${testResults.projectId} = ${scope.projectId}
+      and ${testResults.testId} in (${sql.join(
+        testIds.map((id) => sql`${id}`),
+        sql`, `,
+      )})
+    order by ${testResults.testId}, ${testResults.createdAt} desc
+  `);
   for (const row of rows) {
     out.set(row.testId, row.file);
   }

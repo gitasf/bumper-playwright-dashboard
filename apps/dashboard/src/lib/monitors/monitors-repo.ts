@@ -3,6 +3,7 @@ import { and, asc, db, desc, eq, inArray, lt, or, sql } from "void/db";
 import { monitorExecutions, monitors } from "@schema";
 import type { Monitor, MonitorExecution } from "@schema";
 import { runBatch } from "@/lib/db-batch";
+import { numericSql } from "@/lib/db/sql-ops";
 import type { TenantScope } from "@/lib/scope";
 import type {
   CreateMonitorInput,
@@ -286,7 +287,7 @@ export async function countMonitors(
   type?: MonitorType,
 ): Promise<number> {
   const rows = await db
-    .select({ count: sql<number>`count(*)` })
+    .select({ count: numericSql(sql`count(*)`) })
     .from(monitors)
     .where(
       type
@@ -451,8 +452,8 @@ export async function recordExecutionResult(
   result: ExecutionResult,
   now: number,
 ): Promise<void> {
-  await runBatch([
-    db
+  await runBatch((tx) => [
+    tx
       .update(monitorExecutions)
       .set({
         state: result.state,
@@ -472,7 +473,7 @@ export async function recordExecutionResult(
           eq(monitorExecutions.id, execution.id),
         ),
       ),
-    db
+    tx
       .update(monitors)
       .set({ lastStatus: result.state, lastRunAt: now, updatedAt: now })
       .where(
@@ -551,9 +552,9 @@ export async function sweepStaleExecutions(opts: {
 
   if (stale.length === 0) return { found: 0, reaped: 0 };
 
-  const updated = await runBatch(
+  const updated = await runBatch((tx) =>
     stale.map((e) =>
-      db
+      tx
         .update(monitorExecutions)
         .set({
           state: "error",

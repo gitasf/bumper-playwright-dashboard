@@ -12,21 +12,21 @@ import { chunkBySize, chunkByParams, chunkInsertRows } from "@/lib/ingest";
  * Guards F02: the param-chunk column count used to be a hand-typed literal per
  * table (TEST_RESULTS_COLUMNS=14 …) that could silently drift from the row
  * shape it protects — add a nullable column and the row literal grows with no
- * compile error, but the literal stays stale and the chunk overflows D1's
- * 99-param ceiling at runtime. `chunkInsertRows` derives the column count from
+ * compile error, but the literal stays stale and the chunk overflows Postgres's
+ * 65535-param ceiling at runtime. `chunkInsertRows` derives the column count from
  * the row object itself, so there is nothing left to drift.
  *
  * These tests anchor the guarantee to the REAL `$inferInsert` insert shapes:
  * the max-width sample rows below are typed `typeof table.$inferInsert`, so a
  * new NOT-NULL column makes them fail to compile until updated, and a new
  * nullable column that lands in the ingest row literals is still chunked by its
- * actual key count. Either way no chunk can exceed 99 params.
+ * actual key count. Either way no chunk can exceed 65535 params.
  */
 
-// D1's per-statement parameter ceiling. Must match MAX_PARAMS_PER_STATEMENT in
-// src/lib/ingest.ts (kept private there; restated here as the invariant under
-// test).
-const MAX_PARAMS_PER_STATEMENT = 99;
+// Postgres's per-statement bound-parameter ceiling. Must match
+// PG_MAX_BOUND_PARAMS in src/lib/ingest.ts (kept private there; restated here as
+// the invariant under test).
+const MAX_PARAMS_PER_STATEMENT = 65_535;
 
 /** A row whose every column binds a parameter — the widest a real insert gets. */
 const maxWidthRows = {
@@ -92,11 +92,12 @@ describe("chunkInsertRows", () => {
   });
 
   it.each(Object.entries(maxWidthRows))(
-    "keeps every %s chunk under the 99-param ceiling at the widest row shape",
+    "keeps every %s chunk under the 65535-param ceiling at the widest row shape",
     (_table, sampleRow) => {
       const columns = Object.keys(sampleRow).length;
-      // 250 rows forces multiple chunks for every table width.
-      const rows = Array.from({ length: 250 }, () => ({ ...sampleRow }));
+      // 20000 rows forces multiple chunks for every table width: the narrowest
+      // table (4 cols) packs floor(65535/4)=16383 rows/chunk, so 20000 overflows.
+      const rows = Array.from({ length: 20_000 }, () => ({ ...sampleRow }));
       const chunks = chunkInsertRows(rows);
 
       expect(chunks.length).toBeGreaterThan(1);
@@ -111,18 +112,20 @@ describe("chunkInsertRows", () => {
   );
 
   it("derives the per-row column count from the row object, not a literal", () => {
-    // A two-column row packs 49 rows per chunk (floor(99/2)); a four-column row
-    // packs 24 (floor(99/4)). The count comes from the row shape alone.
-    const twoCol = Array.from({ length: 50 }, (_, i) => ({ a: i, b: i }));
-    expect(chunkInsertRows(twoCol)[0]).toHaveLength(49);
+    // A two-column row packs 32767 rows per chunk (floor(65535/2)); a
+    // four-column row packs 16383 (floor(65535/4)). The count comes from the row
+    // shape alone — one extra row past the cap proves the first chunk fills to
+    // exactly that per-row math.
+    const twoCol = Array.from({ length: 32_768 }, (_, i) => ({ a: i, b: i }));
+    expect(chunkInsertRows(twoCol)[0]).toHaveLength(32_767);
 
-    const fourCol = Array.from({ length: 50 }, (_, i) => ({
+    const fourCol = Array.from({ length: 16_384 }, (_, i) => ({
       a: i,
       b: i,
       c: i,
       d: i,
     }));
-    expect(chunkInsertRows(fourCol)[0]).toHaveLength(24);
+    expect(chunkInsertRows(fourCol)[0]).toHaveLength(16_383);
   });
 
   it("packs a single full chunk when rows fit under the ceiling", () => {
@@ -134,18 +137,18 @@ describe("chunkInsertRows", () => {
 });
 
 describe("chunkByParams", () => {
-  it("packs floor(99 / columnsPerRow) rows per chunk", () => {
-    const rows = Array.from({ length: 100 }, (_, i) => i);
-    expect(chunkByParams(rows, 14)[0]).toHaveLength(7); // floor(99/14)
-    expect(chunkByParams(rows, 5)[0]).toHaveLength(19); // floor(99/5)
+  it("packs floor(65535 / columnsPerRow) rows per chunk", () => {
+    const rows = Array.from({ length: 20_000 }, (_, i) => i);
+    expect(chunkByParams(rows, 14)[0]).toHaveLength(4681); // floor(65535/14)
+    expect(chunkByParams(rows, 5)[0]).toHaveLength(13_107); // floor(65535/5)
   });
 
   it("never drops to a zero-width chunk even past the ceiling", () => {
     // A pathological row wider than the ceiling still ships one row per
-    // statement (it can't be split further; D1 would reject it, but the
+    // statement (it can't be split further; Postgres would reject it, but the
     // chunker must not loop forever on a 0 step).
     const rows = [1, 2, 3];
-    expect(chunkByParams(rows, 200)).toEqual([[1], [2], [3]]);
+    expect(chunkByParams(rows, 70_000)).toEqual([[1], [2], [3]]);
   });
 });
 

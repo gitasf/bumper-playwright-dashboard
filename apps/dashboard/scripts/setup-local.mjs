@@ -10,23 +10,42 @@ import { startDevServerForSeed } from "./lib/dev-server.mjs";
 //
 // Flow:
 //   1. Create `.env.local` if missing (with a random BETTER_AUTH_SECRET,
-//      ALLOW_OPEN_SIGNUP=true so the seed can call /api/auth/sign-up, and
-//      WRIGHTFUL_MONITOR_EXECUTOR=stub so seeded monitors run without Docker).
-//   2. `void db reset` — wipe the local D1 and reapply migrations. Without
-//      this, Void's migration runner refuses to start if the database has
-//      tables created outside its tracking (e.g. Better Auth bootstrapped
+//      ALLOW_OPEN_SIGNUP=true so the seed can call /api/auth/sign-up,
+//      WRIGHTFUL_MONITOR_EXECUTOR=stub so seeded monitors run without Docker,
+//      and a DATABASE_URL — the app is Postgres-only, so there's no zero-config
+//      local store; missing/commented DATABASE_URL defaults to the
+//      docker-compose Postgres).
+//   2. Boot the local Postgres (docker-compose.pg.yml) when DATABASE_URL points
+//      at localhost; a hosted URL (e.g. Neon) is assumed already-running.
+//   3. `void db reset` — wipe the local database and reapply migrations.
+//      Without this, Void's migration runner refuses to start if the database
+//      has tables created outside its tracking (e.g. Better Auth bootstrapped
 //      `account/session/user/verification` on a prior run).
-//   3. Start `vp dev` and wait for the worker to respond.
-//   4. Run `seed-demo.mjs` against the running server. It signs up via
+//   4. Start `vp dev` and wait for the worker to respond.
+//   5. Run `seed-demo.mjs` against the running server. It signs up via
 //      void auth's HTTP API, creates team + project, mints an API key, and
 //      seeds a few example synthetic monitors.
-//   5. Optionally upload Playwright fixture data via the API key.
-//   6. Optionally synthesize months of run history.
+//   6. Optionally upload Playwright fixture data via the API key.
+//   7. Optionally synthesize months of run history.
 
 const dashboardDir = new URL("..", import.meta.url);
 const envUrl = new URL(".env.local", dashboardDir);
 const exampleUrl = new URL(".env.example", dashboardDir);
 const seedConfigUrl = new URL(".env.seed.json", dashboardDir);
+
+// Connection string for the docker-compose Postgres (docker-compose.pg.yml).
+// setup:local writes this into .env.local when DATABASE_URL is absent and boots
+// the matching container. Override DATABASE_URL (e.g. a hosted Neon branch) to
+// use your own Postgres — this script then leaves the container alone.
+//
+// The host port defaults to 5432; export WRIGHTFUL_PG_PORT (e.g. 5433) when
+// that's taken by a native Postgres — it sets the port in the DATABASE_URL we
+// write for a fresh `.env.local`. `ensureLocalPostgres` then publishes the
+// container on whatever port the resolved DATABASE_URL specifies (NOT a
+// separately-defaulted env var), so the published port and the URL the reset
+// connects to can never drift.
+const PG_PORT = process.env.WRIGHTFUL_PG_PORT ?? "5432";
+const LOCAL_DATABASE_URL = `postgresql://wrightful:wrightful@localhost:${PG_PORT}/wrightful_dev`;
 
 const LABEL_WIDTH = 34;
 const stageLabel = (label) => `${pc.dim("›")} ${label.padEnd(LABEL_WIDTH)} `;
@@ -129,15 +148,58 @@ function ensureMonitorExecutor(text) {
   };
 }
 
+/**
+ * Ensure a `DATABASE_URL` is present in `.env.local`. The dashboard is
+ * Postgres-only, so local dev + migrations need a connection string (there is
+ * no zero-config local store anymore). When the key is absent or commented we
+ * point it at the docker-compose Postgres; an explicit value (e.g. a hosted
+ * Neon URL) is left untouched.
+ *
+ * @param {string} text
+ * @returns {{ text: string, changed: boolean }}
+ */
+function ensureDatabaseUrl(text) {
+  // Already set to some explicit value, uncommented — leave it.
+  if (/^\s*DATABASE_URL=\S+\s*$/m.test(text)) {
+    return { text, changed: false };
+  }
+  // Commented-out variant — uncomment and point at the local compose Postgres.
+  if (/^#\s*DATABASE_URL=.*$/m.test(text)) {
+    return {
+      text: text.replace(
+        /^#\s*DATABASE_URL=.*$/m,
+        `DATABASE_URL=${LOCAL_DATABASE_URL}`,
+      ),
+      changed: true,
+    };
+  }
+  // Missing entirely — append.
+  const sep = text.endsWith("\n") ? "" : "\n";
+  return {
+    text: `${text}${sep}DATABASE_URL=${LOCAL_DATABASE_URL}\n`,
+    changed: true,
+  };
+}
+
+/** Read an uncommented `KEY=value` from a dotenv-shaped string. */
+function readEnvValue(text, key) {
+  const m = text.match(new RegExp(`^\\s*${key}=(.+)$`, "m"));
+  return m ? m[1].trim() : undefined;
+}
+
+let finalEnvText;
 if (existsSync(envUrl)) {
   const current = readFileSync(envUrl, "utf8");
   const signup = ensureOpenSignup(current);
   const executor = ensureMonitorExecutor(signup.text);
-  if (signup.changed || executor.changed) {
-    writeFileSync(envUrl, executor.text);
+  const database = ensureDatabaseUrl(executor.text);
+  finalEnvText = database.text;
+  if (signup.changed || executor.changed || database.changed) {
+    writeFileSync(envUrl, finalEnvText);
     const added = [
       signup.changed && "ALLOW_OPEN_SIGNUP=true",
       executor.changed && "WRIGHTFUL_MONITOR_EXECUTOR=stub",
+      database.changed && "DATABASE_URL",
     ].filter(Boolean);
     console.log(
       `${stageLabel("updating .env.local…")}${pc.yellow(
@@ -161,20 +223,92 @@ if (existsSync(envUrl)) {
   );
   const { text: withSignup } = ensureOpenSignup(filled);
   const { text: withExecutor } = ensureMonitorExecutor(withSignup);
-  writeFileSync(envUrl, withExecutor);
+  const { text: withDatabase } = ensureDatabaseUrl(withExecutor);
+  finalEnvText = withDatabase;
+  writeFileSync(envUrl, finalEnvText);
   console.log(`${stageLabel("creating .env.local…")}${pc.green("done")}`);
 }
 
-// ---------- Reset local D1 ----------
+const databaseUrl = readEnvValue(finalEnvText, "DATABASE_URL");
 
-// Wipe the local D1 and reapply migrations from db/migrations/. This is
+// ---------- Local Postgres ----------
+
+/**
+ * If `url` points at localhost (the docker-compose Postgres), boot the
+ * container and wait for it to accept connections. A hosted URL (Neon, etc.) is
+ * assumed already-running, so Docker is skipped. Exits with guidance if a local
+ * DB is wanted but Docker isn't available.
+ *
+ * @param {string | undefined} url
+ */
+async function ensureLocalPostgres(url) {
+  // Match localhost URLs and capture the port. The compose container MUST be
+  // published on the SAME port DATABASE_URL connects to. docker-compose.pg.yml
+  // publishes `${WRIGHTFUL_PG_PORT:-5432}`; if we let that default (or inherit a
+  // stale value) while the URL says :5433, `docker compose up` recreates the
+  // container on the wrong port and every later connection — `void db reset`,
+  // `vp dev` — refuses (surfacing as a clack `■` "failed" on reset). Pinning
+  // WRIGHTFUL_PG_PORT to the URL's port keeps the two in lockstep.
+  const localMatch = url?.match(/@(?:localhost|127\.0\.0\.1):(\d+)/);
+  if (!localMatch) {
+    console.log(
+      `${stageLabel("using DATABASE_URL…")}${pc.dim(
+        "external Postgres (skipping Docker)",
+      )}`,
+    );
+    return;
+  }
+  const port = localMatch[1];
+  // `docker compose … up -d --wait` blocks until the healthcheck passes, so the
+  // db reset below can connect immediately.
+  const stop = startSpinner(stageLabel("starting local Postgres…"));
+  const child = spawnSync(
+    "docker",
+    ["compose", "-f", "docker-compose.pg.yml", "up", "-d", "--wait"],
+    {
+      cwd: dashboardDir,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, WRIGHTFUL_PG_PORT: port },
+    },
+  );
+  stop();
+  if (child.error || child.status !== 0) {
+    console.log(pc.red("failed"));
+    const detail =
+      child.error?.code === "ENOENT"
+        ? "Docker isn't installed or not on PATH."
+        : (child.stderr?.toString() ?? "");
+    if (detail) process.stderr.write(`${detail}\n`);
+    console.error(
+      pc.yellow(
+        "\nLocal Postgres couldn't start. Either start Docker and re-run " +
+          "`pnpm setup:local`, or set DATABASE_URL in apps/dashboard/.env.local " +
+          "to a hosted Postgres (e.g. a free Neon branch) and re-run.",
+      ),
+    );
+    process.exit(child.status ?? 1);
+  }
+  console.log(pc.green("done"));
+}
+
+await ensureLocalPostgres(databaseUrl);
+
+// ---------- Reset local database ----------
+
+// Wipe the local database and reapply migrations from db/migrations/. This is
 // the documented recovery path when Void's migration runner detects
 // application tables without a matching `_void_migrations` history — the
 // state Better Auth's bootstrap leaves behind after any previous dev run.
 // Running it unconditionally makes `setup:local` idempotent: a fresh
 // clone and a previously-bootstrapped workspace both end in the same
-// known-good state.
-await stage("resetting local db…", "npx", ["void", "db", "reset"]);
+// known-good state. DATABASE_URL is passed through explicitly so the Void CLI
+// targets the same Postgres `vp dev` will use. (`void db reset` runs fine
+// non-interactively; if the DB is unreachable it fails here with a clack
+// cancel — `ensureLocalPostgres` above guarantees the container is published
+// on DATABASE_URL's port so that can't happen.)
+await stage("resetting local db…", "npx", ["void", "db", "reset"], {
+  env: { ...process.env, DATABASE_URL: databaseUrl },
+});
 
 // ---------- Dev server ----------
 

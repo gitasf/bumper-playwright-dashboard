@@ -42,8 +42,19 @@ export const or = placeholder("or");
 export const sum = placeholder("sum");
 
 // `sql` is used both as a function and as a tagged template — handle both.
+// `.mapWith(decoder)` is Drizzle's result-decoder hook (used by `numericSql`);
+// the stub records it as a no-op returning the same node so a fragment built in
+// a pure-function test (e.g. `numericSql(sql\`count(*)\`)`) doesn't throw.
 function sqlImpl(strings: TemplateStringsArray | string, ...args: unknown[]) {
-  return { __op: "sql", strings, args };
+  const node = {
+    __op: "sql",
+    strings,
+    args,
+    mapWith(_decoder: unknown) {
+      return node;
+    },
+  };
+  return node;
 }
 (sqlImpl as unknown as { raw: typeof sqlImpl }).raw = sqlImpl;
 function joinImpl(chunks: unknown[], separator?: unknown) {

@@ -1,40 +1,12 @@
 {
   "version": "7",
-  "dialect": "sqlite",
+  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
-      "version": "6",
-      "when": 1780585296171,
-      "tag": "20260604150136_modern_lila_cheney",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1780851799276,
-      "tag": "20260607170319_watery_mimic",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1780951799647,
-      "tag": "20260608204959_faulty_vulcan",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1781255117022,
-      "tag": "20260612090517_dizzy_praxagora",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1781561468521,
-      "tag": "20260615221108_moaning_gressill",
+      "version": "7",
+      "when": 1781641369753,
+      "tag": "20260616202249_familiar_lyja",
       "breakpoints": true
     }
   ]

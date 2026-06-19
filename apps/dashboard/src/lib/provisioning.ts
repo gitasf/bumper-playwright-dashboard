@@ -160,15 +160,15 @@ export async function createTeamForUser(
   const slug = await resolveTeamSlug(name);
   const teamId = ulid();
   const nowSeconds = Math.floor(Date.now() / 1000);
-  await runBatch([
-    db.insert(teamsTable).values({
+  await runBatch((tx) => [
+    tx.insert(teamsTable).values({
       id: teamId,
       slug,
       name,
       createdAt: nowSeconds,
       lastActivityAt: null,
     }),
-    db.insert(memberships).values({
+    tx.insert(memberships).values({
       id: ulid(),
       userId,
       teamId,

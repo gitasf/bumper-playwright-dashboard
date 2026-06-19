@@ -31,20 +31,30 @@ function collectEqOps(node: unknown): RecordedOp[] {
   return [...self, ...nested];
 }
 
-/** Recursively collect every raw `sql\`… like …\`` fragment. */
+/**
+ * Recursively collect every `likeEscaped` fragment, identified by its
+ * `ESCAPE '\'` clause. The LIKE/ILIKE operator is now a dialect-aware
+ * SUB-fragment (`${likeOperator()}`) in `args`, not literal `" like "` text in
+ * `.strings` — so detect by the escape clause, which stays in `.strings`.
+ */
 function collectLikeFragments(node: unknown): RecordedOp[] {
   if (typeof node !== "object" || node === null) return [];
   const op = node as RecordedOp;
   if (
     op.__op === "sql" &&
     Array.isArray(op.strings) &&
-    op.strings.join("").includes(" like ")
+    op.strings.join("").includes("escape '\\'")
   ) {
     return [op];
   }
   return Array.isArray(op.args)
     ? op.args.flatMap((a) => collectLikeFragments(a))
     : [];
+}
+
+/** The bound pattern arg of a likeEscaped fragment (the lone string in args). */
+function boundPattern(fragment: RecordedOp): unknown {
+  return fragment.args?.find((a) => typeof a === "string");
 }
 
 function readEq(op: RecordedOp): { column: unknown; value: unknown } {
@@ -105,7 +115,7 @@ describe("buildTestSearchWhere", () => {
     expect(likes).toHaveLength(2); // title + file
     for (const fragment of likes) {
       // Wrapped in %…% with the inner `%` escaped to `\%`.
-      expect(fragment.args?.[1]).toBe("%a\\%b%");
+      expect(boundPattern(fragment)).toBe("%a\\%b%");
       // ESCAPE '\' clause is load-bearing — without it the escape is inert.
       expect((fragment.strings ?? []).join("")).toContain("escape '\\'");
     }

@@ -347,25 +347,25 @@ export async function registerArtifacts(
       return { kind: "quotaExceeded", limit: quota.limit, used: quota.used };
     }
 
-    // Meter the fresh bytes + row count in the SAME batch as the insert.
-    const usageBump = usageBumpStatement(
-      scope.teamId,
-      monthStartSeconds(nowSeconds),
-      { artifactBytes: freshBytes, artifactCount: rowsToInsert.length },
-      nowSeconds,
-    );
-    const statements = [
-      ...chunkInsertRows(rowsToInsert).map((chunk) =>
-        db.insert(artifacts).values(chunk),
-      ),
-      ...(usageBump ? [usageBump] : []),
-    ];
     try {
-      if (statements.length === 1) {
-        await statements[0];
-      } else {
-        await runBatch(statements);
-      }
+      // Insert the artifact rows and meter the fresh bytes + row count in ONE
+      // atomic write, built against the batch executor (`db.batch` on D1, one
+      // `db.transaction` on Postgres — see `runBatch`).
+      await runBatch((tx) => {
+        const bump = usageBumpStatement(
+          scope.teamId,
+          monthStartSeconds(nowSeconds),
+          { artifactBytes: freshBytes, artifactCount: rowsToInsert.length },
+          nowSeconds,
+          tx,
+        );
+        return [
+          ...chunkInsertRows(rowsToInsert).map((chunk) =>
+            tx.insert(artifacts).values(chunk),
+          ),
+          ...(bump ? [bump] : []),
+        ];
+      });
       return { kind: "ok", uploads };
     } catch (err) {
       if (!isUniqueViolation(err) || attempt > 0) throw err;

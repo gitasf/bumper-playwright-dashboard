@@ -1,0 +1,17 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 4e094d902c37c6d1ee898d8024df6b0e0a46947f..c3013924ce499170d95bc484242e886492b99216 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -42794,7 +42794,11 @@ function filterEntryWorkerConfig(config) {
+ }
+ function customizeWorkerConfig(options) {
+ 	const configResult = typeof options.configCustomizer === "function" ? "entryWorkerConfig" in options ? options.configCustomizer(options.workerConfig, { entryWorkerConfig: filterEntryWorkerConfig(options.entryWorkerConfig) }) : options.configCustomizer(options.workerConfig) : options.configCustomizer;
+-	if (configResult) return defu(configResult, options.workerConfig);
++	if (configResult) {
++		const __merged = defu(configResult, options.workerConfig);
++		if (Array.isArray(__merged.compatibility_flags)) __merged.compatibility_flags = [...new Set(__merged.compatibility_flags)];
++		return __merged;
++	}
+ 	return options.workerConfig;
+ }
+ /**

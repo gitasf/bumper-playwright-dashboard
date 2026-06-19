@@ -161,19 +161,17 @@ describe("inviteMatchedBy", () => {
 });
 
 describe("coerceAccountCreatedAt", () => {
-  it("passes a numeric timestamp (already epoch seconds) straight through", () => {
-    expect(coerceAccountCreatedAt(1_700_000_000)).toBe(1_700_000_000);
-  });
-
-  it("parses an ISO string into epoch SECONDS (floored)", () => {
-    // 2023-11-14T22:13:20.500Z → 1700000000.5s → floor → 1700000000
-    expect(coerceAccountCreatedAt("2023-11-14T22:13:20.500Z")).toBe(
+  it("converts a Date (timestamptz) to epoch SECONDS", () => {
+    expect(coerceAccountCreatedAt(new Date(1_700_000_000_000))).toBe(
       1_700_000_000,
     );
   });
 
-  it("returns null for an unparseable string", () => {
-    expect(coerceAccountCreatedAt("not-a-date")).toBeNull();
+  it("floors sub-second precision", () => {
+    // 2023-11-14T22:13:20.500Z → 1700000000.5s → floor → 1700000000
+    expect(coerceAccountCreatedAt(new Date("2023-11-14T22:13:20.500Z"))).toBe(
+      1_700_000_000,
+    );
   });
 
   it("returns null for null/undefined", () => {
@@ -185,11 +183,11 @@ describe("coerceAccountCreatedAt", () => {
 describe("projectAuthProfile", () => {
   const credential: UserAccountRow = {
     providerId: "credential",
-    createdAt: 1_600_000_000,
+    createdAt: new Date(1_600_000_000_000),
   };
   const github: UserAccountRow = {
     providerId: "github",
-    createdAt: 1_700_000_000,
+    createdAt: new Date(1_700_000_000_000),
   };
 
   it("reports hasPassword from a credential account row", () => {
@@ -203,17 +201,6 @@ describe("projectAuthProfile", () => {
 
   it("joins the github account row with the mirror login + coerced connectedAt", () => {
     expect(projectAuthProfile([github], "octocat").github).toEqual({
-      login: "octocat",
-      connectedAt: 1_700_000_000,
-    });
-  });
-
-  it("coerces an ISO-string createdAt on the github row", () => {
-    const ghIso: UserAccountRow = {
-      providerId: "github",
-      createdAt: "2023-11-14T22:13:20.000Z",
-    };
-    expect(projectAuthProfile([ghIso], "octocat").github).toEqual({
       login: "octocat",
       connectedAt: 1_700_000_000,
     });

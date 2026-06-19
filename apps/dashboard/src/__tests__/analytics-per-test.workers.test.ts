@@ -146,21 +146,24 @@ describe("latestPerTestValue", () => {
 });
 
 describe("statusCounter — canonical status definitions", () => {
+  // Counters are wrapped in `cast(… as integer)` so Postgres returns the
+  // `sum()` (an int8, which node-postgres hands back as a STRING) as a JS number
+  // on the raw `runRows` path; harmless no-op on SQLite. See `statusCounter`.
   it("counts passed as status = 'passed'", () => {
     expect(rawText(statusCounter("passed"))).toBe(
-      "sum(case when status = 'passed' then 1 else 0 end)",
+      "cast(sum(case when status = 'passed' then 1 else 0 end) as integer)",
     );
   });
 
   it("counts flaky as status = 'flaky'", () => {
     expect(rawText(statusCounter("flaky"))).toBe(
-      "sum(case when status = 'flaky' then 1 else 0 end)",
+      "cast(sum(case when status = 'flaky' then 1 else 0 end) as integer)",
     );
   });
 
   it("counts skipped as status = 'skipped'", () => {
     expect(rawText(statusCounter("skipped"))).toBe(
-      "sum(case when status = 'skipped' then 1 else 0 end)",
+      "cast(sum(case when status = 'skipped' then 1 else 0 end) as integer)",
     );
   });
 
@@ -168,7 +171,7 @@ describe("statusCounter — canonical status definitions", () => {
     // The load-bearing invariant: the flaky-vs-failed boundary lives HERE, not
     // re-stated across tests.server.ts + slowest-tests.server.ts by eye.
     expect(rawText(statusCounter("fail"))).toBe(
-      "sum(case when status in ('failed','timedout') then 1 else 0 end)",
+      "cast(sum(case when status in ('failed','timedout') then 1 else 0 end) as integer)",
     );
   });
 });
@@ -176,16 +179,16 @@ describe("statusCounter — canonical status definitions", () => {
 describe("statusCounter — aliasing + column threading", () => {
   it("appends `as <alias>` when given an alias (tests.server.ts counters)", () => {
     expect(rawText(statusCounter("passed", { alias: `"passedCount"` }))).toBe(
-      `sum(case when status = 'passed' then 1 else 0 end) as "passedCount"`,
+      `cast(sum(case when status = 'passed' then 1 else 0 end) as integer) as "passedCount"`,
     );
     expect(rawText(statusCounter("fail", { alias: `"failCount"` }))).toBe(
-      `sum(case when status in ('failed','timedout') then 1 else 0 end) as "failCount"`,
+      `cast(sum(case when status in ('failed','timedout') then 1 else 0 end) as integer) as "failCount"`,
     );
   });
 
   it("reads a custom status column when asked (table-qualified)", () => {
     expect(rawText(statusCounter("flaky", { statusCol: "tr.status" }))).toBe(
-      "sum(case when tr.status = 'flaky' then 1 else 0 end)",
+      "cast(sum(case when tr.status = 'flaky' then 1 else 0 end) as integer)",
     );
   });
 
@@ -194,19 +197,21 @@ describe("statusCounter — aliasing + column threading", () => {
     noBoundArgs(statusCounter("passed", { alias: `"passedCount"` }));
   });
 
-  it("matches, byte-for-byte, the counter idioms the loaders previously inlined", () => {
-    // The exact strings from tests.server.ts:250-253 and slowest-tests.server.ts:185-186.
+  it("matches the counter idioms the loaders previously inlined, now cast for PG", () => {
+    // The same idioms as tests.server.ts:250-253 / slowest-tests.server.ts:185-186,
+    // wrapped in `cast(… as integer)` so the int8 `sum()` returns a number on the
+    // Postgres raw-read path (no-op on SQLite).
     expect(rawText(statusCounter("passed", { alias: `"passedCount"` }))).toBe(
-      `sum(case when status = 'passed' then 1 else 0 end) as "passedCount"`,
+      `cast(sum(case when status = 'passed' then 1 else 0 end) as integer) as "passedCount"`,
     );
     expect(rawText(statusCounter("flaky", { alias: `"flakyCount"` }))).toBe(
-      `sum(case when status = 'flaky' then 1 else 0 end) as "flakyCount"`,
+      `cast(sum(case when status = 'flaky' then 1 else 0 end) as integer) as "flakyCount"`,
     );
     expect(rawText(statusCounter("fail", { alias: `"failCount"` }))).toBe(
-      `sum(case when status in ('failed','timedout') then 1 else 0 end) as "failCount"`,
+      `cast(sum(case when status in ('failed','timedout') then 1 else 0 end) as integer) as "failCount"`,
     );
     expect(rawText(statusCounter("skipped", { alias: `"skippedCount"` }))).toBe(
-      `sum(case when status = 'skipped' then 1 else 0 end) as "skippedCount"`,
+      `cast(sum(case when status = 'skipped' then 1 else 0 end) as integer) as "skippedCount"`,
     );
   });
 });

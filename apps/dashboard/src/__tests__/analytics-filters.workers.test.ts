@@ -40,6 +40,31 @@ function readSql(node: unknown): RecordedSql {
   return op;
 }
 
+/**
+ * Reconstruct the SQL text from the stub's recorded fragments, inlining nested
+ * `sql`/`sql.raw` fragments (e.g. the dialect-aware `likeOperator()`) and
+ * rendering bound params as `?`. Needed because `searchFragment` now carries the
+ * LIKE/ILIKE operator as a SUB-fragment, so it no longer sits in the parent
+ * template's `.strings` — reading `.strings` alone would miss it.
+ */
+function renderSql(node: unknown): string {
+  if (
+    node &&
+    typeof node === "object" &&
+    (node as RecordedSql).__op === "sql"
+  ) {
+    const { strings, args } = node as {
+      strings: readonly string[] | string;
+      args: readonly unknown[];
+    };
+    if (typeof strings === "string") return strings; // sql.raw(...)
+    return strings
+      .map((s, i) => s + (i < args.length ? renderSql(args[i]) : ""))
+      .join("");
+  }
+  return "?"; // bound parameter
+}
+
 /** A fragment is "empty" when it contributes no literal text and no params. */
 function isEmptyFragment(node: unknown): boolean {
   const op = readSql(node);
@@ -190,21 +215,24 @@ describe("searchFragment", () => {
     expect(isEmptyFragment(searchFragment(""))).toBe(true);
   });
 
-  it("emits a title-or-file LIKE predicate with an ESCAPE clause", () => {
-    const op = readSql(searchFragment("login"));
-    // SQLite has no default LIKE escape character, so the ESCAPE '\' clause is
-    // load-bearing: without it the escaped pattern below matches nothing.
-    expect(op.strings.join("").replace(/\s+/g, " ").trim()).toBe(
-      "and (tr.title like escape '\\' or tr.file like escape '\\')",
+  it("emits a title-or-file ILIKE predicate with an ESCAPE clause", () => {
+    // The ESCAPE '\' clause is load-bearing: without it the escaped pattern
+    // below matches nothing. On Postgres the search is case-insensitive, so the
+    // fragment renders `ilike`.
+    expect(renderSql(searchFragment("login")).replace(/\s+/g, " ").trim()).toBe(
+      "and (tr.title ilike ? escape '\\' or tr.file ilike ? escape '\\')",
     );
   });
 
-  it("escapes LIKE metacharacters, wraps in %…%, and binds twice (title + file)", () => {
+  it("escapes ILIKE metacharacters, wraps in %…%, and binds twice (title + file)", () => {
     const op = readSql(searchFragment("50%"));
     // Same escaped, %-wrapped pattern is bound for both comparisons — `%` in
     // the user's term matches literally (same semantics as the runs search).
-    expect(op.args).toEqual(["%50\\%%", "%50\\%%"]);
-    expect(op.strings.join("")).not.toContain("50%");
+    // The operator sub-fragments are also in `args`, so filter to the bound
+    // string params.
+    const bound = op.args.filter((a) => typeof a === "string");
+    expect(bound).toEqual(["%50\\%%", "%50\\%%"]);
+    expect(renderSql(op)).not.toContain("50%");
   });
 });
 

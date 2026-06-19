@@ -1,24 +1,26 @@
-import { db, eq, or, sql } from "void/db";
+import { db, eq, inArray, or } from "void/db";
+import { getUser } from "void/auth";
 import { memberships, teamInvites, userGithubAccounts } from "@schema";
-import { runRow, runRows } from "@/lib/db-run";
+import { authAccount, authUser } from "../../db/better-auth-tables";
 
 /**
  * The single home for reads against the **void-owned** Better Auth tables
  * (`user`, `account`) plus the parallel `userGithubAccounts` mirror.
  *
- * Better Auth's core tables are intentionally NOT declared in our Drizzle
- * schema (see db/schema.ts header) — the two migration runners must not fight
- * over their shape — so every cross-table read of them has to drop to raw SQL
- * and hand-cast the untyped D1 result envelope. That `sql\`... from "user" ...\``
- * + `.results?.[0] as { ... }` pattern is a trust boundary against a schema we
- * don't own; left smeared across the invite / profile / members callers it was
- * re-derived (with case + lowercasing drift) at six sites, and a single site
- * forgetting `.toLowerCase()` on the email is an invite-hijack vector.
+ * Better Auth's core tables are intentionally NOT declared in `db/schema.ts`
+ * (the app's migration source) — Better Auth owns + migrates them, and the two
+ * migration runners must not fight over their shape. To read them with the
+ * typed, auto-quoting Drizzle query builder anyway, `db/better-auth-tables.ts`
+ * declares query-only table objects (`authUser` / `authAccount`) that are NOT in
+ * the migration source. That replaces the hand-typed raw SQL this file used to
+ * carry, which kept re-introducing Postgres dialect bugs (unquoted camelCase
+ * identifiers, `timestamptz`→Date coercion drift).
  *
- * This module concentrates that knowledge: the magic table names, the result
- * envelope shape, the casts, and email lowercasing all live here, behind three
- * typed reads. It is the ONLY file in the app that issues raw SQL against
- * `"user"` / `account`.
+ * The CURRENT user's identity comes from `void/auth`'s `getUser()` (no DB read);
+ * these reads cover what `getUser()` can't — arbitrary users (`getUsersByIds`)
+ * and a user's `account` rows (`getUserAccounts`). Email lowercasing for
+ * invite-matching is concentrated here so no caller forgets it (a missing
+ * `.toLowerCase()` is an invite-hijack vector).
  *
  * NOTE: the *write* side of `userGithubAccounts` (mirroring the GitHub login
  * captured at OAuth sign-in) lives in `@/lib/github-account-mirror`, invoked
@@ -42,7 +44,8 @@ export interface UserIdentity {
 /** Shape of a single row from the void-owned `account` table. */
 export interface UserAccountRow {
   providerId: string;
-  createdAt: number | string | null;
+  /** `account.createdAt` is a Postgres `timestamptz` — node-postgres returns a `Date`. */
+  createdAt: Date | null;
 }
 
 /** Public profile fields read from the void-owned `user` table. */
@@ -91,22 +94,24 @@ export interface UserAuthProfile {
  * token share-link gate, and the accept / decline routes).
  */
 export async function getUserIdentity(userId: string): Promise<UserIdentity> {
-  const [userRow, githubRow] = await Promise.all([
-    runRow<{ email?: string; emailVerified?: number | boolean }>(
-      sql`select email, emailVerified from "user" where id = ${userId} limit 1`,
-    ),
-    db
-      .select({ githubLogin: userGithubAccounts.githubLogin })
-      .from(userGithubAccounts)
-      .where(eq(userGithubAccounts.userId, userId))
-      .limit(1),
-  ]);
-
-  // D1 hands the boolean back as 0/1; treat anything truthy as verified.
-  const verified = Boolean(userRow?.emailVerified);
-  const rawEmail = verified ? userRow?.email : null;
+  // The identity belongs to the CURRENT signed-in user — every caller threads
+  // the session user's id (the team picker, the token gate, the accept/decline
+  // routes). So read email + verified flag from void/auth's `getUser()` (the
+  // canonical API) rather than a raw read of the void-owned `"user"` table.
+  // Guard on id so a mismatched/absent session can never assert ANOTHER user's
+  // email — a directed-invite hijack vector. Only a VERIFIED email is an
+  // identity (an unverified, self-asserted email must not match an invite).
+  const user = getUser();
+  const githubRow = await db
+    .select({ githubLogin: userGithubAccounts.githubLogin })
+    .from(userGithubAccounts)
+    .where(eq(userGithubAccounts.userId, userId))
+    .limit(1);
   return {
-    email: rawEmail ? rawEmail.toLowerCase() : null,
+    email:
+      user && user.id === userId && user.emailVerified
+        ? user.email.toLowerCase()
+        : null,
     githubLogin: githubRow[0]?.githubLogin ?? null,
   };
 }
@@ -123,24 +128,20 @@ export async function getUsersByIds(
   const out = new Map<string, UserProfile>();
   if (ids.length === 0) return out;
 
-  // D1 caps bound parameters at 100 per statement. Chunk at 99 to stay under
-  // the limit regardless of team size (the rest of the codebase does the same).
-  const CHUNK = 99;
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const chunk = ids.slice(i, i + CHUNK);
-    const idList = sql.join(
-      chunk.map((id) => sql`${id}`),
-      sql`, `,
-    );
-    const results = await runRows<{
-      id: string;
-      email: string;
-      name: string;
-      image: string | null;
-    }>(sql`select id, email, name, image from "user" where id in (${idList})`);
-    for (const r of results) {
-      out.set(r.id, { email: r.email, name: r.name, image: r.image });
-    }
+  // Typed query-builder read of the void-owned `user` table (Drizzle quotes the
+  // identifiers + binds each id). Team-member counts are far under Postgres's
+  // 65535-param ceiling, so a single `in (…)` query needs no chunking.
+  const rows = await db
+    .select({
+      id: authUser.id,
+      email: authUser.email,
+      name: authUser.name,
+      image: authUser.image,
+    })
+    .from(authUser)
+    .where(inArray(authUser.id, ids));
+  for (const r of rows) {
+    out.set(r.id, { email: r.email, name: r.name, image: r.image });
   }
   return out;
 }
@@ -183,9 +184,15 @@ export async function listTeamMembers(teamId: string): Promise<TeamMember[]> {
 export async function getUserAccounts(
   userId: string,
 ): Promise<UserAccountRow[]> {
-  return runRows<UserAccountRow>(
-    sql`select providerId, createdAt from account where userId = ${userId}`,
-  );
+  // Typed query-builder read — Drizzle quotes the camelCase identifiers and
+  // maps `createdAt` (timestamptz) to a Date (coerced to epoch downstream).
+  return db
+    .select({
+      providerId: authAccount.providerId,
+      createdAt: authAccount.createdAt,
+    })
+    .from(authAccount)
+    .where(eq(authAccount.userId, userId));
 }
 
 /**
@@ -218,20 +225,16 @@ export async function getUserAuthProfile(
 /**
  * Coerce a void `account.createdAt` cell into epoch SECONDS (or null).
  *
- * Better Auth's account rows hand back the timestamp as either a number
- * (already epoch seconds) or an ISO string, depending on how the row was
- * written; an unparseable / absent value yields null. This is the one place
- * that knows that storage quirk.
+ * `account.createdAt` is a Postgres `timestamptz`, so node-postgres hands it
+ * back as a `Date` (the raw `runRows` path bypasses Drizzle's decoders). This
+ * is the one place that converts it to the epoch-seconds the profile API
+ * exposes. (Pre-Postgres this juggled a number-or-ISO-string D1 quirk; the
+ * column is a real timestamp now, so a `Date` is the only shape.)
  */
 export function coerceAccountCreatedAt(
-  ts: number | string | null | undefined,
+  ts: Date | null | undefined,
 ): number | null {
-  if (typeof ts === "number") return ts;
-  if (typeof ts === "string") {
-    const parsed = Date.parse(ts);
-    return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
-  }
-  return null;
+  return ts instanceof Date ? Math.floor(ts.getTime() / 1000) : null;
 }
 
 /**

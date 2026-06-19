@@ -35,6 +35,9 @@
       "sharp",
       "workerd",
       "better-sqlite3"
-    ]
+    ],
+    "patchedDependencies": {
+      "@cloudflare/vite-plugin@1.38.0": "patches/@cloudflare__vite-plugin@1.38.0.patch"
+    }
   }
 }

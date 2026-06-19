@@ -122,7 +122,9 @@ export function ciRunsJoinOn(): JoinCondition {
 export function searchFragment(query: string | null): SqlFilterFragment {
   if (!query) return sql``;
   const pattern = `%${escapeLike(query)}%`;
-  return sql`and (tr.title like ${pattern} escape '\\' or tr.file like ${pattern} escape '\\')`;
+  // `ILIKE` (Postgres case-insensitive LIKE) so the test-catalog search is
+  // case-insensitive.
+  return sql`and (tr.title ilike ${pattern} escape '\\' or tr.file ilike ${pattern} escape '\\')`;
 }
 
 /**

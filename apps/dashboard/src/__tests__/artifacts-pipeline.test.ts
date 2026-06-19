@@ -21,7 +21,7 @@ import type { RegisterArtifactsPayload } from "@/lib/schemas";
  * `findOversizedArtifact`) are unit-tested directly. The orchestration glue is
  * reachable only by mocking the D1 / R2 boundary, so — like
  * `ingest-pipeline.test.ts` — we mock `void/db` (controllable thenable
- * builders + a `db.batch` spy) and `void/storage` (a `put` spy) and pin the
+ * builders + a `db.transaction` spy) and `void/storage` (a `put` spy) and pin the
  * branch matrix: oversized precheck, run-not-found, unknown testResultIds,
  * idempotent reuse of an existing row, fresh-insert key shape, and the
  * upload size-match / R2-write outcomes.
@@ -29,7 +29,13 @@ import type { RegisterArtifactsPayload } from "@/lib/schemas";
 
 // ─── Controllable void/db mock (same idiom as ingest-pipeline.test.ts) ───────
 
-const batchSpy = vi.fn<(statements: unknown[]) => Promise<unknown[]>>();
+// `runBatch` (Postgres) runs statements inside `db.transaction(fn)`, invoking
+// `fn` with the tx executor and awaiting each built statement in order. The tx
+// executor IS the same recording mock `db` so builder statements (tx.insert…)
+// chain through `makeBuilder` exactly as a top-level select/insert would.
+const transactionSpy = vi.fn(async (fn: (tx: unknown) => unknown) =>
+  fn(dbMock),
+);
 
 /** FIFO of rows each *directly awaited* statement resolves to, in call order. */
 let awaitResults: unknown[][] = [];
@@ -61,12 +67,14 @@ function makeBuilder(kind: string): BuilderNode {
   return node;
 }
 
+const dbMock = {
+  transaction: transactionSpy,
+  select: () => makeBuilder("select"),
+  insert: () => makeBuilder("insert"),
+};
+
 vi.mock("void/db", () => ({
-  db: {
-    batch: batchSpy,
-    select: () => makeBuilder("select"),
-    insert: () => makeBuilder("insert"),
-  },
+  db: dbMock,
   and: (...args: unknown[]) => ({ __op: "and", args }),
   eq: (...args: unknown[]) => ({ __op: "eq", args }),
   gte: (...args: unknown[]) => ({ __op: "gte", args }),
@@ -135,7 +143,7 @@ function artifact(
 }
 
 beforeEach(() => {
-  batchSpy.mockReset();
+  transactionSpy.mockClear();
   putSpy.mockReset();
   putSpy.mockResolvedValue(undefined);
   awaitResults = [];
@@ -238,7 +246,7 @@ describe("artifact idempotency index ⇆ artifactIdentity", () => {
       "name",
       "attempt",
     ]) {
-      expect(ddl).toContain(`\`${col}\``);
+      expect(ddl).toContain(`"${col}"`);
     }
     expect(ddl).toMatch(/COALESCE\(\s*["`]?role["`]?\s*,\s*''\s*\)/i);
     // The bogus split-on-comma form drizzle-kit emits would quote the
@@ -252,8 +260,8 @@ describe("artifact idempotency index ⇆ artifactIdentity", () => {
     // if one creeps into the index, artifactIdentity would under-dedupe relative
     // to the DB. (snapshotName joining the identity is a deliberate future
     // change that must touch both sites + this test.)
-    expect(ddl).not.toContain("`snapshotName`");
-    expect(ddl).not.toContain("`r2Key`");
+    expect(ddl).not.toContain('"snapshotName"');
+    expect(ddl).not.toContain('"r2Key"');
   });
 });
 
@@ -461,7 +469,7 @@ describe("registerArtifacts", () => {
       name: "huge",
       maxBytes: MAX_BYTES,
     });
-    expect(batchSpy).not.toHaveBeenCalled();
+    expect(transactionSpy).not.toHaveBeenCalled();
   });
 
   it("returns runNotFound when the owner-run lookup misses", async () => {
@@ -484,7 +492,7 @@ describe("registerArtifacts", () => {
     };
     const result = await registerArtifacts(scope, payload, MAX_BYTES, NOW);
     expect(result).toEqual({ kind: "runClosed" });
-    expect(batchSpy).not.toHaveBeenCalled();
+    expect(transactionSpy).not.toHaveBeenCalled();
   });
 
   it("returns unknownTestResults when a testResultId doesn't belong to the run", async () => {
@@ -534,7 +542,7 @@ describe("registerArtifacts", () => {
         },
       ],
     });
-    expect(batchSpy).not.toHaveBeenCalled();
+    expect(transactionSpy).not.toHaveBeenCalled();
   });
 
   it("inserts a fresh row with a tenant-prefixed key and returns its upload", async () => {
@@ -560,8 +568,9 @@ describe("registerArtifacts", () => {
     );
     expect(upload.uploadUrl).toBe(`/api/artifacts/${upload.artifactId}/upload`);
     // The fresh-row insert now batches with the usage-meter bump (artifact bytes
-    // are metered atomically with the row), so the write goes through db.batch.
-    expect(batchSpy).toHaveBeenCalled();
+    // are metered atomically with the row), so the write goes through the
+    // db.transaction wrapper (runBatch).
+    expect(transactionSpy).toHaveBeenCalled();
   });
 
   it("de-dupes identical artifacts within one request to a single inserted row", async () => {

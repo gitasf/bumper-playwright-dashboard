@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { voidPlugin } from "void";
 import { voidReact } from "@void/react/plugin";
 
@@ -85,9 +85,15 @@ export default defineConfig({
   // we omit it so the resolver's no-secret THROW path is exercised.
   define: isTest
     ? {}
-    : { __WRIGHTFUL_INTERNAL_SECRET__: JSON.stringify(buildInternalSecret) },
+    : {
+        __WRIGHTFUL_INTERNAL_SECRET__: JSON.stringify(buildInternalSecret),
+      },
   test: {
     environment: "happy-dom",
     include: ["src/**/__tests__/**/*.test.{ts,tsx}"],
+    // Suites tagged `*.workers.test.ts` (workerd lane) and `*.workers-db.test.ts`
+    // (real-DB-over-Hyperdrive lane) run in workerd, not here — exclude both so
+    // they don't run in Node (where `cloudflare:test` isn't even resolvable).
+    exclude: [...configDefaults.exclude, "**/*.workers*.test.{ts,tsx}"],
   },
 });

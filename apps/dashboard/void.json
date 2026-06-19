@@ -28,5 +28,6 @@
     "fallbacks": {
       "/*": "/not-found"
     }
-  }
+  },
+  "database": "pg"
 }

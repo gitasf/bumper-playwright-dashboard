@@ -14,17 +14,19 @@ import { bucketExpr, percentilePick } from "@/lib/analytics/bucketing-sql";
  * insights islands render against. The highest-value invariant here is the
  * cross-implementation contract: the JS month key `${y}-${pad2(m)}` emitted by
  * `buildEmptyBuckets` must byte-for-byte match the SQL side's
- * `strftime('%Y-%m', runs."createdAt", 'unixepoch')` in bucketing-sql.ts, or
- * SQL-row buckets silently fail to join their empty-skeleton slot. SQLite's
- * `'unixepoch'` reads the timestamp as UTC seconds, so the reference below
+ * `to_char(to_timestamp(runs."createdAt") AT TIME ZONE 'UTC', 'YYYY-MM')` in
+ * bucketing-sql.ts, or SQL-row buckets silently fail to join their
+ * empty-skeleton slot. `to_timestamp` reads the column as unix seconds and the
+ * `AT TIME ZONE 'UTC'` pin labels the month in UTC, so the reference below
  * derives the same key from a UTC `Date` — exactly what the SQL emits.
  */
 
 /**
- * Reference month key matching SQLite `strftime('%Y-%m', sec, 'unixepoch')`:
- * the UTC year and zero-padded 1-based month of a unix-second timestamp.
+ * Reference month key matching Postgres
+ * `to_char(to_timestamp(sec) AT TIME ZONE 'UTC', 'YYYY-MM')`: the UTC year and
+ * zero-padded 1-based month of a unix-second timestamp.
  */
-function strftimeMonthKey(sec: number): string {
+function monthBucketKey(sec: number): string {
   const d = new Date(sec * 1000);
   const m = d.getUTCMonth() + 1;
   return `${d.getUTCFullYear()}-${m < 10 ? `0${m}` : m}`;
@@ -78,7 +80,7 @@ describe("buildEmptyBuckets — day/week", () => {
   });
 });
 
-describe("buildEmptyBuckets — month (SQL strftime parity)", () => {
+describe("buildEmptyBuckets — month (SQL to_char parity)", () => {
   it("emits zero-padded YYYY-MM keys for a window spanning a year boundary", () => {
     // 2023-11-15 -> 2024-02-15 (UTC): Nov, Dec, Jan, Feb. Crosses the year
     // rollover and exercises the single-digit -> zero-padded month transition.
@@ -101,8 +103,8 @@ describe("buildEmptyBuckets — month (SQL strftime parity)", () => {
     expect(buckets.map((b) => b.key)).toEqual(["2024-03"]);
   });
 
-  it("matches the SQL strftime('%Y-%m') key for every month in the window", () => {
-    // The load-bearing contract: each JS key equals what strftime would emit
+  it("matches the SQL to_char('YYYY-MM') key for every month in the window", () => {
+    // The load-bearing contract: each JS key equals what to_char would emit
     // for a timestamp inside that month. Walk a 14-month window and compare
     // each bucket's key against the UTC-derived reference.
     const start = Math.floor(Date.UTC(2023, 11, 1) / 1000); // 2023-12
@@ -112,10 +114,10 @@ describe("buildEmptyBuckets — month (SQL strftime parity)", () => {
     expect(buckets).toHaveLength(14);
     for (const b of buckets) {
       const [y, m] = b.key.split("-").map(Number);
-      // A mid-month instant in this bucket's month, fed through the strftime
+      // A mid-month instant in this bucket's month, fed through the to_char
       // reference, must reproduce the same key the builder emitted.
       const midMonthSec = Math.floor(Date.UTC(y, m - 1, 15) / 1000);
-      expect(strftimeMonthKey(midMonthSec)).toBe(b.key);
+      expect(monthBucketKey(midMonthSec)).toBe(b.key);
     }
     // Spot-check the boundary keys are zero-padded across the year rollover.
     expect(buckets[0].key).toBe("2023-12");
@@ -179,10 +181,11 @@ describe("bucketExpr ⟷ buildEmptyBuckets divisor parity", () => {
     expect(chunk.strings.join("")).toContain(`/ ${WEEK_SEC}`);
   });
 
-  it("renders the month bucket via strftime('%Y-%m'), matching the JS YYYY-MM key", () => {
+  it("renders the month bucket via to_char(to_timestamp(...) AT TIME ZONE 'UTC', 'YYYY-MM'), matching the JS YYYY-MM key", () => {
     const chunk = rendered(bucketExpr("month"));
     assertNoBoundPrimitive(chunk);
-    expect(chunk.strings.join("")).toContain("strftime('%Y-%m'");
+    expect(chunk.strings.join("")).toContain("to_char(to_timestamp(");
+    expect(chunk.strings.join("")).toContain("AT TIME ZONE 'UTC', 'YYYY-MM')");
   });
 
   it('defaults the bucketed column to runs."createdAt" (the run-scoped loaders)', () => {
@@ -206,8 +209,8 @@ describe("bucketExpr ⟷ buildEmptyBuckets divisor parity", () => {
 /**
  * `percentilePick` concentrates the discrete-percentile idiom that was
  * previously re-stated 7× across the run-duration and slowest-tests loaders:
- * `min(case when <rn> = max(1, cast(round(<cnt> * q) as integer)) then <value> end)`.
- * The correctness-sensitive parts are (a) the `max(1, …)` clamp that keeps a
+ * `min(case when <rn> = greatest(1, cast(round(<cnt> * q) as integer)) then <value> end)`.
+ * The correctness-sensitive parts are (a) the `greatest(1, …)` clamp that keeps a
  * single-row partition resolvable and (b) the `round`-based discrete rank. These
  * assertions pin the emitted SQL so a maintainer changing the rounding /
  * interpolation rule edits one place and this fails loudly if the shape drifts.
@@ -227,7 +230,7 @@ describe("percentilePick", () => {
 
   it("defaults to the run-duration columns (rn / cnt / duration)", () => {
     expect(rawText(percentilePick(0.5))).toBe(
-      "min(case when rn = max(1, cast(round(cnt * 0.50) as integer)) then duration end)",
+      "min(case when rn = greatest(1, cast(round(cnt * 0.50) as integer)) then duration end)",
     );
   });
 
@@ -240,8 +243,8 @@ describe("percentilePick", () => {
     expect(rawText(percentilePick(0.95))).toContain("round(cnt * 0.95)");
   });
 
-  it("keeps the max(1, …) clamp so a single-row partition still resolves", () => {
-    expect(rawText(percentilePick(0.95))).toContain("max(1, cast(round(");
+  it("keeps the greatest(1, …) clamp so a single-row partition still resolves", () => {
+    expect(rawText(percentilePick(0.95))).toContain("greatest(1, cast(round(");
   });
 
   it("threads custom rn / cnt / value column names verbatim (slowest-tests p95)", () => {
@@ -256,20 +259,20 @@ describe("percentilePick", () => {
         }),
       ),
     ).toBe(
-      `min(case when "rnDur" = max(1, cast(round(cnt * 0.95) as integer)) then "durationMs" end)`,
+      `min(case when "rnDur" = greatest(1, cast(round(cnt * 0.95) as integer)) then "durationMs" end)`,
     );
   });
 
   it("matches, byte-for-byte, the literal idiom the loaders previously inlined", () => {
     // The exact strings that lived at run-duration.server.ts:83-85 and 105-107.
     expect(rawText(percentilePick(0.5))).toBe(
-      "min(case when rn = max(1, cast(round(cnt * 0.50) as integer)) then duration end)",
+      "min(case when rn = greatest(1, cast(round(cnt * 0.50) as integer)) then duration end)",
     );
     expect(rawText(percentilePick(0.9))).toBe(
-      "min(case when rn = max(1, cast(round(cnt * 0.90) as integer)) then duration end)",
+      "min(case when rn = greatest(1, cast(round(cnt * 0.90) as integer)) then duration end)",
     );
     expect(rawText(percentilePick(0.95))).toBe(
-      "min(case when rn = max(1, cast(round(cnt * 0.95) as integer)) then duration end)",
+      "min(case when rn = greatest(1, cast(round(cnt * 0.95) as integer)) then duration end)",
     );
   });
 });

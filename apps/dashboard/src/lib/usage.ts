@@ -1,6 +1,8 @@
 import { ulid } from "ulid";
 import { and, db, eq, gte, sql } from "void/db";
 import { env } from "void/env";
+import type { BatchExecutor } from "@/lib/db-batch";
+import { numericSql } from "@/lib/db/sql-ops";
 import {
   artifacts,
   projects,
@@ -118,6 +120,7 @@ export function usageBumpStatement(
   periodStart: number,
   delta: UsageDelta,
   nowSeconds: number,
+  exec: BatchExecutor = db,
 ) {
   const runsDelta = delta.runs ?? 0;
   const testResultsDelta = delta.testResults ?? 0;
@@ -131,7 +134,7 @@ export function usageBumpStatement(
   ) {
     return null;
   }
-  return db
+  return exec
     .insert(usageCounters)
     .values({
       id: ulid(),
@@ -285,12 +288,12 @@ export async function reconcileUsage(
       .where(eq(projects.teamId, team.id));
 
     const runRows = await db
-      .select({ n: sql<number>`count(*)` })
+      .select({ n: numericSql(sql`count(*)`) })
       .from(runs)
       .where(and(eq(runs.teamId, team.id), gte(runs.createdAt, periodStart)));
 
     const trRows = await db
-      .select({ n: sql<number>`count(*)` })
+      .select({ n: numericSql(sql`count(*)`) })
       .from(testResults)
       .where(
         and(
@@ -301,8 +304,8 @@ export async function reconcileUsage(
 
     const artRows = await db
       .select({
-        bytes: sql<number>`coalesce(sum(${artifacts.sizeBytes}), 0)`,
-        n: sql<number>`count(*)`,
+        bytes: numericSql(sql`coalesce(sum(${artifacts.sizeBytes}), 0)`),
+        n: numericSql(sql`count(*)`),
       })
       .from(artifacts)
       .where(

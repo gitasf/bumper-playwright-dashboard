@@ -1,0 +1,36 @@
+# Local Postgres for development.
+#
+# The dashboard is Postgres-only — D1's zero-config local store is gone — so
+# `pnpm dev` and `pnpm setup:local` need a Postgres reachable at DATABASE_URL.
+# This boots one that matches the `postgres:16` image the CI integration leg
+# uses, so local behaviour matches CI.
+#
+#   docker compose -f docker-compose.pg.yml up -d --wait
+#
+# `pnpm setup:local` starts this for you and writes the matching DATABASE_URL
+# into .env.local. To use a hosted Postgres instead (e.g. a free Neon branch),
+# set DATABASE_URL yourself and skip this — setup:local then leaves Docker alone.
+#
+# Host port defaults to 5432. If that's taken (e.g. a native Postgres already
+# runs there), export WRIGHTFUL_PG_PORT (e.g. 5433) before `docker compose` /
+# `pnpm setup:local` and point DATABASE_URL at the same port.
+services:
+  postgres:
+    image: postgres:16
+    container_name: wrightful-pg
+    environment:
+      POSTGRES_USER: wrightful
+      POSTGRES_PASSWORD: wrightful
+      POSTGRES_DB: wrightful_dev
+    ports:
+      - "${WRIGHTFUL_PG_PORT:-5432}:5432"
+    volumes:
+      - wrightful-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wrightful -d wrightful_dev"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  wrightful-pg-data:

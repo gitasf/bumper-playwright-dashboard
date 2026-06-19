@@ -40,13 +40,17 @@ describe("buildRunsWhere search escaping", () => {
     args: readonly unknown[];
   };
 
+  // A `likeEscaped` fragment is identified by its `ESCAPE '\'` clause (which
+  // stays in the parent template's `.strings`). The LIKE/ILIKE operator itself
+  // is now a SUB-fragment (`${likeOperator()}`) carried in `args`, not literal
+  // template text — so detecting by `" like "` would miss it.
   function collectLikeFragments(node: unknown): RecordedSql[] {
     if (typeof node !== "object" || node === null) return [];
     const op = node as Partial<RecordedSql>;
     if (
       op.__op === "sql" &&
       Array.isArray(op.strings) &&
-      op.strings.join("").includes(" like ")
+      op.strings.join("").includes("escape '\\'")
     ) {
       return [op as RecordedSql];
     }
@@ -56,14 +60,18 @@ describe("buildRunsWhere search escaping", () => {
     return [];
   }
 
+  /** The bound pattern arg of a likeEscaped fragment (the lone string in args). */
+  function boundPattern(fragment: RecordedSql): unknown {
+    return fragment.args.find((a) => typeof a === "string");
+  }
+
   it("wraps the escaped term in %…% for each searched column", () => {
     const where = buildRunsWhere({ ...EMPTY_FILTERS, q: "50%_x" });
     const fragments = collectLikeFragments(where);
-    // commitMessage, commitSha, branch — three LIKE predicates, same pattern
-    // bound as args[1] (args[0] is the column).
+    // commitMessage, commitSha, branch — three LIKE predicates, same bound pattern.
     expect(fragments).toHaveLength(3);
     for (const fragment of fragments) {
-      expect(fragment.args[1]).toBe("%50\\%\\_x%");
+      expect(boundPattern(fragment)).toBe("%50\\%\\_x%");
     }
   });
 
@@ -169,10 +177,11 @@ describe("bucketExpr literal inlining", () => {
     expect(chunk.strings.join("")).toContain("/ 604800");
   });
 
-  it("renders the month bucket via strftime with no bound primitive", () => {
+  it("renders the month bucket via to_char with no bound primitive", () => {
     const chunk = asChunk(bucketExpr("month"));
     expectNoBoundPrimitive(chunk);
-    expect(chunk.strings.join("")).toContain("strftime('%Y-%m'");
+    expect(chunk.strings.join("")).toContain("to_char(to_timestamp(");
+    expect(chunk.strings.join("")).toContain("AT TIME ZONE 'UTC', 'YYYY-MM')");
   });
 
   it('defaults the bucketed column to runs."createdAt"', () => {

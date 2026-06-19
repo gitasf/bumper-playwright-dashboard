@@ -256,11 +256,11 @@ export class StreamClient {
       { maxRetries: 5, ...retryOptions },
     );
     if (!response.ok) {
-      const body = (await response.json().catch(() => ({}))) as {
+      const errorBody = (await response.json().catch(() => ({}))) as {
         error?: string;
       };
       throw new Error(
-        `completeRun failed (${response.status}): ${body.error ?? response.statusText}`,
+        `completeRun failed (${response.status}): ${errorBody.error ?? response.statusText}`,
       );
     }
   }

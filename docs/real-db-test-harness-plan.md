@@ -1,3 +1,5 @@
+> **Status: implemented.** The real-DB harness landed as part of the dual D1/Postgres work — executed-query integration tests run against pglite + real Postgres (`src/__tests__/pg-integration.test.ts`) over the `db-batch.ts` / `db-run.ts` dialect seam, plus a CI real-postgres job. See [docs/worklog/2026-06-16-dual-database-d1-postgres.md](worklog/2026-06-16-dual-database-d1-postgres.md). The plan below is retained as the original design record.
+
 # Plan — Real-DB (SQLite) test harness for the data layer
 
 **Status:** proposed (not started). Scoped from the 2026-06-15 large-scale-rework assessment, which rated this the one structural investment worth making.

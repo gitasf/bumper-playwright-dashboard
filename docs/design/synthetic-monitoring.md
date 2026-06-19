@@ -61,7 +61,7 @@ differs.
                container. Selected by WRIGHTFUL_MONITOR_EXECUTOR=stub.
                          ▼
         Existing ingest pipeline (openRun/appendRunResults/completeRun) + R2
-        artifacts + void/live `run:<runId>` — all reused verbatim.
+        artifacts + the void/ws run room — all reused verbatim.
 ```
 
 **Linking:** the executor pre-opens the run via the reporter's exported

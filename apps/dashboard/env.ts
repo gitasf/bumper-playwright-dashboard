@@ -15,6 +15,17 @@ export default defineEnv({
    */
   BETTER_AUTH_SECRET: string().secret(),
 
+  // ---------- Database (Postgres over Hyperdrive) ----------
+
+  /**
+   * Postgres connection string for LOCAL dev and for `pnpm db:migrate:remote`
+   * (e.g. `postgresql://user:pass@localhost:5432/wrightful`). Void's `void/db`
+   * resolves it for the local Drizzle node-postgres instance; in production the
+   * connection comes from the managed Hyperdrive binding instead, so this stays
+   * unset there. Optional + secret.
+   */
+  DATABASE_URL: string().secret().optional(),
+
   /**
    * Optional dedicated secret for signing short-lived artifact download tokens.
    * Decouples those (low-value, broadly-minted, HTML-embeddable) capabilities

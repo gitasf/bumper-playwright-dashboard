@@ -1,10 +1,10 @@
 # Self-hosting Wrightful
 
-Wrightful's dashboard is a [Void](https://void.cloud) app that runs on Cloudflare Workers: one Worker for the dashboard + ingest API, a single D1 database (auth, tenancy, runs, and test data), and one R2 bucket for artifact bytes. Its two storage bindings are `DB` (D1) and `STORAGE` (R2) — no KV. Synthetic monitoring (optional) adds two Cloudflare **Queues** (`monitors`, `uptime`) and, for **browser** monitors, a **Sandbox container**; five rate-limiter bindings ship in `wrangler.jsonc`. See [Synthetic monitors](#synthetic-monitors-optional) for what a self-hoster needs to provision (HTTP/TCP monitors need only the queues; browser monitors need the container — or set `WRIGHTFUL_MONITOR_EXECUTOR=stub` to skip both).
+Wrightful's dashboard is a [Void](https://void.cloud) app that runs on Cloudflare Workers: one Worker for the dashboard + ingest API, one **Postgres** database (auth, tenancy, runs, and test data) reached over **Cloudflare Hyperdrive**, and one R2 bucket for artifact bytes. You bring your own Postgres — [Neon](https://neon.tech) has a free tier that's ample for self-hosting, and [PlanetScale Postgres](https://planetscale.com) is a good scale-up. The R2 binding `STORAGE` and the `HYPERDRIVE` (Postgres) binding are the only data bindings — no KV. Synthetic monitoring (optional) adds two Cloudflare **Queues** (`monitors`, `uptime`) and, for **browser** monitors, a **Sandbox container**; five rate-limiter bindings ship in `wrangler.jsonc`. See [Synthetic monitors](#synthetic-monitors-optional) for what a self-hoster needs to provision (HTTP/TCP monitors need only the queues; browser monitors need the container — or set `WRIGHTFUL_MONITOR_EXECUTOR=stub` to skip both).
 
 There are two ways to deploy:
 
-- **[Deploy to your own Cloudflare account](#recommended-deploy-to-your-own-cloudflare-account) (recommended)** — `wrangler deploy` against D1 + R2 resources you create. The build output is a standard Cloudflare Worker, so this is the most predictable, production-ready path today.
+- **[Deploy to your own Cloudflare account](#recommended-deploy-to-your-own-cloudflare-account) (recommended)** — `wrangler deploy` against a Postgres database (reached over Hyperdrive) + an R2 bucket you create. The build output is a standard Cloudflare Worker, so this is the most predictable, production-ready path today.
 - **[One-command deploy with Void](#alternative-one-command-deploy-with-void-still-early) (simpler, still early)** — `void deploy` ships to Void's managed Cloudflare platform and auto-provisions everything with no Cloudflare account. The platform is young, so prefer the Cloudflare path above for anything you depend on.
 
 Both produce the same Worker from the same checked-in migrations.
@@ -22,50 +22,57 @@ pnpm install
 cd apps/dashboard          # the wrangler/build steps below run from here
 ```
 
-### 1. Create the Cloudflare resources
+### 1. Provision Postgres + create the Cloudflare resources
+
+You need a Postgres database, a Hyperdrive config that points at it, and an R2 bucket. Provision the Postgres database first — [Neon](https://neon.tech) (free tier) is the easy default; [PlanetScale Postgres](https://planetscale.com) or any other Postgres works too — and copy its connection string. Then create the Hyperdrive config (the runtime path to that Postgres) and the bucket:
 
 ```bash
-wrangler d1 create wrightful-db          # prints a database_id — keep it for step 2
+# A Hyperdrive config over your Postgres — prints a config id; keep it for step 2.
+wrangler hyperdrive create wrightful-pg --connection-string="postgres://USER:PASS@HOST/DB?sslmode=require"
 wrangler r2 bucket create wrightful-artifacts
 ```
 
-### 2. Add the binding IDs to `wrangler.jsonc`
+### 2. Point Wrangler at your resources (via `CF_*` env vars)
 
-The repo ships `apps/dashboard/wrangler.jsonc` carrying the rate-limiter bindings. **Extend it** (don't replace it) with the D1 + R2 blocks, using the id from step 1 and keeping the binding names `DB` and `STORAGE`:
+**You do not hand-edit `wrangler.jsonc`.** It's gitignored and generated from the committed `apps/dashboard/wrangler.template.jsonc` by `scripts/gen-wrangler.mjs`, which injects your deployment IDs from `CF_*` env vars and materializes `wrangler.jsonc` in the dev/build/deploy pre-hooks (the same generated-from-committed-sources pattern as `db/migrations/`). So no account-specific IDs are ever committed.
 
-```jsonc
-{
-  // ...existing "name", "compatibility_date", "ratelimits"...
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "wrightful-db",
-      "database_id": "<id from step 1>",
-      "migrations_dir": "db/migrations",
-    },
-  ],
-  "r2_buckets": [
-    { "binding": "STORAGE", "bucket_name": "wrightful-artifacts" },
-  ],
-}
-```
-
-Void merges these (matched by binding name) with whatever it infers at build time. Don't add `main`, `assets`, or `migrations` — the plugin sets those.
-
-### 3. Apply migrations to the remote D1
-
-By database name (not the binding), so you can't apply to the wrong DB. This reads the `migrations_dir` from step 2:
+One time only, drop any locally-tracked copy so the generator owns it:
 
 ```bash
-wrangler d1 migrations apply wrightful-db --remote
+git rm --cached apps/dashboard/wrangler.jsonc   # if it's still tracked in your clone
+```
+
+Then set these as env vars (in `apps/dashboard/.env.local` for local dev, or as build vars in CI — see [Auto-deploy on push](#auto-deploy-on-push-recommended)):
+
+```bash
+CF_WORKER_NAME=wrightful-dashboard-void   # the Worker name (any name you like)
+CF_R2_BUCKET=wrightful-artifacts          # the R2 bucket from step 1 (→ STORAGE binding)
+CF_HYPERDRIVE_ID=<config id from step 1>  # from `wrangler hyperdrive create` (→ HYPERDRIVE binding)
+```
+
+`gen-wrangler` injects a `hyperdrive[HYPERDRIVE]` block from `CF_HYPERDRIVE_ID` plus an `r2_buckets[STORAGE]` block from `CF_R2_BUCKET`. The rate-limiter bindings and Void's `main`/`assets`/`migrations` are handled by the template + plugin — you don't touch those.
+
+At runtime the Worker reaches Postgres through Hyperdrive (the `HYPERDRIVE` binding). **Local dev and migrations connect directly** via a `DATABASE_URL` instead (Hyperdrive is runtime-only) — set that in `apps/dashboard/.env.local`:
+
+```bash
+DATABASE_URL=postgresql://USER:PASS@HOST:5432/DB?sslmode=require
+```
+
+### 3. Apply migrations to the remote database
+
+`pnpm db:migrate:remote` applies the committed `db/migrations/` to your remote/prod Postgres over `$DATABASE_URL` — the **direct** connection, since Hyperdrive is runtime-only and can't be used for migrations:
+
+```bash
+DATABASE_URL=postgresql://USER:PASS@HOST:5432/DB?sslmode=require   pnpm db:migrate:remote
 ```
 
 ### 4. Build and deploy
 
 ```bash
-pnpm exec vite build      # writes dist/wrangler.json (your real IDs + Void's main/assets/triggers)
-wrangler deploy           # ships it; prints your https://<worker>.<subdomain>.workers.dev URL
+pnpm deploy:cf      # = vp build && wrangler deploy; prints your https://<worker>.<subdomain>.workers.dev URL
 ```
+
+`vp build` runs the Cloudflare Vite plugin, which writes `dist/wrangler.json` (your real IDs + Void's `main`/`assets`/triggers) plus a `.wrangler/deploy/config.json` redirect; `wrangler deploy` reads that redirect so it ships the built output rather than re-reading the source `wrangler.jsonc`.
 
 ### 5. Set secrets
 
@@ -84,13 +91,29 @@ Use the `workers.dev` URL from step 4, or a [custom domain](https://developers.c
 git pull origin main
 pnpm install
 cd apps/dashboard
-wrangler d1 migrations apply wrightful-db --remote   # apply any new migrations first
-pnpm exec vite build && wrangler deploy
+pnpm db:migrate:remote   # apply any new migrations first (see step 3)
+pnpm deploy:cf
 ```
 
-### Auto-deploy on push (optional)
+### Auto-deploy on push (recommended)
 
-Add a GitHub Actions workflow with `CLOUDFLARE_API_TOKEN` (Workers Scripts + D1 + R2 edit scopes) and `CLOUDFLARE_ACCOUNT_ID` as repo secrets:
+The recommended CD path is **[Cloudflare Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/)** — connect the repo once and Cloudflare builds + deploys on push, with previews for non-production branches. Connect your repo under the Worker's **Settings → Builds**, then configure:
+
+- **Root directory:** `apps/dashboard`
+- **Build command:** `pnpm build`
+- **Production deploy command:** `pnpm db:migrate:remote && npx wrangler deploy`
+- **Non-production deploy command:** `npx wrangler versions upload` (no migration)
+
+The migration runs in the **production** deploy command only — the build runs for every branch (including preview branches), so you don't want every preview mutating your prod schema. Non-prod branches upload a version without migrating.
+
+Set the deployment IDs as build **variables** (`CF_WORKER_NAME`, `CF_R2_BUCKET`, `CF_HYPERDRIVE_ID`), and `DATABASE_URL` (your prod Postgres **direct** connection) as a build **secret**. The build environment runs `gen-wrangler` (via the `prebuild` hook) and the migration, so **your prod database must be reachable from Cloudflare's build environment** for `db:migrate:remote` to apply. Runtime app secrets (`BETTER_AUTH_SECRET`, `WRIGHTFUL_PUBLIC_URL`, …) are set separately as Worker secrets (`wrangler secret put`) and persist across deploys.
+
+> **Migration safety (expand/contract).** Migrate-before-deploy is safe for **additive** ("expand") migrations: if the deploy fails after the migration, the old code keeps serving on the new schema — just re-run. **Destructive ("contract") changes** — dropping a column the live code still reads — must ship in a **later** deploy, once no running version depends on the old shape. Migrations are forward-only and tracked, so each runs once.
+
+<details>
+<summary>GitHub Actions alternative</summary>
+
+If you'd rather run CD from Actions, add `CLOUDFLARE_API_TOKEN` (Workers Scripts + R2 edit scopes) and `CLOUDFLARE_ACCOUNT_ID`, plus `DATABASE_URL` (your prod Postgres direct connection), as repo secrets:
 
 ```yaml
 name: Deploy
@@ -103,6 +126,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # CF_WORKER_NAME / CF_R2_BUCKET / CF_HYPERDRIVE_ID / DATABASE_URL as needed
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -111,18 +135,17 @@ jobs:
       - run: pnpm install
       - working-directory: apps/dashboard
         run: |
-          pnpm exec wrangler d1 migrations apply wrightful-db --remote
-          pnpm exec vite build
-          pnpm exec wrangler deploy
+          pnpm db:migrate:remote
+          pnpm deploy:cf
 ```
 
-Set the app secrets (`BETTER_AUTH_SECRET`, `WRIGHTFUL_PUBLIC_URL`, …) once with `wrangler secret put` — they persist across deploys.
+</details>
 
 ---
 
 ## Alternative: one-command deploy with Void (still early)
 
-> Void's managed deploy provisions D1 + R2 and applies migrations in a single command with **no Cloudflare account** — handy for a quick throwaway or preview instance. The platform is still early, so for anything you rely on, prefer the [Cloudflare path](#recommended-deploy-to-your-own-cloudflare-account) above.
+> Void's managed deploy provisions Postgres (over Hyperdrive) + R2 and applies migrations in a single command with **no Cloudflare account** — handy for a quick throwaway or preview instance. The platform is still early, so for anything you rely on, prefer the [Cloudflare path](#recommended-deploy-to-your-own-cloudflare-account) above.
 
 Prerequisites: Node 20+, `pnpm`, a Void account.
 
@@ -136,11 +159,11 @@ pnpm --filter @wrightful/dashboard exec void auth login
 openssl rand -base64 32 | pnpm --filter @wrightful/dashboard exec void secret put BETTER_AUTH_SECRET
 pnpm --filter @wrightful/dashboard exec void secret put WRIGHTFUL_PUBLIC_URL
 
-# 3. Deploy — builds, applies db/migrations/, provisions D1 + R2, goes live.
+# 3. Deploy — builds, applies db/migrations/, provisions Postgres + R2, goes live.
 pnpm deploy
 ```
 
-`pnpm deploy` runs `void deploy`, which reads the checked-in migrations from `apps/dashboard/db/migrations/`, fails if `db/schema.ts` has drifted ahead of them (run `void db generate`, commit, retry), applies any pending migrations, and goes live — no separate migrate step, no hand-edited binding config. For auto-deploy on push, `void init --github` writes a `.github/workflows/deploy.yml` that runs `void deploy` with a `VOID_TOKEN` secret (from `void auth token`).
+`pnpm deploy` runs `void deploy`, which reads the checked-in `apps/dashboard/db/migrations/`, fails if the schema source (`db/schema.ts`) has drifted ahead of them (run `pnpm db:generate`, commit, retry), applies any pending migrations, and goes live — no separate migrate step, no hand-edited binding config. For auto-deploy on push, `void init --github` writes a `.github/workflows/deploy.yml` that runs `void deploy` with a `VOID_TOKEN` secret (from `void auth token`).
 
 ---
 
@@ -291,16 +314,16 @@ Results stream to your dashboard as tests run.
 
 **First load 500s on sign-in pages** — `WRIGHTFUL_PUBLIC_URL` or `BETTER_AUTH_SECRET` isn't set. List what's set with `wrangler secret list` (or `void env check --remote` on the Void path); tail runtime logs with `wrangler tail` (or `void project logs --level error`).
 
-**Schema drift on build/deploy** — `db/schema.ts` is ahead of the committed migrations. Run `void db generate`, review the new file in `apps/dashboard/db/migrations/`, and commit it. On the Cloudflare path, re-apply with `wrangler d1 migrations apply wrightful-db --remote` then redeploy; `void deploy` applies pending migrations itself.
+**Schema drift on build/deploy** — the schema source (`db/schema.ts`) is ahead of the committed migrations. Run `pnpm db:generate` (= `void db generate`), review the new files under `db/migrations/`, and commit them. On the Cloudflare path, re-apply with `pnpm db:migrate:remote` then redeploy; `void deploy` applies pending migrations itself.
 
-**Migration discipline** — schema changes are forward-only / additive (new tables, new nullable columns). Generate a new numbered migration with `void db generate`; never edit a migration that has already been applied to a live database.
+**Migration discipline** — schema changes are forward-only / additive (new tables, new nullable columns). Generate a new numbered migration with `pnpm db:generate` (from `db/schema.ts`); never edit a migration that has already been applied to a live database.
 
 **"Continue with GitHub" doesn't appear** — both `AUTH_GITHUB_CLIENT_ID` and `AUTH_GITHUB_CLIENT_SECRET` must be set; the button is gated on both being present. The provider is enabled in `apps/dashboard/auth.ts` at startup when those creds exist — it is deliberately **not** declared in `apps/dashboard/void.json`'s `auth.providers` (which lists only `email`), because declaring it there would make Void hard-require the GitHub creds on every deploy.
 
-**Artifacts fail to upload** — confirm the `STORAGE` (R2) binding resolved. On the Cloudflare path the `r2_buckets` block must be present in `wrangler.jsonc` with a real `bucket_name`; tail logs with `wrangler tail`. Per-artifact size is capped by `WRIGHTFUL_MAX_ARTIFACT_BYTES` (default 50 MiB).
+**Artifacts fail to upload** — confirm the `STORAGE` (R2) binding resolved. On the Cloudflare path that means `CF_R2_BUCKET` was set so `gen-wrangler` injected the `r2_buckets` block into the generated `wrangler.jsonc` with a real `bucket_name`; tail logs with `wrangler tail`. Per-artifact size is capped by `WRIGHTFUL_MAX_ARTIFACT_BYTES` (default 50 MiB).
 
 ---
 
 ## What's under the hood
 
-See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full architecture overview (single D1 + Drizzle, logical tenancy, R2 artifact storage, `void/ws` realtime rooms, the streaming ingest protocol, and the cron/queue background work). For the exact binding-merge semantics on the Cloudflare path, see the Void [Cloudflare integration guide](https://void.cloud/integrations/cloudflare#deploy-to-your-own-cloudflare-account).
+See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full architecture overview (Postgres over Hyperdrive + Drizzle, logical tenancy, R2 artifact storage, `void/ws` realtime rooms, the streaming ingest protocol, and the cron/queue background work). For the exact binding-merge semantics on the Cloudflare path, see the Void [Cloudflare integration guide](https://void.cloud/integrations/cloudflare#deploy-to-your-own-cloudflare-account).
