@@ -155,7 +155,11 @@ export const teamInvites = pgTable(
     email: text("email"),
     /**
      * Directed invite: matched against `userGithubAccounts.githubLogin` when
-     * the invitee signs in via the GitHub provider.
+     * the invitee signs in via the GitHub provider. SECURITY: matched ONLY on
+     * the secret `/invite/:token` share-link path (as a second factor behind
+     * the token) — never on the tokenless picker/accept/decline path, because
+     * a GitHub login is mutable/reusable and a freed handle could otherwise be
+     * re-registered to hijack the invite. See `buildInviteMatchConds`.
      */
     githubLogin: text("githubLogin"),
   },
@@ -426,6 +430,9 @@ export const runs = pgTable(
       t.projectId,
       t.idempotencyKey,
     ),
+    // Reserved for the upcoming "runs for this monitor" list — no read uses it
+    // yet (the only `monitorId` touch today is the ingest write). Pure write
+    // amplification until that query lands; drop it if the feature is cut.
     index("runs_project_monitor_created_at_idx").on(
       t.projectId,
       t.monitorId,

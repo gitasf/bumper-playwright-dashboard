@@ -190,7 +190,6 @@ export class ArtifactUploader {
             upload.uploadUrl,
             local.localPath,
             local.contentType,
-            local.sizeBytes,
           );
           result.ok++;
         } catch (err) {

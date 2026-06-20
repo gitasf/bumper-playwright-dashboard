@@ -17,10 +17,12 @@ import {
  * stub, so we pin the PURE half here — the predicate builder and the two
  * match selectors. These carry the security-load-bearing invariants:
  *
- *  - an undirected identity (no email, no github) builds NO match predicate,
+ *  - an identity with no verified email builds NO tokenless match predicate,
  *    so callers 403 instead of redeeming an invite against an empty `or()`;
- *  - the match predicate only ever references the columns the identity
- *    actually carries (never a stray column);
+ *  - the tokenless `buildInviteMatchConds` matches ONLY the verified email,
+ *    never the mutable GitHub login (a freed/re-registered handle would
+ *    otherwise hijack the invite) — the login is a token-link-only second
+ *    factor in `identityMatchesInvite`, so the two helpers are asymmetric;
  *  - matching is exact-string against the (already-lowercased) email — a leak
  *    here is an invite-hijack vector, which is why it lives in one place.
  *
@@ -68,24 +70,23 @@ describe("buildInviteMatchConds", () => {
     expect(readOrPairs(conds)).toEqual({ email: "a@b.com" });
   });
 
-  it("matches on github login only when only a github login is present", () => {
+  it("returns null for a github-only identity (login is token-gated, never tokenless-matchable)", () => {
+    // SECURITY regression: the tokenless picker/accept/decline path must NOT
+    // match on the mutable GitHub login. A github-only identity therefore
+    // builds no predicate, so callers 403 — github-directed invites are
+    // redeemed via the secret /invite/:token link instead.
+    expect(
+      buildInviteMatchConds({ email: null, githubLogin: "octocat" }),
+    ).toBeNull();
+  });
+
+  it("matches on email only even when a github login is also present", () => {
     const conds = buildInviteMatchConds({
-      email: null,
+      email: "a@b.com",
       githubLogin: "octocat",
     });
     expect(conds).not.toBeNull();
-    expect(readOrPairs(conds)).toEqual({ githubLogin: "octocat" });
-  });
-
-  it("ORs both columns when both identifiers are present", () => {
-    const conds = buildInviteMatchConds({
-      email: "a@b.com",
-      githubLogin: "octocat",
-    });
-    expect(readOrPairs(conds)).toEqual({
-      email: "a@b.com",
-      githubLogin: "octocat",
-    });
+    expect(readOrPairs(conds)).toEqual({ email: "a@b.com" });
   });
 });
 

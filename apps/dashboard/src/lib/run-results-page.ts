@@ -51,23 +51,23 @@ export function clampRunResultsLimit(limit: number): number {
   return Math.min(Math.max(1, limit), MAX_RUN_RESULTS_LIMIT);
 }
 
+/** The closed set the live client renders, as one typed list (no casts). */
+const TEST_STATUSES: readonly RunProgressTest["status"][] = [
+  "passed",
+  "failed",
+  "flaky",
+  "skipped",
+  "timedout",
+  "queued",
+];
+
 /**
  * Coerce a raw `testResults.status` string into the closed set the live
  * client renders. Unknown values fall back to `queued` so the SSR seed and
  * the paginated pages agree on shape.
  */
 export function normalizeTestStatus(s: string): RunProgressTest["status"] {
-  if (
-    s === "passed" ||
-    s === "failed" ||
-    s === "flaky" ||
-    s === "skipped" ||
-    s === "timedout" ||
-    s === "queued"
-  ) {
-    return s;
-  }
-  return "queued";
+  return TEST_STATUSES.find((status) => status === s) ?? "queued";
 }
 
 /**

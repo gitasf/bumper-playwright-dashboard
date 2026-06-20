@@ -449,7 +449,6 @@ describe("ArtifactUploader.upload", () => {
       "https://r2/retry0",
       "/p/s",
       "image/png",
-      500,
     );
     expect(onWarn).toHaveBeenCalledWith(
       expect.stringContaining("artifact dropped (huge.webm)"),

@@ -266,32 +266,40 @@ export function projectAuthProfile(
 }
 
 /**
- * Build the `or(...)` of `teamInvites` equality predicates a directed invite
- * matches an identity by. Returns `null` when the identity carries neither an
- * email nor a GitHub login (an undirected / anonymous identity), so callers
- * can short-circuit with a 403 rather than building an empty `or()`.
+ * Build the match predicate the **tokenless** invite paths use — team-picker
+ * discovery (`getPendingInvitesForUser`) and the picker's accept / decline
+ * routes, none of which require the secret invite token. Returns `null` when
+ * the identity carries no VERIFIED email, so callers short-circuit with a 403
+ * rather than building an empty `or()`.
  *
- * Concentrates the `matchConds` assembly that three invite routes hand-wrote
- * identically — the single place that decides which invite columns an identity
- * is allowed to redeem against.
+ * SECURITY: this matches ONLY on the verified email — never the GitHub login.
+ * A GitHub login is mutable and reusable: once `@alice` renames or deletes her
+ * account GitHub frees the handle, and whoever re-registers it would otherwise
+ * see and redeem alice's directed invite straight from the team picker with no
+ * token at all (a confirmed account-takeover-into-team primitive). A verified
+ * email cannot be taken over that way. GitHub-directed invites remain
+ * redeemable via the secret share-link, where {@link identityMatchesInvite}
+ * uses the login only as a SECOND factor behind the unguessable token — see
+ * `invite-identity.ts`. Keep these two helpers intentionally asymmetric: the
+ * tokenless path trusts only the non-takeover-able email; the token path may
+ * additionally check the login. Do NOT "re-unify" them.
  */
 export function buildInviteMatchConds(
   identity: UserIdentity,
 ): ReturnType<typeof or> | null {
-  const conds: ReturnType<typeof eq>[] = [];
-  if (identity.email) conds.push(eq(teamInvites.email, identity.email));
-  if (identity.githubLogin) {
-    conds.push(eq(teamInvites.githubLogin, identity.githubLogin));
-  }
-  if (conds.length === 0) return null;
-  return or(...conds) ?? null;
+  if (!identity.email) return null;
+  return or(eq(teamInvites.email, identity.email)) ?? null;
 }
 
 /**
- * Whether `identity` matches an invite addressed by `inviteEmail` /
- * `inviteGithubLogin`. Mirrors the redemption gate: a directed invite is
- * redeemable when its email matches the (lowercased) identity email, or its
- * GitHub login matches.
+ * Whether `identity` matches a directed invite by its email or GitHub login.
+ *
+ * This is the **token-link** second factor (`invite-identity.ts` →
+ * `/invite/:token`): the unguessable token is the primary gate, and this match
+ * additionally confirms a leaked link isn't redeemed by the wrong person.
+ * Because the secret token already bounds who can reach this check, it is safe
+ * to accept the mutable GitHub login here — unlike the tokenless
+ * {@link buildInviteMatchConds}, which must not (see its note).
  */
 export function identityMatchesInvite(
   identity: UserIdentity,

@@ -3,10 +3,14 @@
  * Used by `cross-tenant.spec.ts` to assert that User A's browser session
  * AND API key cannot reach User B's resources.
  *
- * Mirrors the same flow `bootDashboard` runs at suite start (sign-up via
- * Better Auth → form-POST to /settings/teams/new + projects/new, then the
- * Void key API route). Kept in tests-dashboard because it's spec-specific —
- * bootDashboard stays scoped to the singleton "the suite's primary user" case.
+ * Mirrors the same flow `bootDashboard` (src/dashboard-fixture.ts) runs at
+ * suite start, against the SAME endpoints: sign-up via Better Auth, then the
+ * typed JSON API routes (`POST /api/teams`, `…/projects`, `…/keys`). The two
+ * helpers can't share code (bootDashboard runs on a bare fetch wrapper in
+ * globalSetup; this runs on Playwright's APIRequestContext) but hitting one
+ * endpoint set keeps the contracts from drifting apart silently. Kept in
+ * tests-dashboard because it's spec-specific — bootDashboard stays scoped to
+ * the singleton "the suite's primary user" case.
  */
 import type { APIRequestContext, APIResponse } from "@playwright/test";
 
@@ -60,50 +64,53 @@ export async function seedSecondUser(
   }
   const cookieHeader = sessionCookies.join("; ");
 
-  // Team.
-  const teamForm = new URLSearchParams({ name: creds.teamName }).toString();
-  const teamRes = await request.post("/settings/teams/new", {
+  // Team — the Void API route returns the assigned slug as JSON (no 302
+  // Location scraping).
+  const teamRes = await request.post("/api/teams", {
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      "Content-Type": "application/json",
       Origin: baseUrl,
       Cookie: cookieHeader,
     },
-    data: teamForm,
+    data: { name: creds.teamName },
     maxRedirects: 0,
     failOnStatusCode: false,
   });
-  if (teamRes.status() !== 302) {
+  if (!teamRes.ok()) {
     throw new Error(
       `[second-user] team creation returned ${teamRes.status()}: ${await teamRes.text()}`,
     );
   }
-  const teamLoc = teamRes.headers().location ?? "";
-  if (!teamLoc.includes(`/settings/teams/${creds.teamSlug}`)) {
+  const teamBody = (await teamRes.json()) as { teamSlug?: unknown };
+  if (teamBody.teamSlug !== creds.teamSlug) {
     throw new Error(
-      `[second-user] team slug mismatch — Location was "${teamLoc}", expected slug "${creds.teamSlug}"`,
+      `[second-user] team slug mismatch — got "${String(teamBody.teamSlug)}", expected "${creds.teamSlug}"`,
     );
   }
 
-  // Project.
-  const projectForm = new URLSearchParams({
-    name: creds.projectName,
-  }).toString();
+  // Project — same typed JSON contract; returns the assigned slug.
   const projectRes = await request.post(
-    `/settings/teams/${creds.teamSlug}/projects/new`,
+    `/api/teams/${creds.teamSlug}/projects`,
     {
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Type": "application/json",
         Origin: baseUrl,
         Cookie: cookieHeader,
       },
-      data: projectForm,
+      data: { name: creds.projectName },
       maxRedirects: 0,
       failOnStatusCode: false,
     },
   );
-  if (projectRes.status() !== 302) {
+  if (!projectRes.ok()) {
     throw new Error(
       `[second-user] project creation returned ${projectRes.status()}: ${await projectRes.text()}`,
+    );
+  }
+  const projectBody = (await projectRes.json()) as { projectSlug?: unknown };
+  if (projectBody.projectSlug !== creds.projectSlug) {
+    throw new Error(
+      `[second-user] project slug mismatch — got "${String(projectBody.projectSlug)}", expected "${creds.projectSlug}"`,
     );
   }
 

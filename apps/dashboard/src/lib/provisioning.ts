@@ -4,6 +4,7 @@ import { ulid } from "ulid";
 import { memberships, projects, teams as teamsTable } from "@schema";
 import { openSignupAllowed } from "@/lib/config";
 import { runBatch } from "@/lib/db-batch";
+import { SLUG_MAX_LEN } from "@/lib/slug";
 
 /**
  * Canonical team/project provisioning seam.
@@ -26,7 +27,9 @@ import { runBatch } from "@/lib/db-batch";
  * orchestration over Drizzle.
  */
 
-export const SLUG_MAX_LEN = 40;
+// Re-exported for existing consumers; the canonical definition lives next to
+// SLUG_RE in `@/lib/slug` so the regex and the cap can't drift.
+export { SLUG_MAX_LEN } from "@/lib/slug";
 
 /**
  * Failure to derive even a base slug from a name. Status-agnostic on purpose:

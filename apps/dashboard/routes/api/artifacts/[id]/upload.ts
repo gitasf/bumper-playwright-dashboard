@@ -17,9 +17,15 @@ export const PUT = defineHandler(async (c) => {
 
   // A missing OR empty Content-Length is treated as "not provided" (the
   // original handler's `!header` guard); a present value is parsed and matched
-  // against the registered sizeBytes inside `storeArtifactUpload`.
+  // against the registered sizeBytes inside `storeArtifactUpload`. The header
+  // is per spec a base-10 integer, so anything `Number()` would coerce loosely
+  // (hex, fractions, whitespace junk) parses to NaN and fails the size match.
   const header = c.req.header("content-length");
-  const contentLength = header ? Number(header) : null;
+  const contentLength = header
+    ? /^\d+$/.test(header.trim())
+      ? Number(header)
+      : Number.NaN
+    : null;
 
   const result = await storeArtifactUpload(
     scope,

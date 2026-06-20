@@ -14,6 +14,12 @@
 // Unknown statuses (e.g. a future Playwright status we don't yet model) fall
 // back to a muted, neutral presentation so the surprise never reads as a real
 // failure.
+//
+// Sibling table: ingest's aggregate-count buckets (`STATUS_BUCKET_MEMBERS` in
+// `@/lib/ingest`) encode the same `timedout → failed` collapse but have NO
+// `interrupted` row — per-test statuses on the wire never include it (it only
+// occurs run-level), while this registry must render it wherever a run status
+// appears. Keep the shared rows in sync when editing either table.
 
 export type Status =
   | "passed"

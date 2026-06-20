@@ -17,8 +17,10 @@ import { expect, test } from "@playwright/test";
 test.describe("Visual regression dogfood", () => {
   test("homepage matches baseline", async ({ page }) => {
     await page.goto("/");
-    // Wait for hero to settle so the snapshot is deterministic.
-    await page.waitForLoadState("networkidle");
+    // Wait for the hero heading to settle so the snapshot is deterministic —
+    // an explicit locator wait, not `networkidle` (discouraged; long-lived
+    // connections can keep the network from ever going idle).
+    await expect(page.getByRole("heading").first()).toBeVisible();
 
     // Toggle this block on to inject a page-mutating banner — the next run
     // will produce a diff and exercise the visual-regression pipeline:

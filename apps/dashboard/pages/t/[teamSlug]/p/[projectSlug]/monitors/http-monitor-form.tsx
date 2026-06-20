@@ -1,11 +1,10 @@
 "use client";
 
-import { ChevronDown, Plus, X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { Link } from "@void/react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
   ALLOWED_COMPARISONS,
@@ -16,7 +15,12 @@ import {
   HTTP_MAX_ASSERTIONS,
   type HttpMonitorConfig,
 } from "@/lib/monitors/monitor-schemas";
-import { cn } from "@/lib/cn";
+import {
+  EnabledSwitchRow,
+  FieldLabel,
+  MonitorFormBanners,
+  NativeSelect,
+} from "./monitor-form-parts";
 import { HTTP_INTERVAL_OPTIONS } from "./monitors-ui.shared";
 
 /**
@@ -151,20 +155,7 @@ export function HttpMonitorForm({
     >
       <input name="type" type="hidden" value="http" />
 
-      {limitReached && (
-        <div className="flex items-center gap-2.5 rounded-lg border border-fail/30 bg-fail-soft px-3.5 py-2.5 text-[12.5px]">
-          <X className="size-3.5 shrink-0 text-fail" />
-          <span className="text-fg-1">Monitor limit reached.</span>
-          <span className="text-fg-3">Delete one or upgrade to add more.</span>
-        </div>
-      )}
-
-      {error && (
-        <div className="flex items-center gap-2.5 rounded-lg border border-fail/30 bg-fail-soft px-3.5 py-2.5 text-[12.5px]">
-          <X className="size-3.5 shrink-0 text-fail" />
-          <span className="text-fg-1">{error}</span>
-        </div>
-      )}
+      <MonitorFormBanners error={error} limitReached={limitReached} />
 
       {/* Name + interval. */}
       <div className="grid grid-cols-[1fr_200px] gap-4">
@@ -328,20 +319,7 @@ export function HttpMonitorForm({
 
       {/* Enabled toggle + actions. */}
       <div className="mt-0.5 flex items-center gap-3 border-t border-line-1 pt-4">
-        <label className="flex cursor-pointer items-center gap-2.5">
-          <Switch checked={enabled} onCheckedChange={setEnabled} />
-          {enabled && <input name="enabled" type="hidden" value="on" />}
-          <span>
-            <span className="block text-[13px] font-medium text-foreground">
-              {enabled ? "Enabled" : "Paused"}
-            </span>
-            <span className="block text-[11.5px] text-fg-3">
-              {enabled
-                ? "Runs on schedule as soon as it’s saved."
-                : "Saved but won’t run until resumed."}
-            </span>
-          </span>
-        </label>
+        <EnabledSwitchRow enabled={enabled} onChange={setEnabled} />
 
         <div className="flex-1" />
 
@@ -476,52 +454,5 @@ function SwitchRow({
         <span className="block text-[11.5px] text-fg-3">{description}</span>
       </span>
     </label>
-  );
-}
-
-/** Styled native `<select>` matching the browser form's interval control. */
-function NativeSelect({
-  className,
-  children,
-  ...props
-}: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <span
-      className={cn(
-        "relative inline-flex rounded-lg border border-input bg-background not-dark:bg-clip-padding text-sm shadow-xs/5 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/24",
-        className,
-      )}
-    >
-      <select
-        className="h-8.5 w-full appearance-none rounded-[inherit] bg-transparent px-[calc(--spacing(3)-1px)] pr-8 font-mono leading-8.5 text-foreground outline-none sm:h-7.5 sm:leading-7.5"
-        {...props}
-      >
-        {children}
-      </select>
-      <ChevronDown
-        aria-hidden="true"
-        className="pointer-events-none absolute right-2.5 top-1/2 size-3 -translate-y-1/2 text-fg-3"
-      />
-    </span>
-  );
-}
-
-/** Compact field label matching the browser form's `FieldLabel`. */
-function FieldLabel({
-  children,
-  className,
-  htmlFor,
-}: {
-  children: React.ReactNode;
-  className?: string;
-  htmlFor?: string;
-}) {
-  return (
-    <Label
-      className={cn("mb-1.5 block text-xs text-fg-2 sm:text-xs", className)}
-      htmlFor={htmlFor}
-    >
-      {children}
-    </Label>
   );
 }

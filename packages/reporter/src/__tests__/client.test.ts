@@ -410,7 +410,6 @@ describe("StreamClient", () => {
         "https://r2.cloudflarestorage.com/bucket/key?sig=abc",
         "/tmp/file.png",
         "image/png",
-        3,
       );
 
       const [url, init] = fetchMock.mock.calls[0];
@@ -430,7 +429,6 @@ describe("StreamClient", () => {
         "http://dash.example/api/artifacts/a_1/upload",
         "/tmp/file.png",
         "image/png",
-        3,
       );
 
       const init = fetchMock.mock.calls[0][1];
@@ -446,7 +444,6 @@ describe("StreamClient", () => {
         "/api/artifacts/a_1/upload",
         "/tmp/file.png",
         "image/png",
-        3,
       );
 
       const [url, init] = fetchMock.mock.calls[0];
@@ -464,7 +461,6 @@ describe("StreamClient", () => {
           "https://r2.example/key",
           "/tmp/file.png",
           "image/png",
-          3,
         ),
       ).rejects.toThrow(/artifact PUT failed: 403/);
       expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -485,7 +481,6 @@ describe("StreamClient", () => {
           "https://r2.example/key",
           "/tmp/file.png",
           "image/png",
-          3,
         );
         await vi.runAllTimersAsync();
         await promise;
@@ -502,7 +497,6 @@ describe("StreamClient", () => {
             "https://r2.example/key",
             "/tmp/file.png",
             "image/png",
-            3,
           ),
         );
         await vi.runAllTimersAsync();

@@ -9,9 +9,11 @@ import { changedRows } from "@/lib/db-batch";
  * POST /api/invites/:inviteId/decline
  *
  * Soft-decline by deleting the invite. The caller must be the invite's
- * intended recipient — matched by email (from void's user table) or by the
- * GitHub login captured at OAuth sign-in. Without this binding any signed-in
- * user could enumerate invite ids and burn other users' invites.
+ * intended recipient — matched by VERIFIED email (`buildInviteMatchConds`).
+ * Without this binding any signed-in user could enumerate invite ids and burn
+ * other users' invites. GitHub-login-directed invites aren't declinable here
+ * for the same reason they aren't acceptable here (the login is mutable; see
+ * auth-users.ts) — they're redeemed/ignored via the `/invite/:token` link.
  *
  * We don't keep a "declined" tombstone because directed invites are
  * re-issuable — an admin who wants the user back can just send a fresh one.

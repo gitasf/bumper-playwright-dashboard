@@ -146,7 +146,7 @@ const RunMetaCommon = {
   environment: z.string().max(MAX.NAME).nullable().optional(),
   commitSha: z.string().max(MAX.SHORT).nullable().optional(),
   commitMessage: truncatedText(MAX.COMMIT_MSG),
-  prNumber: z.number().int().nullable().optional(),
+  prNumber: z.number().int().min(0).nullable().optional(),
   repo: z.string().max(MAX.NAME).nullable().optional(),
   actor: z.string().max(MAX.NAME).nullable().optional(),
   reporterVersion: z.string().max(MAX.VERSION).nullable().optional(),

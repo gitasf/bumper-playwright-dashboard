@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { db, and, eq } from "void/db";
 import { apiKeys, type ApiKey } from "@schema";
+import { logger } from "void/log";
 import { sha256Hex, timingSafeEqualHex } from "@/lib/token-crypto";
 
 /**
@@ -60,7 +61,14 @@ export async function validateApiKey(
       .update(apiKeys)
       .set({ lastUsedAt: Math.floor(Date.now() / 1000) })
       .where(and(eq(apiKeys.id, key.id)))
-      .catch(() => {}),
+      // A bump failure must not fail auth, but route it through the platform
+      // logger so persistent write contention is visible in Cloudflare Tail.
+      .catch((err: unknown) => {
+        logger.warn("api-key lastUsedAt bump failed", {
+          keyId: key.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }),
   );
 
   return key;

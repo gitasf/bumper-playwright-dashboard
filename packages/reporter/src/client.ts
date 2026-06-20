@@ -349,14 +349,12 @@ export class StreamClient {
     uploadUrl: string,
     localPath: string,
     contentType: string,
-    sizeBytes: number,
   ): Promise<void> {
     const resolvedUrl = new URL(uploadUrl, this.baseUrl);
     const baseHost = new URL(this.baseUrl).host;
     const resolved = resolvedUrl.toString();
     const headers: Record<string, string> = {
       [WRIGHTFUL_VERSION_HEADER]: String(PROTOCOL_VERSION),
-      "Content-Length": String(sizeBytes),
     };
     if (resolvedUrl.host === baseHost) {
       headers.Authorization = `Bearer ${this.token}`;
@@ -367,11 +365,15 @@ export class StreamClient {
     // 5xx/429 retry decision, and the backoff. A terminal HTTP failure is
     // thrown here — *outside* withRetry's attempt() — so it can't be caught and
     // retried; only network throws propagate through attempt() to be retried.
+    // Content-Length comes from the freshly opened Blob, not the stat captured
+    // at onTestEnd — if the file changed between stat and (re)attempt, the
+    // header must match the bytes actually streamed or the worker rejects the
+    // PUT outright instead of surfacing a size mismatch against real content.
     const response = await withRetry(async () => {
       const body = await openAsBlob(localPath, { type: contentType });
       return fetch(resolved, {
         method: "PUT",
-        headers,
+        headers: { ...headers, "Content-Length": String(body.size) },
         body,
         signal: AbortSignal.timeout(ARTIFACT_PUT_TIMEOUT_MS),
       });

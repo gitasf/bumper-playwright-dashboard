@@ -172,6 +172,12 @@ export async function runHttpCheck(
   } catch (err) {
     // The site is unreachable / timed out — a real DOWN signal, recorded as a
     // `fail` (not `error`). `infraError: false` so the consumer acks it.
+    //
+    // Deliberate: this is a `fail` even when `config.shouldFail` is set. The
+    // `shouldFail` inversion (below) applies only to the *response* status —
+    // "should fail" means "should answer with a 4xx/5xx", not "should be
+    // unreachable". An unreachable host satisfies neither, so no inversion
+    // happens on this branch (same call Checkly makes for timeouts).
     const totalMs = deps.now() - startedAt;
     const timedOut = signal.aborted;
     return {

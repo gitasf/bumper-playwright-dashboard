@@ -101,13 +101,15 @@ export interface PendingInvite {
 }
 
 /**
- * Invites addressed directly to this user — by their `user.email` (from
- * void-managed auth tables) or by the GitHub login captured at OAuth sign-in
- * (`userGithubAccounts.githubLogin`). Used by the team picker to surface
- * "you've been invited" cards on first login.
+ * Invites addressed directly to this user's VERIFIED `user.email` (from
+ * void-managed auth tables). Used by the team picker to surface "you've been
+ * invited" cards on first login. GitHub-login-directed invites are NOT
+ * surfaced here — this is a tokenless path and the login is mutable/reusable
+ * (see `buildInviteMatchConds`); those are redeemed via the secret
+ * `/invite/:token` share-link instead.
  *
- * Resolves the user's `{ email, githubLogin }` identity through the
- * `auth-users` seam (which owns the raw `"user"` read + email lowercasing).
+ * Resolves the user's identity through the `auth-users` seam (which owns the
+ * raw `"user"` read + email lowercasing).
  */
 export async function getPendingInvitesForUser(
   userId: string,

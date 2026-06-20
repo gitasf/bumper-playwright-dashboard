@@ -395,6 +395,14 @@ export interface AggregateDelta {
  * encodings cannot drift — adding a status to a bucket (or splitting one out)
  * is a one-line edit here that both sides pick up. `status-bucketing.test.ts`
  * asserts the parity structurally.
+ *
+ * Sibling table: the UI's presentation collapse (`STATUS`/`statusGroupKey` in
+ * `@/lib/status`) encodes the same `timedout → failed` rule plus an
+ * `interrupted → flaky` entry. The omission of `interrupted` HERE is
+ * deliberate, not drift: the wire schema's per-test status enum never carries
+ * it (the reporter normalises interrupted attempts to `skipped`), so it can
+ * only appear as a run-level terminal status — which these per-test aggregate
+ * buckets never see. Keep the two tables' shared rows in sync when editing.
  */
 export const STATUS_BUCKET_MEMBERS = {
   passed: ["passed"],
@@ -1157,9 +1165,11 @@ export async function appendRunResults(
       summary: summaryStmt,
     };
   });
-  await bumpTeamActivity(scope.teamId, nowSeconds);
-
+  // `bumpTeamActivity` runs only after the notFound guard below (origin/main's
+  // review fix): a write that found no run must not record team activity.
   if (!summary) return { kind: "notFound" };
+
+  await bumpTeamActivity(scope.teamId, nowSeconds);
 
   const changedTests = buildChangedTests(results, assignedIds);
   await broadcastRunUpdate(runId, changedTests, summary);

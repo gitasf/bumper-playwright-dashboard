@@ -81,6 +81,13 @@ function statusEmoji(status: RunSummary["status"]): string {
   }
 }
 
+/**
+ * Deliberate copy of the dashboard's `formatDuration` (`@/lib/time-format`) —
+ * the reporter is a separately published package and can't import the
+ * dashboard's lib. One intentional divergence: sub-minute durations keep one
+ * decimal (`12.3s`) because the PR comment shows a single headline number,
+ * where the dashboard floors (`12s`) across dense tables.
+ */
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = ms / 1000;

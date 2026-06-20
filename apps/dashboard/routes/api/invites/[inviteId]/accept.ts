@@ -10,10 +10,15 @@ import { runBatch } from "@/lib/db-batch";
 /**
  * POST /api/invites/:inviteId/accept
  *
- * Resolve a directed invite (email or github login) addressed to the signed-in
- * user, create the membership row, and delete the invite. Same row counts as
- * a transaction via `db.batch` so we don't end up with a membership without
- * the invite being consumed (or vice versa).
+ * Tokenless accept for an invite addressed to the signed-in user's VERIFIED
+ * EMAIL (via `buildInviteMatchConds`), create the membership row, and delete
+ * the invite. Same row counts as a transaction via `db.batch` so we don't end
+ * up with a membership without the invite being consumed (or vice versa).
+ *
+ * GitHub-login-directed invites are intentionally NOT redeemable here — the
+ * login is mutable/reusable, so a tokenless accept-by-login is an account-
+ * takeover vector. Those are redeemed via the secret `/invite/:token` link
+ * instead (see `buildInviteMatchConds` in auth-users.ts).
  */
 export const POST = defineHandler(async (c) => {
   const user = requireAuth(c);

@@ -28,6 +28,11 @@ describe("checkUrlPolicy — allowed", () => {
     expect(ok("https://172.15.0.1")).toBe(true);
     expect(ok("https://172.32.0.1")).toBe(true);
   });
+
+  it("accepts public IPv6 + a PUBLIC IPv4-mapped IPv6 (no over-blocking)", () => {
+    expect(ok("https://[2606:4700:4700::1111]")).toBe(true);
+    expect(ok("https://[::ffff:8.8.8.8]")).toBe(true);
+  });
 });
 
 describe("checkUrlPolicy — rejected", () => {
@@ -54,6 +59,10 @@ describe("checkUrlPolicy — rejected", () => {
     expect(ok("http://localhost")).toBe(false);
     expect(ok("http://localhost:3000/health")).toBe(false);
     expect(ok("http://api.localhost")).toBe(false);
+    // A trailing root dot is preserved by `new URL()` on DNS names and must
+    // not dodge the localhost check.
+    expect(ok("http://localhost./health")).toBe(false);
+    expect(ok("http://api.localhost.")).toBe(false);
   });
 
   it("rejects loopback / private / link-local / unspecified IPv4", () => {
@@ -82,6 +91,26 @@ describe("checkUrlPolicy — rejected", () => {
     expect(ok("http://[fe8f::1]")).toBe(false);
     expect(ok("http://[feaa::1]")).toBe(false);
     expect(ok("http://[febf::1]")).toBe(false);
+  });
+
+  it("rejects IPv4-mapped / -compatible / NAT64 IPv6 that embed a blocked v4", () => {
+    // Regression: `new URL()` normalizes the dotted IPv4 tail to HEX
+    // (`[::ffff:127.0.0.1]` -> `[::ffff:7f00:1]`), so the old "tail contains a
+    // dot" heuristic let loopback + cloud-metadata through. All of these reach
+    // 127.0.0.1 / 169.254.169.254 / 10.0.0.1 and must be rejected.
+    for (const host of [
+      "[::ffff:127.0.0.1]", // IPv4-mapped loopback (dotted input)
+      "[::ffff:7f00:1]", // ...same, hex form
+      "[::ffff:169.254.169.254]", // IPv4-mapped cloud metadata
+      "[::ffff:a9fe:a9fe]", // ...same, hex form
+      "[0:0:0:0:0:ffff:127.0.0.1]", // uncompressed IPv4-mapped loopback
+      "[::ffff:10.0.0.1]", // IPv4-mapped RFC1918
+      "[::127.0.0.1]", // deprecated IPv4-compatible loopback
+      "[64:ff9b::a9fe:a9fe]", // NAT64 well-known prefix -> 169.254.169.254
+      "[64:ff9b::7f00:1]", // NAT64 -> 127.0.0.1
+    ]) {
+      expect(ok(`http://${host}`)).toBe(false);
+    }
   });
 
   it("rejects an unparseable URL", () => {
