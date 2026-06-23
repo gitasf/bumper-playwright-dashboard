@@ -210,11 +210,18 @@ Consumed by `gen-wrangler` and `pnpm db:migrate:remote` during the build/deploy,
 | `CF_WORKER_NAME`   | No      | `wrightful-dashboard-void` | Worker name; injected into `wrangler.jsonc` by `gen-wrangler`.                                                                                      |
 | `CF_R2_BUCKET`     | No      | —                          | R2 bucket name → `STORAGE` binding.                                                                                                                 |
 | `CF_HYPERDRIVE_ID` | No      | —                          | Hyperdrive config id → `HYPERDRIVE` (Postgres) binding.                                                                                             |
+| `CF_OBSERVABILITY` | No      | `false`                    | Truthy (`true`/`1`/`yes`/`on`) injects an `observability` block (Workers Logs) into `wrangler.jsonc`. View logs with `wrangler tail` or the CF dashboard. |
 | `DATABASE_URL`     | **Yes** | —                          | Prod Postgres **direct** connection for `pnpm db:migrate:remote` (and `vp dev`). **Not** a runtime secret — prod reaches Postgres via `HYPERDRIVE`. |
 
 ### Runtime variables & secrets
 
-Read by the Worker. Only `WRIGHTFUL_PUBLIC_URL` + `BETTER_AUTH_SECRET` are required; everything else is optional and defaulted, so an instance runs without setting any of it. (`Secret?` = set it via `wrangler secret put` / `void secret put`; non-secrets can be plain Worker variables.)
+Read by the Worker. Only `WRIGHTFUL_PUBLIC_URL` + `BETTER_AUTH_SECRET` are required; everything else is optional and defaulted, so an instance runs without setting any of it. The `Secret?` column marks **confidentiality** — `Yes` means the value is sensitive and must never be a plain-text variable. It is *not* the same axis as durability across deploys (see the warning below).
+
+> **On the own-account Cloudflare path, set _every_ runtime key as an encrypted Secret — even the non-secret ones.** `wrangler deploy` treats the `vars` in your Wrangler config as the authoritative set of plain-text variables: on each deploy it overwrites the Worker's plain-text vars with exactly what's in the config, deleting any you added through the dashboard that the config doesn't list. The committed `wrangler.template.jsonc` deliberately lists **none** of these runtime keys (no per-deployment values are ever committed — see [step 2](#2-point-wrangler-at-your-resources-via-cf_-env-vars)), so anything you set as a plain Worker **Variable** vanishes on the next `pnpm deploy:cf` / Workers Builds push. Setting it as a **Secret** (`wrangler secret put NAME`, or CF dashboard → **Settings → Variables and Secrets** → type **Secret**) is the fix: secrets live outside the Wrangler config lifecycle and persist across deploys. This applies even to non-sensitive keys like `AUTH_GITHUB_CLIENT_ID`, `ALLOW_OPEN_SIGNUP`, and `EMAIL_FROM` — on this path "Secret" is just the mechanism that makes a value stick.
+>
+> **Don't try to fix it with a placeholder `vars` entry.** Adding e.g. `AUTH_GITHUB_CLIENT_ID: ""` to the template doesn't help — it makes every deploy actively reset the value to the placeholder (clobbering your real value), and a binding name can't be both a `var` and a secret, so defining it in `vars` forecloses the secret approach.
+>
+> The Void path (`void secret put`) and Workers Builds dashboard secrets persist the same way. Local dev reads `apps/dashboard/.env.local`, which is unaffected.
 
 | Name                           | Required? | Secret? | Default              | Purpose                                                                                                                                                                    |
 | ------------------------------ | --------- | ------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -387,6 +394,8 @@ Results stream to your dashboard as tests run.
 **Migration discipline** — schema changes are forward-only / additive (new tables, new nullable columns). Generate a new numbered migration with `pnpm db:generate` (from `db/schema.ts`); never edit a migration that has already been applied to a live database.
 
 **"Continue with GitHub" doesn't appear** — both `AUTH_GITHUB_CLIENT_ID` and `AUTH_GITHUB_CLIENT_SECRET` must be set; the button is gated on both being present. The provider is enabled in `apps/dashboard/auth.ts` at startup when those creds exist — it is deliberately **not** declared in `apps/dashboard/void.json`'s `auth.providers` (which lists only `email`), because declaring it there would make Void hard-require the GitHub creds on every deploy.
+
+**A runtime variable I set keeps disappearing after a deploy** (e.g. `AUTH_GITHUB_CLIENT_ID` vanishes, so the GitHub button stops showing) — you set it as a plain-text Worker **Variable**, and `wrangler deploy` wiped it. On the own-account path the Wrangler config is authoritative for plain-text `vars`, and the template lists no runtime keys, so each deploy deletes any plain Variable you added via the dashboard. Re-add it as an encrypted **Secret** (`wrangler secret put AUTH_GITHUB_CLIENT_ID`) — secrets persist across deploys. Full explanation in [Runtime variables & secrets](#runtime-variables--secrets).
 
 **Artifacts fail to upload** — confirm the `STORAGE` (R2) binding resolved. On the Cloudflare path that means `CF_R2_BUCKET` was set so `gen-wrangler` injected the `r2_buckets` block into the generated `wrangler.jsonc` with a real `bucket_name`; tail logs with `wrangler tail`. Per-artifact size is capped by `WRIGHTFUL_MAX_ARTIFACT_BYTES` (default 50 MiB).
 
