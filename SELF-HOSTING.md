@@ -214,15 +214,29 @@ Posts a check run on a PR's head commit reflecting the run outcome. **All-or-not
 | `GITHUB_APP_WEBHOOK_SECRET` | For Checks | —       | Verifies inbound App webhooks (installation / check-run).                                                                                                |
 | `GITHUB_APP_SLUG`           | No         | —       | The App's public slug (`github.com/apps/<slug>`). Drives the one-click "Install" button on team settings; without it the page shows manual instructions. |
 
-### Usage quotas
+### Billing & usage quotas (opt-in — OFF by default ⇒ UNLIMITED)
 
-Bind only for teams on the `free` tier (other tiers are unlimited). Runs + artifact-bytes are **hard-blocked** at the limit; test-results is metered + soft-warned only. To run an instance with no limits, leave teams off the free tier (or raise these).
+**Billing is an optional, capability-flagged provider. When it is OFF — the default, and the only state a self-host needs — every team is UNLIMITED: no run / test-result / artifact caps, no billing UI, no Polar webhook (`POST /api/auth/polar/webhooks` 404s).** Caps (free **and** Pro) and the 14-day Pro trial exist **only** when billing is configured (the hosted/cloud deployment). The single signal is `billingEnabled()` — both `POLAR_ACCESS_TOKEN` **and** `POLAR_WEBHOOK_SECRET` present. See [`docs/adr/0002-capability-flagged-billing-provider.md`](./docs/adr/0002-capability-flagged-billing-provider.md).
+
+Leave the `POLAR_*` vars unset to self-host with zero quota friction, forever — this is the supported, uncapped path. (Wiring up your **own** Polar account — own product, tokens, webhook secret — is possible but not required; the glue is MIT.)
+
+| Name                   | Required?    | Default   | Purpose                                                                                               |
+| ---------------------- | ------------ | --------- | ----------------------------------------------------------------------------------------------------- |
+| `POLAR_ACCESS_TOKEN`   | No (billing) | —         | Polar org access token. Together with `POLAR_WEBHOOK_SECRET`, switches billing ON. Unset ⇒ unlimited. |
+| `POLAR_WEBHOOK_SECRET` | No (billing) | —         | Polar webhook signing secret (the other half of the billing switch).                                  |
+| `POLAR_MODE`           | No           | `sandbox` | `sandbox` \| `production` — the Polar SDK environment.                                                |
+| `POLAR_PRO_PRODUCT_ID` | No           | —         | Polar Product ID for the flat $10/mo Pro plan.                                                        |
+
+**When billing is ON**, both tiers are FINITE-capped by the same soft-warn-then-429 machinery: `free` reads the `WRIGHTFUL_FREE_*` ceilings, `pro` (incl. the 14-day trial) reads the higher `WRIGHTFUL_PRO_*` ceilings. Runs + artifact-bytes hard-block at the limit; test-results is metered + soft-warned only. Pro is a high **finite** tier, NOT unlimited — only the billing-OFF self-host path is truly unlimited. The `WRIGHTFUL_PRO_*` defaults are placeholders (product-tunable). All caps below are **cloud-only** (inert when billing is off).
 
 | Name                                  | Default | Purpose                                                                      |
 | ------------------------------------- | ------- | ---------------------------------------------------------------------------- |
 | `WRIGHTFUL_FREE_MONTHLY_RUNS`         | 1000    | Free-tier monthly run-open allowance (hard block on `POST /api/runs`).       |
 | `WRIGHTFUL_FREE_MONTHLY_TEST_RESULTS` | 100000  | Free-tier monthly test-result allowance (soft-warn only, not blocked).       |
 | `WRIGHTFUL_FREE_ARTIFACT_BYTES`       | 5 GiB   | Free-tier monthly artifact-byte allowance (hard block on fresh bytes).       |
+| `WRIGHTFUL_PRO_MONTHLY_RUNS`          | 25000   | Pro-tier monthly run-open allowance (finite, not unlimited).                 |
+| `WRIGHTFUL_PRO_MONTHLY_TEST_RESULTS`  | 5000000 | Pro-tier monthly test-result allowance (soft-warn only).                     |
+| `WRIGHTFUL_PRO_ARTIFACT_BYTES`        | 100 GiB | Pro-tier monthly artifact-byte allowance (finite, not unlimited).            |
 | `WRIGHTFUL_QUOTA_SOFT_WARN_PCT`       | 90      | Percent of a limit at which the ingest response warns before the 100% block. |
 
 ### Data retention
@@ -259,6 +273,53 @@ Container provisioning on the Cloudflare path: build `apps/dashboard/Dockerfile.
 | `WRIGHTFUL_MONITOR_MAX_DURATION_SECONDS`    | 300       | Hard per-execution wall-clock cap for a browser run.                                        |
 | `WRIGHTFUL_MONITOR_EXECUTION_STALE_MINUTES` | 30        | Minutes a `queued`/`running` execution can sit before the reaper marks it `error`.          |
 | `WRIGHTFUL_MONITOR_SWEEP_BATCH_SIZE`        | 200       | Max due monitors the sweep cron enqueues per invocation.                                    |
+
+### Direct-R2 artifact serving (optional)
+
+By default the Worker is on the artifact byte path in both directions — uploads stream through the Worker into R2, and downloads stream back out. For a high-traffic instance you can take the Worker off the byte path: set the four R2 S3-API credentials below and artifact bytes go **direct to R2** via SigV4 presigned URLs (downloads `302` to a presigned GET / the trace viewer embeds one directly; uploads `PUT` to a presigned URL). Unset (the default), bytes stream through the Worker exactly as before — there is no behaviour change until all four are present. Design rationale: [`docs/adr/0003-direct-r2-artifact-byte-path.md`](./docs/adr/0003-direct-r2-artifact-byte-path.md).
+
+This is an **own-account `deploy:cf`** capability (you need control of the R2 bucket and an S3 API token). Mint a token in the Cloudflare dashboard under **R2 → Manage R2 API Tokens** (Object Read & Write), then set these as Worker secrets (`wrangler secret put`):
+
+| Name                   | Purpose                                                          |
+| ---------------------- | ---------------------------------------------------------------- |
+| `R2_ACCOUNT_ID`        | Cloudflare account id.                                           |
+| `R2_ACCESS_KEY_ID`     | R2 S3 API token access key id.                                   |
+| `R2_SECRET_ACCESS_KEY` | R2 S3 API token secret.                                          |
+| `R2_BUCKET`            | The artifact bucket name (same bucket as the `STORAGE` binding). |
+
+Two pieces of out-of-band setup:
+
+1. **Bucket CORS** — presigned downloads are fetched cross-origin by the browser and the Playwright trace viewer, so the bucket needs a CORS policy. Save the following as `cors.json` and apply with `wrangler r2 bucket cors set <BUCKET> --file cors.json` (replace `<your-dashboard-origin>`):
+
+   ```json
+   [
+     {
+       "AllowedOrigins": [
+         "https://<your-dashboard-origin>",
+         "https://trace.playwright.dev"
+       ],
+       "AllowedMethods": ["GET", "HEAD", "PUT"],
+       "AllowedHeaders": [
+         "Range",
+         "If-None-Match",
+         "If-Match",
+         "Content-Type",
+         "Content-Length"
+       ],
+       "ExposeHeaders": [
+         "ETag",
+         "Content-Range",
+         "Accept-Ranges",
+         "Content-Length"
+       ],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+
+2. **No custom domain.** Presigned URLs only work on the `<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` S3 endpoint — Cloudflare does **not** honour SigV4 on a custom domain. Serving artifacts from a branded `artifacts.example.com` would require Cloudflare WAF HMAC tokens (Pro plan or above) and is not yet implemented (deferred in ADR 0003). Leave the bucket's public `r2.dev` access disabled; presigned URLs do not need it.
+
+The local dev / e2e lanes and the Void managed platform run the Worker-proxy path (the credentials are unset there), so this feature only changes behaviour on a configured own-account deploy.
 
 ---
 

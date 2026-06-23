@@ -1,7 +1,15 @@
 import { defineHandler } from "void";
+import { env } from "void/env";
 import type { Context } from "hono";
 import { verifyArtifactToken } from "@/lib/artifact-tokens";
-import { buildArtifactResponse, readArtifact } from "@/lib/artifacts";
+import {
+  artifactContentDisposition,
+  buildArtifactResponse,
+  readArtifact,
+} from "@/lib/artifacts";
+import { signGetUrl } from "@/lib/artifacts/presign";
+import { r2DirectConfig } from "@/lib/config";
+import { safeContentType } from "@/lib/content-types";
 
 const ALLOWED_CROSS_ORIGINS = new Set(["https://trace.playwright.dev"]);
 
@@ -14,7 +22,9 @@ const ALLOWED_CROSS_ORIGINS = new Set(["https://trace.playwright.dev"]);
  * directly, so we skip the DB on the hot path. CORS narrowed to the dashboard
  * + the Playwright trace viewer.
  */
-async function handle(c: Context): Promise<Response> {
+// Exported for unit testing the flag-conditional branch (302-mint vs
+// worker-proxy fall-through); the Void router only binds the `GET` export below.
+export async function handle(c: Context): Promise<Response> {
   const url = new URL(c.req.url);
   const token = url.searchParams.get("t");
   const payload = token ? await verifyArtifactToken(token) : null;
@@ -23,7 +33,37 @@ async function handle(c: Context): Promise<Response> {
   }
 
   const corsOrigin = resolveAllowedOrigin(c.req.raw, url.origin);
-  const { r2Key, contentType } = payload;
+  const { r2Key, contentType, exp } = payload;
+
+  // Direct-R2 (ADR 0003): once the token is verified, hand the byte transfer to
+  // R2 itself — 302 to a short-lived presigned GET so the worker moves zero
+  // bytes. The same-origin dashboard initiator means only the final R2 response
+  // needs CORS (the trace viewer uses a direct-embedded presigned URL instead of
+  // this redirect — see `test-artifact-actions.ts`). HEAD stays on the worker
+  // path below (metadata only, no bytes) — a presigned GET URL is method-bound,
+  // so a HEAD against it would 403.
+  const directCfg = r2DirectConfig(env);
+  if (directCfg && c.req.method === "GET") {
+    // Cap the presigned URL to the token's REMAINING life so the R2 capability
+    // can't outlive the token that authorized it (≥1s; the token is already
+    // verified non-expired above).
+    const expiresIn = Math.max(1, exp - Math.floor(Date.now() / 1000));
+    const location = await signGetUrl(directCfg, r2Key, {
+      responseContentType: safeContentType(contentType),
+      responseContentDisposition: artifactContentDisposition(r2Key),
+      expiresIn,
+    });
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location,
+        // The redirect carries a short-lived presigned URL — never cache it.
+        "cache-control": "private, no-store",
+        "access-control-allow-origin": corsOrigin,
+        vary: "Origin",
+      },
+    });
+  }
 
   const read = await readArtifact(r2Key, c.req.raw.headers, c.req.method);
   if (!read) return new Response("Not found", { status: 404 });

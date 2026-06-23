@@ -26,4 +26,10 @@ export interface SharedBundle {
   selectedTeam: ResolvedActiveTeam | null;
   teamProjects: WorkspaceListItem[];
   selectedProject: ResolvedActiveProject | null;
+  /**
+   * Deployment-global: whether Polar billing is configured (`billingEnabled(env)`).
+   * Computed server-side in `middleware/01.context.ts` so the client nav can gate
+   * the Billing link without reading `void/env` in the client tree. Not per-team.
+   */
+  billingEnabled: boolean;
 }

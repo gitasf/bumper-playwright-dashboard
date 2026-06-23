@@ -1,5 +1,7 @@
 import { defineMiddleware } from "void";
 import { getSession } from "void/auth";
+import { env } from "void/env";
+import { billingEnabled } from "@/lib/config";
 import { resolveTenantBundleForUser } from "@/lib/authz";
 import type { ResolvedActiveProject, SharedBundle } from "@/lib/shared-bundle";
 import {
@@ -43,6 +45,7 @@ const STUB_SHARED = (auth: SharedBundle["auth"]): SharedBundle => ({
   selectedTeam: null,
   teamProjects: [],
   selectedProject: null,
+  billingEnabled: billingEnabled(env),
 });
 
 export default defineMiddleware(async (c, next) => {
@@ -103,6 +106,7 @@ export default defineMiddleware(async (c, next) => {
     selectedTeam: bundle.activeTeam,
     teamProjects: bundle.teamProjects,
     selectedProject: bundle.activeProject,
+    billingEnabled: billingEnabled(env),
   });
 
   if (urlTeamSlug) {
