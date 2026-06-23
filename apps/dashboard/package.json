@@ -7,7 +7,7 @@
     "cf:prepare": "node scripts/gen-wrangler.mjs",
     "prebuild": "pnpm run cf:prepare",
     "build": "vp build",
-    "postbuild": "node scripts/strip-d1-binding.mjs",
+    "postbuild": "node scripts/void-patches/strip-d1-binding.mjs && node scripts/void-patches/add-ws-do-migration.mjs",
     "predev": "pnpm run cf:prepare",
     "dev": "vp dev",
     "preview": "vp preview",
