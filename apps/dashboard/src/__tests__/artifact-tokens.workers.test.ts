@@ -63,9 +63,9 @@ describe("artifact download tokens", () => {
 /**
  * Guards the download-URL shape now owned by `signedDownloadHref` /
  * `signedTraceViewerUrl`. These are the single source of the
- * `/api/artifacts/:id/download?t=<token>` literal and the trace.playwright.dev
- * wrap — four call sites route through them, so a shape change here is caught
- * once instead of drifting per caller.
+ * `/api/artifacts/:id/download?t=<token>` literal and the self-hosted
+ * trace-viewer wrap — four call sites route through them, so a shape change
+ * here is caught once instead of drifting per caller.
  */
 describe("artifact download URL builders", () => {
   it("builds the download href with a URL-encoded token query", () => {
@@ -74,14 +74,14 @@ describe("artifact download URL builders", () => {
     );
   });
 
-  it("wraps the absolute download URL in a trace.playwright.dev link", () => {
+  it("wraps the absolute download URL in a self-hosted trace-viewer link", () => {
     const href = signedTraceViewerUrl(
       "https://wrightful.example",
       "art_123",
       "tok",
     );
     expect(href).toBe(
-      "https://trace.playwright.dev/?trace=" +
+      "/trace-viewer/index.html?trace=" +
         encodeURIComponent(
           "https://wrightful.example/api/artifacts/art_123/download?t=tok",
         ),

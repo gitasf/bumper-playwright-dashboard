@@ -268,6 +268,14 @@ export async function bootDashboard(
         ...(dedicatedArtifactTokenSecret
           ? [`ARTIFACT_TOKEN_SECRET=${dedicatedArtifactTokenSecret}`]
           : []),
+        // Postgres-only store: `void db reset` and the dev server read
+        // DATABASE_URL straight from .env.local (it does NOT fall back to a
+        // managed local DB). The CI postgres service / a local dev export it;
+        // pass it through so the freshly-written .env.local can connect. Absent
+        // it, void fails fast with "DATABASE_URL not found in .env.local".
+        ...(process.env.DATABASE_URL
+          ? [`DATABASE_URL=${process.env.DATABASE_URL}`]
+          : []),
         `WRIGHTFUL_PUBLIC_URL=${url}`,
         // Sign-up gate is locked in production; e2e provisions a user via
         // /api/auth/sign-up/email so we explicitly opt in here.
@@ -286,6 +294,14 @@ export async function bootDashboard(
 
     log("Step 3: Reset local D1 (clean slate + reapply migrations)");
     run("npx void db reset", { cwd: DASHBOARD_DIR });
+
+    // Vendor the Playwright Trace Viewer bundle into public/trace-viewer/. The
+    // dashboard's `predev` npm hook does this, but we spawn `vp dev` directly
+    // (below), which bypasses npm lifecycle hooks — and the bundle is gitignored
+    // — so the Test Replay embed would 404 in a fresh clone without this. The
+    // script is idempotent (version-stamped) so it's a near-no-op on reruns.
+    log("Step 3b: Vendor Playwright Trace Viewer bundle");
+    run("node scripts/vendor-trace-viewer.mjs", { cwd: DASHBOARD_DIR });
 
     log(`Step 4: Start dashboard dev server on :${port}`);
     // Boot the Void dashboard via the vite-plus toolchain (`vp dev`). There is

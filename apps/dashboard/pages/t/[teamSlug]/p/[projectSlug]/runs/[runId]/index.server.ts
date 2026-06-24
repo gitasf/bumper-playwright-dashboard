@@ -1,10 +1,14 @@
 import { defineHandler, type InferProps } from "void";
-import { and, db, desc, eq } from "void/db";
-import { runs } from "@schema";
+import { and, db, desc, eq, inArray } from "void/db";
+import { artifacts, runs } from "@schema";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import { loadProjectBranches } from "@/lib/branches-query";
 import { loadRunResultsPage } from "@/lib/run-results-page";
-import { runByIdWhere, runScopeWhere } from "@/lib/scope";
+import {
+  childProjectScopeWhere,
+  runByIdWhere,
+  runScopeWhere,
+} from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -74,6 +78,27 @@ export const loader = defineHandler(async (c) => {
   // run is owned here; loadRunResultsPage's own ownership probe agrees.
   const tests = resultsPage?.results ?? [];
 
+  // Which of the SSR-seeded tests have a trace → drives the per-row "Test
+  // Replay" button in `<RunProgress>`. One distinct-id query over the page's
+  // test ids (artifacts register in a separate flush AFTER results post, so the
+  // realtime progress event can't carry this — a test streamed in live won't
+  // get the button until reload, which is fine: replay is a finished-run action).
+  const testIds = tests.map((t) => t.id);
+  const tracedTestIds = testIds.length
+    ? (
+        await db
+          .selectDistinct({ testResultId: artifacts.testResultId })
+          .from(artifacts)
+          .where(
+            and(
+              childProjectScopeWhere(artifacts.projectId, scope),
+              eq(artifacts.type, "trace"),
+              inArray(artifacts.testResultId, testIds),
+            ),
+          )
+      ).map((r) => r.testResultId)
+    : [];
+
   return {
     project: {
       id: project.id,
@@ -93,5 +118,6 @@ export const loader = defineHandler(async (c) => {
     tab,
     pathname: url.pathname,
     tests,
+    tracedTestIds,
   };
 });

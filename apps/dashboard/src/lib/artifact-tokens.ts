@@ -58,11 +58,20 @@ export function signedDownloadHref(artifactId: string, token: string): string {
 }
 
 /**
- * Wrap a signed download URL in a trace.playwright.dev link. The trace viewer
- * fetches the absolute download URL, so this needs the request `origin`. Pure
+ * Path to the self-hosted Playwright Trace Viewer bundle. Vendored into
+ * `public/trace-viewer/` by `scripts/vendor-trace-viewer.mjs` and served from
+ * our OWN origin, so trace bytes never leave for the public trace.playwright.dev.
+ * The viewer SPA reads the trace from its `?trace=<url>` query param.
+ */
+export const TRACE_VIEWER_PATH = "/trace-viewer/index.html";
+
+/**
+ * Wrap a signed download URL in a self-hosted trace-viewer link. The viewer
+ * fetches the trace from the `?trace=` URL with range requests, so it must be
+ * the **absolute** same-origin download URL — hence the request `origin`. Pure
  * + exported alongside `signedDownloadHref` so the trace-viewer wrap lives next
  * to the download-URL shape it depends on (the viewer URL embeds the download
- * URL verbatim).
+ * URL verbatim). Embedded in-app via an iframe (see `trace-viewer-dialog.tsx`).
  */
 export function signedTraceViewerUrl(
   origin: string,
@@ -70,7 +79,7 @@ export function signedTraceViewerUrl(
   token: string,
 ): string {
   const downloadUrl = `${origin}${signedDownloadHref(artifactId, token)}`;
-  return `https://trace.playwright.dev/?trace=${encodeURIComponent(downloadUrl)}`;
+  return `${TRACE_VIEWER_PATH}?trace=${encodeURIComponent(downloadUrl)}`;
 }
 
 export async function signArtifactToken(
