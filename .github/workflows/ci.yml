@@ -6,8 +6,8 @@ on:
   pull_request:
     branches: [main]
     # `labeled` is included so applying the `CI` label to an open PR
-    # re-triggers CI — the dogfood streaming step (in test-e2e) keys off that
-    # label. Without it, the label would only take effect on the next push.
+    # re-triggers CI — the `dogfood-stream` job keys off that label. Without
+    # it, the label would only take effect on the next push.
     types: [opened, synchronize, reopened, labeled]
 
 jobs:
@@ -240,20 +240,47 @@ jobs:
       - name: Run E2E tests
         run: pnpm test:e2e
 
-      # Dogfood: run the demo Playwright suite (tests/, playwright.config.ts —
-      # the only suite wired with @wrightful/reporter) and stream its results to
-      # production Wrightful so the prod dashboard fills with real run data.
-      # `pnpm test:e2e` above is the Vitest ingest-API suite and does NOT load
-      # the reporter, so this is a separate step on the streaming suite.
-      #
-      # Opt-in only: streams solely when a PR carries the `CI` label, so
-      # nothing hits the prod dashboard unless a maintainer explicitly asks for
-      # it on that PR. The reporter no-ops gracefully if the token is
-      # missing/wrong (logs + drops results, exit 0), so a secret problem never
-      # reddens CI. Fork PRs can't stream regardless (GitHub withholds secrets
-      # from forked-repo PR runs).
-      - name: Dogfood — stream demo suite to production Wrightful
-        if: contains(github.event.pull_request.labels.*.name, 'CI')
+  # Dogfood: run the demo Playwright suite (tests/, playwright.config.ts — the
+  # only suite wired with @wrightful/reporter) and stream its results to
+  # production Wrightful so the prod dashboard fills with real run data.
+  #
+  # A dedicated, self-contained job — NOT a step in test-e2e — because:
+  #   * the demo suite drives playwright.dev and streams to prod; it never boots
+  #     a local dashboard, so it has no DATABASE_URL / `void db reset` dependency
+  #     (unlike test-e2e's Vitest suite + test-e2e-ui, which do);
+  #   * a streaming step buried after `pnpm test:e2e` inherits an implicit
+  #     `success()` and is skipped whenever that (DB-dependent) step fails.
+  # Isolating it means streaming runs on its own merits.
+  #
+  # Opt-in only: the job runs solely when a PR carries the `CI` label, so
+  # nothing hits the prod dashboard unless a maintainer opts that PR in. The
+  # reporter no-ops gracefully if the token is missing/wrong (logs + drops
+  # results, exit 0), so a secret problem never reddens CI. Fork PRs can't
+  # stream regardless (GitHub withholds secrets from forked-repo PR runs).
+  dogfood-stream:
+    name: Dogfood Stream (prod Wrightful)
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'CI')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build reporter
+        run: pnpm --filter @wrightful/reporter build
+
+      - name: Install Playwright browsers
+        run: pnpm --filter @wrightful/e2e exec playwright install --with-deps chromium
+
+      - name: Stream demo suite to production Wrightful
         env:
           WRIGHTFUL_URL: https://dash.wrightful.dev
           WRIGHTFUL_TOKEN: ${{ secrets.WRIGHTFUL_TOKEN }}
