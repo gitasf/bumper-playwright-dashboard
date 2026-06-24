@@ -90,7 +90,7 @@ function MonitorsEmpty({
   return (
     <div className="flex flex-1 items-start justify-center overflow-y-auto px-6 py-12">
       <div className="flex w-full max-w-[680px] flex-col items-center gap-4 text-center">
-        <span className="flex size-13 items-center justify-center rounded-[13px] border border-line-1 bg-bg-2 text-accent">
+        <span className="flex size-13 items-center justify-center rounded-[13px] border border-line-1 bg-bg-2 text-info">
           <Activity className="size-6" />
         </span>
 

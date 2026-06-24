@@ -21,6 +21,7 @@ import {
   staleRunFilter,
   type TenantScope,
 } from "@/lib/scope";
+import { STATUS_BUCKETS, WIRE_INVISIBLE_STATUSES } from "@/lib/status-buckets";
 import { monthStartSeconds, usageBumpStatement } from "@/lib/usage";
 import { broadcastProjectRoom, broadcastRunRoom } from "@/realtime/publish";
 import type {
@@ -388,28 +389,32 @@ export interface AggregateDelta {
 }
 
 /**
- * The single source of truth for the test-status → aggregate-bucket mapping:
- * for each non-`totalTests` column, the test statuses that feed it. Both the JS
- * delta path (`statusBucket` → `computeAggregateDelta`) and the SQL recompute
- * path (`aggregateRecomputeStatement`) derive from this one table, so the two
- * encodings cannot drift — adding a status to a bucket (or splitting one out)
- * is a one-line edit here that both sides pick up. `status-bucketing.test.ts`
- * asserts the parity structurally.
+ * The test-status → aggregate-bucket mapping for the per-test aggregate: for
+ * each non-`totalTests` column, the statuses that feed it. Both the JS delta
+ * path (`statusBucket` → `computeAggregateDelta`) and the SQL recompute path
+ * (`aggregateRecomputeStatement`) derive from this one table, so the two
+ * encodings cannot drift; `status-bucketing.test.ts` asserts the parity
+ * structurally.
  *
- * Sibling table: the UI's presentation collapse (`STATUS`/`statusGroupKey` in
- * `@/lib/status`) encodes the same `timedout → failed` rule plus an
- * `interrupted → flaky` entry. The omission of `interrupted` HERE is
- * deliberate, not drift: the wire schema's per-test status enum never carries
- * it (the reporter normalises interrupted attempts to `skipped`), so it can
- * only appear as a run-level terminal status — which these per-test aggregate
- * buckets never see. Keep the two tables' shared rows in sync when editing.
+ * Membership is DERIVED from the shared `STATUS_BUCKETS` superset
+ * (`@/lib/status-buckets`, the dependency-free source of truth the UI's
+ * presentation collapse — `STATUS`/`statusGroupKey` in `@/lib/status` — also
+ * reads) MINUS the wire-invisible statuses. The per-test wire enum never
+ * carries `interrupted` (the reporter normalises interrupted attempts to
+ * `skipped`; it only occurs as a run-level status these per-test buckets never
+ * see), so `WIRE_INVISIBLE_STATUSES` filters it out here. That filter is the one
+ * deliberate divergence from the UI table — now an explicit transform rather
+ * than a hand-maintained omission, and `status-bucketing.test.ts` asserts
+ * `STATUS_BUCKET_MEMBERS` equals `STATUS_BUCKETS` minus `WIRE_INVISIBLE_STATUSES`.
  */
 export const STATUS_BUCKET_MEMBERS = {
-  passed: ["passed"],
-  failed: ["failed", "timedout"],
-  flaky: ["flaky"],
-  skipped: ["skipped"],
-} as const satisfies Record<
+  passed: STATUS_BUCKETS.passed.filter((s) => !WIRE_INVISIBLE_STATUSES.has(s)),
+  failed: STATUS_BUCKETS.failed.filter((s) => !WIRE_INVISIBLE_STATUSES.has(s)),
+  flaky: STATUS_BUCKETS.flaky.filter((s) => !WIRE_INVISIBLE_STATUSES.has(s)),
+  skipped: STATUS_BUCKETS.skipped.filter(
+    (s) => !WIRE_INVISIBLE_STATUSES.has(s),
+  ),
+} satisfies Record<
   Exclude<keyof AggregateDelta, "totalTests">,
   readonly string[]
 >;
@@ -1120,21 +1125,24 @@ export async function appendRunResults(
   const testIds = results.map((r) => r.testId);
   const { existingIds, assignedIds, prevStatusByTestId } =
     await resolveTestResultIds(scope, runId, testIds);
-  // Meter FRESH testResults rows only (testIds not already present on this run),
-  // so a re-streamed/retried flush doesn't double-count. Joins the same batch.
-  const freshResultCount = results.reduce(
-    (n, r) => (existingIds.has(r.testId) ? n : n + 1),
-    0,
-  );
   const delta = computeAggregateDelta(results, prevStatusByTestId);
   // The clientKey→testResultId map is produced while building the statements;
   // capture it from inside the batch builder for the post-batch artifact step.
   // runBatch invokes the builder synchronously at the head of the awaited
   // transaction, so `mapping` is populated before this await resolves.
   let mapping: ResultMapping[] = [];
-  // One atomic write: the per-test upsert/replace statements, the usage meter
-  // bump, and the summary-producing statement (LAST), built against the
-  // transaction executor so they enroll in the same `db.transaction`.
+  // One atomic write: the per-test upsert/replace statements plus the
+  // summary-producing statement (LAST), built against the transaction executor
+  // so they enroll in the same `db.transaction`.
+  //
+  // testResults usage is deliberately NOT metered here. It used to upsert the
+  // single `usageCounters` (teamId, month) row inside THIS transaction, which
+  // serialized every concurrent /results flush across the WHOLE team on that
+  // one row (the ingest hot-path contention ceiling). testResults is never
+  // quota-gated (only `runs` at run-open and `artifactBytes` in
+  // `registerArtifacts` are), so its count is derived on read
+  // (`countTeamTestResults` → `loadTeamUsage`) and re-based by the
+  // `rollup-usage` cron — no live counter needed. See the 2026-06-22 worklog.
   const summary = await runBatchWithSummary((tx) => {
     const built = buildResultInsertStatements(
       scope,
@@ -1146,13 +1154,6 @@ export async function appendRunResults(
       tx,
     );
     mapping = built.mapping;
-    const usageBump = usageBumpStatement(
-      scope.teamId,
-      monthStartSeconds(nowSeconds),
-      { testResults: freshResultCount },
-      nowSeconds,
-      tx,
-    );
     // Both summary branches still advance `lastActivityAt`: the delta UPDATE
     // sets it alongside the counters; the no-delta branch is a liveness-only
     // UPDATE (not a read-only SELECT) so a zero-bucket-change flush still
@@ -1161,7 +1162,7 @@ export async function appendRunResults(
       aggregateDeltaStatement(scope, runId, delta, nowSeconds, tx) ??
       activityBumpStatement(scope, runId, nowSeconds, tx);
     return {
-      writes: usageBump ? [...built.statements, usageBump] : built.statements,
+      writes: built.statements,
       summary: summaryStmt,
     };
   });

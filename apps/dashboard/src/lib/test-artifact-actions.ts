@@ -1,11 +1,18 @@
 import { asc, db } from "void/db";
+import { env } from "void/env";
 import { artifacts } from "@schema";
 import type { ArtifactAction } from "@/components/artifact-actions";
 import {
+  ARTIFACT_TOKEN_TTL_SECONDS,
   signArtifactToken,
   signedDownloadHref,
   signedTraceViewerUrl,
+  traceViewerUrlFor,
 } from "@/lib/artifact-tokens";
+import { artifactContentDisposition } from "@/lib/artifacts";
+import { signGetUrl } from "@/lib/artifacts/presign";
+import { r2DirectConfig } from "@/lib/config";
+import { safeContentType } from "@/lib/content-types";
 import { childByTestResultWhere, type TenantScope } from "@/lib/scope";
 
 // Order within an attempt: trace first (most useful for debugging), then the
@@ -38,8 +45,10 @@ function compareByTypeThenName(
  * — `href` is the signed download URL, `traceViewerUrl` is set for traces. The
  * pure presentation transforms (`buildAttemptArtifactGroups`) operate on these
  * so token minting / DB access stays out of the orderable/groupable core. The
- * raw `r2Key` deliberately does NOT appear here — it never crosses into the
- * presentation layer (and so never reaches SSR HTML).
+ * raw `r2Key` does NOT appear as a field here, and `href` never embeds it. One
+ * exception when the direct-R2 path is on (ADR 0003): a trace's `traceViewerUrl`
+ * wraps a presigned R2 object URL, whose path contains the `r2Key` — an
+ * intentional, scoped read capability (the viewer's own tenant), not a leak.
  */
 export interface SignedArtifact {
   id: string;
@@ -177,19 +186,47 @@ type RawArtifactRow = {
 
 /**
  * Mint a download token per row and project it to a `SignedArtifact`. The raw
- * `r2Key` is consumed HERE (to sign) and dropped — it never appears on the
- * returned shape, so it can't leak into SSR HTML or the wire payload.
+ * `r2Key` is consumed HERE (to sign the token, and — when the direct-R2 path is
+ * on — to mint the presigned trace URL) and dropped from the returned shape. The
+ * in-page `href` therefore never embeds the key; the only place it surfaces is a
+ * trace's direct-R2 `traceViewerUrl` (a scoped presigned capability — see the
+ * `SignedArtifact` docstring).
  */
 async function signArtifactRows(
   rows: readonly RawArtifactRow[],
   origin: string,
 ): Promise<SignedArtifact[]> {
+  // When the direct-R2 path is configured (ADR 0003), the trace viewer gets a
+  // presigned R2 GET URL embedded DIRECTLY (not the worker download href). The
+  // viewer fetches cross-origin from trace.playwright.dev; embedding the final
+  // R2 URL avoids making it follow a cross-origin 302 (which would need CORS on
+  // both the redirect and the object). The in-page `href` stays the worker
+  // download route either way — same-origin, so its redirect-mint is clean.
+  const directCfg = r2DirectConfig(env);
   return Promise.all(
     rows.map(async (a) => {
       const token = await signArtifactToken({
         r2Key: a.r2Key,
         contentType: a.contentType,
       });
+      let traceViewerUrl: string | undefined;
+      if (a.type === "trace") {
+        traceViewerUrl = directCfg
+          ? traceViewerUrlFor(
+              await signGetUrl(directCfg, a.r2Key, {
+                responseContentType: safeContentType(a.contentType),
+                // Force attachment like the 302 + worker-proxy paths (ADR 0003
+                // point 4). Inert for the viewer's cross-origin fetch, but keeps
+                // the origin-safety invariant if the bare URL is opened directly.
+                responseContentDisposition: artifactContentDisposition(a.r2Key),
+                // Bound the bare SigV4 capability to the artifact-token lifetime
+                // (this URL is embedded in SSR HTML, unmediated) — explicit, not
+                // the signer's default, and matched to the co-minted `token`.
+                expiresIn: ARTIFACT_TOKEN_TTL_SECONDS,
+              }),
+            )
+          : signedTraceViewerUrl(origin, a.id, token);
+      }
       return {
         id: a.id,
         type: a.type,
@@ -199,10 +236,7 @@ async function signArtifactRows(
         role: a.role,
         snapshotName: a.snapshotName,
         href: signedDownloadHref(a.id, token),
-        traceViewerUrl:
-          a.type === "trace"
-            ? signedTraceViewerUrl(origin, a.id, token)
-            : undefined,
+        traceViewerUrl,
       } satisfies SignedArtifact;
     }),
   );

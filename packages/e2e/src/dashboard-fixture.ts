@@ -277,6 +277,14 @@ export async function bootDashboard(
           ? [`DATABASE_URL=${process.env.DATABASE_URL}`]
           : []),
         `WRIGHTFUL_PUBLIC_URL=${url}`,
+        // PG-era boot: forward the developer/CI Postgres connection so the
+        // `void db reset` below + `vp dev` can connect. The local-D1 era needed
+        // no connection string; Postgres does, and void resolves DATABASE_URL
+        // from .env.local (not the inherited process.env). Generic — the value
+        // comes from the environment, never hardcoded.
+        ...(process.env.DATABASE_URL
+          ? [`DATABASE_URL=${process.env.DATABASE_URL}`]
+          : []),
         // Sign-up gate is locked in production; e2e provisions a user via
         // /api/auth/sign-up/email so we explicitly opt in here.
         `ALLOW_OPEN_SIGNUP=true`,

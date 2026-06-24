@@ -7,7 +7,15 @@ import {
   timingSafeEqualBytes,
 } from "@/lib/token-crypto";
 
-const DEFAULT_TTL_SECONDS = 60 * 60; // 1 hour
+/**
+ * Lifetime of an artifact-download token (1 hour). Exported so the direct-R2
+ * trace-viewer embed can mint its presigned R2 URL with exactly the same
+ * lifetime as the token minted alongside it — keeping the "a presigned
+ * capability never outlives its authorizing token" invariant on both byte paths
+ * (the 302 path caps to the token's *remaining* life; the trace embed mints both
+ * together, so the token's *full* life applies).
+ */
+export const ARTIFACT_TOKEN_TTL_SECONDS = 60 * 60;
 
 /**
  * Signed artifact-download token. Carries the R2 object key + content type
@@ -82,9 +90,21 @@ export function signedTraceViewerUrl(
   return `${TRACE_VIEWER_PATH}?trace=${encodeURIComponent(downloadUrl)}`;
 }
 
+/**
+ * Wrap any absolute trace URL in a trace.playwright.dev link. Used by the
+ * direct-R2 path (a presigned R2 GET URL embedded directly, so the cross-origin
+ * trace viewer never has to follow a cross-origin 302; see
+ * `test-artifact-actions.ts` and ADR 0003). The worker-proxy download path goes
+ * through {@link signedTraceViewerUrl} instead, which wraps the same-origin
+ * download URL in the self-hosted viewer (`TRACE_VIEWER_PATH`).
+ */
+export function traceViewerUrlFor(absoluteTraceUrl: string): string {
+  return `https://trace.playwright.dev/?trace=${encodeURIComponent(absoluteTraceUrl)}`;
+}
+
 export async function signArtifactToken(
   payload: ArtifactDownloadPayload,
-  ttlSeconds: number = DEFAULT_TTL_SECONDS,
+  ttlSeconds: number = ARTIFACT_TOKEN_TTL_SECONDS,
 ): Promise<string> {
   const signed: SignedPayload = {
     r2Key: payload.r2Key,
@@ -105,7 +125,7 @@ export async function signArtifactToken(
 
 export async function verifyArtifactToken(
   token: string,
-): Promise<ArtifactDownloadPayload | null> {
+): Promise<(ArtifactDownloadPayload & { exp: number }) | null> {
   const dot = token.indexOf(".");
   if (dot <= 0) return null;
   const body = token.slice(0, dot);
@@ -133,5 +153,13 @@ export async function verifyArtifactToken(
   if (!result.success) return null;
   const parsed = result.data;
   if (Math.floor(Date.now() / 1000) > parsed.exp) return null;
-  return { r2Key: parsed.r2Key, contentType: parsed.contentType };
+  // Return `exp` too so the direct-R2 download path can cap the presigned R2 URL
+  // to the token's REMAINING life — a presigned capability must never outlive
+  // the token that authorized it (the worker-proxy path re-gates every byte
+  // request, so it never had this concern).
+  return {
+    r2Key: parsed.r2Key,
+    contentType: parsed.contentType,
+    exp: parsed.exp,
+  };
 }

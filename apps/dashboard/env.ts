@@ -1,4 +1,4 @@
-import { boolean, defineEnv, number, string, url } from "void/env";
+import { boolean, defineEnv, number, oneOf, string, url } from "void/env";
 
 export default defineEnv({
   /**
@@ -36,6 +36,28 @@ export default defineEnv({
    * src/lib/config.ts — see it before changing this rule.
    */
   ARTIFACT_TOKEN_SECRET: string().secret().optional(),
+
+  // ---------- Direct-R2 artifact byte path (optional; unset = Worker proxy) ----------
+  /**
+   * R2 S3-API credentials that, when ALL FOUR are present, switch the artifact
+   * byte path from streaming-through-the-Worker to **direct-to-R2** via SigV4
+   * presigned URLs (downloads 302 to / trace viewer embeds a presigned GET;
+   * uploads PUT to a presigned URL). The single signal is `r2DirectEnabled()`
+   * in `src/lib/config.ts`; unset (the default — local dev, e2e, and any
+   * un-migrated deploy) falls through to today's `storage.get`/`storage.put`
+   * proxy path, unchanged. Own-account `deploy:cf` only — mint an R2 S3 API
+   * token in the Cloudflare dashboard (see SELF-HOSTING.md). `void deploy` never
+   * hard-fails on their absence.
+   *
+   * Presigned URLs MUST target the account S3 endpoint
+   * (`<R2_ACCOUNT_ID>.r2.cloudflarestorage.com/<R2_BUCKET>/<key>`) — Cloudflare
+   * does NOT honor SigV4 on custom domains (a branded custom domain would need
+   * WAF HMAC + Pro plan; deferred, see ADR 0003). All four are required together.
+   */
+  R2_ACCOUNT_ID: string().optional(),
+  R2_ACCESS_KEY_ID: string().secret().optional(),
+  R2_SECRET_ACCESS_KEY: string().secret().optional(),
+  R2_BUCKET: string().optional(),
 
   /**
    * GitHub OAuth credentials, in Void's `AUTH_<PROVIDER>_CLIENT_{ID,SECRET}`
@@ -137,6 +159,48 @@ export default defineEnv({
    * page shows an amber bar) before the hard block at 100%. Default 90.
    */
   WRIGHTFUL_QUOTA_SOFT_WARN_PCT: number().default(90),
+
+  // ---------- Polar billing (optional; unset = billing OFF, UNLIMITED for all tiers) ----------
+  /**
+   * Polar org access token (sandbox ≠ prod). RUNTIME secret. OPTIONAL: when this
+   * AND POLAR_WEBHOOK_SECRET are unset, `billingEnabled()` is false → billing is
+   * OFF → every team is UNLIMITED (no caps, no billing UI, no webhook). This is
+   * the OSS / self-host default. `void deploy` never hard-fails on its absence.
+   */
+  POLAR_ACCESS_TOKEN: string().secret().optional(),
+  /** Polar webhook signing secret (per-environment). RUNTIME secret. Second half of the `billingEnabled()` signal. */
+  POLAR_WEBHOOK_SECRET: string().secret().optional(),
+  /**
+   * "sandbox" | "production" — drives the Polar SDK `server` field. Default
+   * sandbox (D5). `oneOf` so a typo is rejected at validation time (`void env
+   * check` / first access / deploy) and `.env.example` carries an `# enum:` hint,
+   * rather than silently falling back to sandbox.
+   */
+  POLAR_MODE: oneOf(["sandbox", "production"]).default("sandbox"),
+  /** Polar Product ID for the flat monthly Pro plan (per-environment). */
+  POLAR_PRO_PRODUCT_ID: string().optional(),
+
+  // ---------- Pro-tier caps (apply only when billing is ON; PLACEHOLDER / TBA defaults) ----------
+  /**
+   * `'pro'`-tier monthly run-open allowance. Mirrors `WRIGHTFUL_FREE_MONTHLY_RUNS`
+   * but at a high ceiling — Pro is FINITE, not unlimited; only billing-OFF
+   * (self-host) is truly unlimited. Enforced by the SAME `checkQuota` machinery as
+   * free (soft-warn then 429 at the ceiling). Default 25000 is a PLACEHOLDER / TBA
+   * (sensible, product-tunable later — same TBA treatment as the FREE caps).
+   */
+  WRIGHTFUL_PRO_MONTHLY_RUNS: number().default(25000),
+  /**
+   * `'pro'`-tier monthly test-result allowance. Mirrors
+   * `WRIGHTFUL_FREE_MONTHLY_TEST_RESULTS` at a high ceiling. Default 5000000 is a
+   * PLACEHOLDER / TBA (product-tunable later).
+   */
+  WRIGHTFUL_PRO_MONTHLY_TEST_RESULTS: number().default(5000000),
+  /**
+   * `'pro'`-tier monthly artifact-byte allowance (R2). Mirrors
+   * `WRIGHTFUL_FREE_ARTIFACT_BYTES` at a high ceiling. Default 107374182400
+   * (100 GiB) is a PLACEHOLDER / TBA (product-tunable later).
+   */
+  WRIGHTFUL_PRO_ARTIFACT_BYTES: number().default(107374182400),
 
   // ---------- Data retention ----------
 

@@ -92,3 +92,78 @@ export function resolveArtifactTokenSecret(source: {
 }): string {
   return source.ARTIFACT_TOKEN_SECRET ?? source.BETTER_AUTH_SECRET;
 }
+
+/**
+ * Whether Polar billing is wired up: BOTH `POLAR_ACCESS_TOKEN` and
+ * `POLAR_WEBHOOK_SECRET` are present and non-empty. The SINGLE canonical signal
+ * for "is billing on" — read by the quota short-circuit (`tierLimits` in
+ * usage.ts), the billing page loader/nav, the reconcile cron, and the provider
+ * registry. When false (the OSS / self-host default), every team is UNLIMITED:
+ * no caps, no billing UI, no webhook (the Polar plugin isn't registered, so
+ * POST /api/auth/polar/webhooks 404s). One source of truth so enforcement, UI,
+ * and plugin registration can't drift.
+ *
+ * `auth.ts` (config-time) can't import this — it inlines the SAME boolean over
+ * `process.env`, reading the SAME two keys, exactly as it inlines
+ * {@link githubOAuthEnabled}. An empty-string secret is treated as unset
+ * (`Boolean("")` is false) — matches "not configured".
+ */
+export function billingEnabled(source: {
+  POLAR_ACCESS_TOKEN?: string | undefined;
+  POLAR_WEBHOOK_SECRET?: string | undefined;
+}): boolean {
+  return Boolean(source.POLAR_ACCESS_TOKEN && source.POLAR_WEBHOOK_SECRET);
+}
+
+/** The R2 S3-API credential bundle the presigner needs (see {@link r2DirectConfig}). */
+export interface R2DirectConfig {
+  accountId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucket: string;
+}
+
+/**
+ * Whether the direct-R2 artifact byte path is wired up: ALL FOUR R2 S3-API keys
+ * present and non-empty. The SINGLE canonical signal for "are artifact bytes
+ * served direct-to-R2 (presigned) vs streamed through the Worker" — read by the
+ * download route (redirect-mint), the upload route (`registerArtifacts`'s
+ * presigned-PUT step), and the test-detail trace-viewer link builder. When false
+ * (the default — local dev, e2e, any un-migrated deploy), every byte path falls
+ * through to the existing `storage.get`/`storage.put` proxy, unchanged. Mirrors
+ * {@link billingEnabled}: presence, not truthiness; an empty-string key counts
+ * as unset (`Boolean("")` is false). See ADR 0003.
+ */
+export function r2DirectEnabled(source: {
+  R2_ACCOUNT_ID?: string | undefined;
+  R2_ACCESS_KEY_ID?: string | undefined;
+  R2_SECRET_ACCESS_KEY?: string | undefined;
+  R2_BUCKET?: string | undefined;
+}): boolean {
+  return Boolean(
+    source.R2_ACCOUNT_ID &&
+    source.R2_ACCESS_KEY_ID &&
+    source.R2_SECRET_ACCESS_KEY &&
+    source.R2_BUCKET,
+  );
+}
+
+/**
+ * The R2 credential bundle when {@link r2DirectEnabled} is true, else `null`.
+ * The value-returning companion to the boolean flag, so a caller branches on a
+ * single `null` check and gets a fully-typed config (no per-field re-narrowing).
+ */
+export function r2DirectConfig(source: {
+  R2_ACCOUNT_ID?: string | undefined;
+  R2_ACCESS_KEY_ID?: string | undefined;
+  R2_SECRET_ACCESS_KEY?: string | undefined;
+  R2_BUCKET?: string | undefined;
+}): R2DirectConfig | null {
+  if (!r2DirectEnabled(source)) return null;
+  return {
+    accountId: source.R2_ACCOUNT_ID as string,
+    accessKeyId: source.R2_ACCESS_KEY_ID as string,
+    secretAccessKey: source.R2_SECRET_ACCESS_KEY as string,
+    bucket: source.R2_BUCKET as string,
+  };
+}

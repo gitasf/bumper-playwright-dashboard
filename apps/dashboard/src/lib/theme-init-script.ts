@@ -1,10 +1,4 @@
 import {
-  DEFAULT_COMPACT,
-  DENSITY_COMPACT_CLASS,
-  DENSITY_STORAGE_KEY,
-  DENSITY_VALUE_COMPACT,
-} from "@/lib/density";
-import {
   DARK_CLASS,
   DEFAULT_DARK,
   THEME_STORAGE_KEY,
@@ -19,12 +13,10 @@ import {
  * ## What this is
  *
  * `themeInitScript` is the inline `<script>` body injected into every page's
- * `<head>` by `middleware/01.head.ts`. It reads the saved theme AND the saved
- * row density from localStorage and toggles `.dark` / `.density-compact` on
- * `<html>` synchronously, before first paint, so the page never flashes the
- * wrong theme or density. It must run inline (not as an external `src=`)
- * because any deferral would reintroduce the flash. The density half mirrors
- * the theme half exactly (see `@/lib/density`, the sibling of `@/lib/theme`).
+ * `<head>` by `middleware/01.head.ts`. It reads the saved theme from
+ * localStorage and toggles `.dark` on `<html>` synchronously, before first
+ * paint, so the page never flashes the wrong theme. It must run inline (not as
+ * an external `src=`) because any deferral would reintroduce the flash.
  *
  * ## Why the CSP keeps `script-src 'unsafe-inline'` (recorded decision)
  *
@@ -65,10 +57,4 @@ export const themeInitScript: string =
   `try{var t=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});` +
   `var d=t?t===${JSON.stringify(THEME_VALUE_DARK)}:${JSON.stringify(DEFAULT_DARK)};` +
   `document.documentElement.classList.toggle(${JSON.stringify(DARK_CLASS)},d);` +
-  `}catch(_){}` +
-  // Density: same pre-paint pattern as the theme block above — read the saved
-  // value, fall back to DEFAULT_COMPACT when unset, toggle the class on <html>.
-  `try{var n=localStorage.getItem(${JSON.stringify(DENSITY_STORAGE_KEY)});` +
-  `var c=n?n===${JSON.stringify(DENSITY_VALUE_COMPACT)}:${JSON.stringify(DEFAULT_COMPACT)};` +
-  `document.documentElement.classList.toggle(${JSON.stringify(DENSITY_COMPACT_CLASS)},c);` +
   `}catch(_){}`;

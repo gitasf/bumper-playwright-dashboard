@@ -1,4 +1,4 @@
-import { defineScheduled } from "void";
+import { loggedScheduled } from "@/lib/cron-logging";
 import { logger } from "void/log";
 import { reconcileUsage } from "@/lib/usage";
 
@@ -22,7 +22,7 @@ import { reconcileUsage } from "@/lib/usage";
  */
 export const cron = "0 3 * * *";
 
-export default defineScheduled(async () => {
+export default loggedScheduled("rollup-usage", async () => {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const { teamsReconciled } = await reconcileUsage(nowSeconds);
   logger.info("reconciled team usage", { teamsReconciled });

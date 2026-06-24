@@ -31,7 +31,12 @@ const payload = {
 describe("artifact download tokens", () => {
   it("round-trips a valid token", async () => {
     const token = await signArtifactToken(payload);
-    expect(await verifyArtifactToken(token)).toEqual(payload);
+    // verify also surfaces `exp` (the direct-R2 path caps the presigned URL to
+    // the token's remaining life); the rest of the field set must stay exact.
+    expect(await verifyArtifactToken(token)).toEqual({
+      ...payload,
+      exp: expect.any(Number),
+    });
   });
 
   it("rejects a payload tampered after signing", async () => {
@@ -141,7 +146,10 @@ describe("e2e token forging contract", () => {
 
   it("verifies a token forged the e2e way", async () => {
     const forged = forgeLikeE2e(payload.r2Key, payload.contentType);
-    expect(await verifyArtifactToken(forged)).toEqual(payload);
+    expect(await verifyArtifactToken(forged)).toEqual({
+      ...payload,
+      exp: expect.any(Number),
+    });
   });
 
   it("rejects an e2e-forged token signed with the wrong secret", async () => {
