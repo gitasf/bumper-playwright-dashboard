@@ -478,15 +478,6 @@
   * {
     @apply border-border outline-ring/50;
   }
-  :root,
-  .dark {
-    /* Density (overridden by .density-compact). Surfaced for any primitive
-     * that wants to consume `var(--row-h)` directly (table rows, chip pads). */
-    --row-h: 40px;
-    --row-h-dense: 32px;
-    --pad-x: 16px;
-    --gap: 12px;
-  }
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
@@ -512,14 +503,6 @@
     font-family: var(--font-mono);
     font-feature-settings: "calt", "ss02";
   }
-}
-
-/* Compact density variant — wraps the whole app via a class on <html>. */
-.density-compact {
-  --row-h: 30px;
-  --row-h-dense: 26px;
-  --pad-x: 12px;
-  --gap: 8px;
 }
 
 /* Anser ANSI → HTML class hooks. Playwright embeds SGR escapes (dim, red,

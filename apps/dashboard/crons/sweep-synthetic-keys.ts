@@ -1,4 +1,4 @@
-import { defineScheduled } from "void";
+import { loggedScheduled } from "@/lib/cron-logging";
 import { env } from "void/env";
 import { logger } from "void/log";
 import { sweepStaleSyntheticKeys } from "@/lib/monitors/synthetic-key";
@@ -28,7 +28,7 @@ import { sweepStaleSyntheticKeys } from "@/lib/monitors/synthetic-key";
 // back to `*/5`.
 export const cron = "4-59/5 * * * *";
 
-export default defineScheduled(async () => {
+export default loggedScheduled("sweep-synthetic-keys", async () => {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const cutoff =
     nowSeconds - env.WRIGHTFUL_MONITOR_EXECUTION_STALE_MINUTES * 60;

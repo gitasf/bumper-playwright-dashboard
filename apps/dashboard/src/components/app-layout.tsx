@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   BarChart2,
   CheckSquare,
+  CreditCard,
   FileClock,
   FlaskConical,
   Gauge,
@@ -73,8 +74,14 @@ interface AppLayoutProps {
  */
 export function AppLayout({ children, mode }: AppLayoutProps) {
   const router = useRouter();
-  const { auth, userTeams, selectedTeam, teamProjects, selectedProject } =
-    useShared();
+  const {
+    auth,
+    userTeams,
+    selectedTeam,
+    teamProjects,
+    selectedProject,
+    billingEnabled,
+  } = useShared();
   const pathname = router.path;
   const user = auth?.user ?? null;
 
@@ -94,6 +101,7 @@ export function AppLayout({ children, mode }: AppLayoutProps) {
 
           {mode === "settings" ? (
             <SettingsSidebarMiddle
+              billingEnabled={billingEnabled}
               pathname={pathname}
               selectedProject={selectedProject}
               selectedTeam={selectedTeam}
@@ -293,6 +301,7 @@ function AppSidebarMiddle({ pathname, base }: AppSidebarMiddleProps) {
 }
 
 interface SettingsSidebarMiddleProps {
+  billingEnabled: boolean;
   pathname: string;
   teams: WorkspaceListItem[];
   selectedTeam: ResolvedActiveTeam | null;
@@ -309,6 +318,7 @@ interface SettingsSidebarMiddleProps {
 const SETTINGS_TEAM_RE = /^\/settings\/teams\/([^/]+)(?:\/p\/([^/]+))?(?:\/|$)/;
 
 function SettingsSidebarMiddle({
+  billingEnabled,
   pathname,
   teams,
   selectedTeam,
@@ -404,6 +414,16 @@ function SettingsSidebarMiddle({
               href={`/settings/teams/${expandedTeam.slug}/audit`}
               icon={FileClock}
               label="Audit log"
+            />
+          )}
+          {isExpandedTeamOwner && billingEnabled && (
+            <SettingsNavLink
+              active={
+                pathname === `/settings/teams/${expandedTeam.slug}/billing`
+              }
+              href={`/settings/teams/${expandedTeam.slug}/billing`}
+              icon={CreditCard}
+              label="Billing"
             />
           )}
         </div>

@@ -1,7 +1,6 @@
 import { LogOut } from "lucide-react";
 import { useNavigate } from "@/lib/navigate";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
-import { DensityToggle } from "@/components/density-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { authClient } from "@/lib/auth-client";
 import { cn } from "@/lib/cn";
@@ -58,7 +57,6 @@ export function SidebarUserMenu({ name, email, image }: SidebarUserMenuProps) {
         </div>
         <div className="my-1 h-px bg-border" />
         <ThemeToggle variant="menu-row" />
-        <DensityToggle variant="menu-row" />
         <div className="my-1 h-px bg-border" />
         <button
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"

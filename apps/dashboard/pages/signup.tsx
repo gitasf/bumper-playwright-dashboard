@@ -49,6 +49,27 @@ export default function SignupPage({ githubEnabled, verifyEmail }: Props) {
     }
   }
 
+  // Better Auth's `/sign-in/social` is POST-only, so it can't be a plain
+  // `<a href>` (that GETs the route → 404). The client method POSTs, then
+  // follows the returned GitHub authorize URL via a full-page redirect.
+  async function handleGithub() {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await auth.signIn.social({
+        provider: "github",
+        callbackURL: "/",
+      });
+      if (result?.error) {
+        setError(result.error.message ?? "GitHub sign-in failed");
+        setBusy(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "GitHub sign-in failed");
+      setBusy(false);
+    }
+  }
+
   if (awaitingVerification) {
     return (
       <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 p-6 text-center">
@@ -131,12 +152,16 @@ export default function SignupPage({ githubEnabled, verifyEmail }: Props) {
       {githubEnabled && (
         <div className="space-y-2">
           <div className="bg-border h-px" />
-          <a
-            href="/api/auth/sign-in/social?provider=github"
-            className="bg-foreground text-background block rounded-md px-4 py-2 text-center text-sm font-medium"
+          <Button
+            type="button"
+            disabled={busy || !hydrated}
+            onClick={() => {
+              void handleGithub();
+            }}
+            className="bg-foreground text-background hover:bg-foreground/90 w-full"
           >
             Continue with GitHub
-          </a>
+          </Button>
         </div>
       )}
 

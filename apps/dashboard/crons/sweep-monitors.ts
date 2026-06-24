@@ -1,4 +1,4 @@
-import { defineScheduled } from "void";
+import { loggedScheduled } from "@/lib/cron-logging";
 import { env } from "void/env";
 import { logger } from "void/log";
 import { queues } from "void/queues";
@@ -29,7 +29,7 @@ import { sweepDueMonitors } from "@/lib/monitors/scheduler";
  */
 export const cron = "* * * * *";
 
-export default defineScheduled(async () => {
+export default loggedScheduled("sweep-monitors", async () => {
   const nowSeconds = Math.floor(Date.now() / 1000);
 
   const { found, enqueued } = await sweepDueMonitors({

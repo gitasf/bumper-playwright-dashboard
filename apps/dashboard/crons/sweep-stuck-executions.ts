@@ -1,4 +1,4 @@
-import { defineScheduled } from "void";
+import { loggedScheduled } from "@/lib/cron-logging";
 import { env } from "void/env";
 import { logger } from "void/log";
 import { sweepStaleExecutions } from "@/lib/monitors/monitors-repo";
@@ -32,7 +32,7 @@ import { sweepStaleExecutions } from "@/lib/monitors/monitors-repo";
 // back to `*/5`.
 export const cron = "2-59/5 * * * *";
 
-export default defineScheduled(async () => {
+export default loggedScheduled("sweep-stuck-executions", async () => {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const cutoff =
     nowSeconds - env.WRIGHTFUL_MONITOR_EXECUTION_STALE_MINUTES * 60;

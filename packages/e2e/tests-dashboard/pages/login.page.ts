@@ -20,7 +20,12 @@ export class LoginPage {
     this.nameInput = page.getByLabel(/^name$/i);
     this.emailInput = page.getByLabel(/email/i);
     this.passwordInput = page.getByLabel(/password/i);
-    this.signInButton = page.getByRole("button", {
+    // Scope to the <form>: the email submit button reads "Continue" / "Signing
+    // in…", but when GitHub OAuth is enabled the page also renders a sibling
+    // "Continue with GitHub" button *outside* the form, which an unscoped
+    // /continue/ match would also hit (strict-mode violation). The e2e fixture
+    // sets dummy AUTH_GITHUB_* creds, so githubEnabled is true under test.
+    this.signInButton = page.locator("form").getByRole("button", {
       name: /continue|signing in/i,
     });
     this.createAccountButton = page.getByRole("button", {

@@ -1,6 +1,8 @@
 import { ulid } from "ulid";
 import { and, db, eq, gte, sql } from "void/db";
 import { env } from "void/env";
+import { effectiveTier } from "@/lib/billing/tier";
+import { billingEnabled } from "@/lib/config";
 import type { BatchExecutor } from "@/lib/db-batch";
 import { numericSql } from "@/lib/db/sql-ops";
 import {
@@ -19,15 +21,20 @@ import {
  *
  *   - **Metering** is a live counter (`usageCounters`, one row per team-month)
  *     bumped in the SAME transaction as the ingest write it meters
- *     (`usageBumpStatement`, wired into `openRun` / `appendRunResults` /
- *     `registerArtifacts`). Atomic with the data, no extra round-trip. Counts
- *     FRESH rows only (a new run, newly-inserted testResults, newly-inserted
+ *     (`usageBumpStatement`, wired into `openRun` for `runs` and
+ *     `registerArtifacts` for `artifactBytes`/`artifactCount`). Atomic with the
+ *     data, no extra round-trip. Counts FRESH rows only (a new run, newly-inserted
  *     artifacts) so an idempotent re-stream/re-registration doesn't double-count.
+ *     The `testResults` dimension is the EXCEPTION: it is NOT bumped on the
+ *     /results hot path. That upsert serialized every concurrent flush of a team
+ *     on the single team-month row; since testResults is never quota-gated, its
+ *     count is instead derived on read (`countTeamTestResults` → `loadTeamUsage`)
+ *     and re-based by the `rollup-usage` cron — no live counter is needed.
  *
  *   - **Enforcement** is a read-then-gate (`checkQuota`) at the cheap entry
  *     points, compared against the team's `tier` limits. The runs dimension is
  *     gated at `POST /api/runs`; artifact bytes inside `registerArtifacts` (on
- *     fresh bytes). testResults is metered + surfaced but not hard-blocked in v1.
+ *     fresh bytes). testResults is surfaced (derived on read) but not hard-blocked.
  *
  * The window is a UTC calendar month: `periodStart` (start-of-month
  * epoch-seconds) keys the counter, so a new month lands on a fresh row via the
@@ -64,12 +71,20 @@ export interface TierLimits {
 }
 
 /**
- * Limit set for a tier. `'free'` reads the env-configured ceilings; every other
- * tier is unlimited (`Infinity`), so a paid team is never quota-blocked. The
- * tier→limit mapping is the only place tiers are interpreted — Stripe later just
- * flips `teams.tier`, no enforcement change.
+ * Limit set for a tier. When billing is OFF (`!billingEnabled(env)` — the OSS /
+ * self-host default), EVERY tier is UNLIMITED: a self-hoster never hits a quota.
+ * This billing-off short-circuit is the ONLY uncapped path. Caps exist ONLY when
+ * billing is configured (the hosted deployment): with billing ON, `'free'` reads
+ * the `WRIGHTFUL_FREE_*` ceilings and every other tier (`'pro'` / trial-pro) reads
+ * the high, configurable FINITE `WRIGHTFUL_PRO_*` ceilings (NOT Infinity) — Pro is
+ * enforced exactly like free (the existing soft-warn-then-block machinery), just at
+ * a higher ceiling. The tier→limit mapping is the only place tiers are interpreted.
  */
 export function tierLimits(tier: string): TierLimits {
+  // OSS / self-host: billing unconfigured → no caps for anyone. THE ONLY unlimited path.
+  if (!billingEnabled(env)) {
+    return { runs: Infinity, testResults: Infinity, artifactBytes: Infinity };
+  }
   if (tier === "free") {
     return {
       runs: env.WRIGHTFUL_FREE_MONTHLY_RUNS,
@@ -77,7 +92,12 @@ export function tierLimits(tier: string): TierLimits {
       artifactBytes: env.WRIGHTFUL_FREE_ARTIFACT_BYTES,
     };
   }
-  return { runs: Infinity, testResults: Infinity, artifactBytes: Infinity };
+  // pro (incl. trial-pro): high, configurable FINITE caps (was Infinity).
+  return {
+    runs: env.WRIGHTFUL_PRO_MONTHLY_RUNS,
+    testResults: env.WRIGHTFUL_PRO_MONTHLY_TEST_RESULTS,
+    artifactBytes: env.WRIGHTFUL_PRO_ARTIFACT_BYTES,
+  };
 }
 
 /**
@@ -180,6 +200,7 @@ export async function checkQuota(
   const rows = await db
     .select({
       tier: teams.tier,
+      currentPeriodEnd: teams.currentPeriodEnd,
       runsCount: usageCounters.runsCount,
       testResultsCount: usageCounters.testResultsCount,
       artifactBytes: usageCounters.artifactBytes,
@@ -195,7 +216,11 @@ export async function checkQuota(
     .where(eq(teams.id, teamId))
     .limit(1);
   const row = rows[0];
-  const tier = row?.tier ?? "free";
+  const tier = effectiveTier(
+    row?.tier ?? "free",
+    row?.currentPeriodEnd ?? null,
+    nowSeconds,
+  );
   const limit = tierLimits(tier)[dimension];
   const used =
     dimension === "runs"
@@ -222,6 +247,37 @@ export interface TeamUsage {
   limits: TierLimits;
 }
 
+/**
+ * Live count of a team's test-result rows in the billing period containing
+ * `periodStart`, computed from the authoritative `testResults` rows (scoped to
+ * the team via their projects). testResults is metered for DISPLAY only — it is
+ * never quota-gated — so rather than bump a `usageCounters` row on every
+ * /results flush (which serialized the whole team on one row), the count is
+ * derived on read here and by {@link reconcileUsage}. Backed by
+ * `testResults_project_createdAt_idx`. `numericSql` wraps the `count(*)` so the
+ * node-postgres int8-as-string result is coerced to a number (pglite returns a
+ * number already; the cast keeps both lanes in agreement).
+ */
+export async function countTeamTestResults(
+  teamId: string,
+  periodStart: number,
+): Promise<number> {
+  const teamProjectIds = db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(eq(projects.teamId, teamId));
+  const rows = await db
+    .select({ n: numericSql(sql`count(*)`) })
+    .from(testResults)
+    .where(
+      and(
+        gte(testResults.createdAt, periodStart),
+        sql`${testResults.projectId} in ${teamProjectIds}`,
+      ),
+    );
+  return rows[0]?.n ?? 0;
+}
+
 /** Current-period usage + tier limits for the team usage settings page. */
 export async function loadTeamUsage(
   teamId: string,
@@ -231,8 +287,8 @@ export async function loadTeamUsage(
   const rows = await db
     .select({
       tier: teams.tier,
+      currentPeriodEnd: teams.currentPeriodEnd,
       runsCount: usageCounters.runsCount,
-      testResultsCount: usageCounters.testResultsCount,
       artifactBytes: usageCounters.artifactBytes,
       artifactCount: usageCounters.artifactCount,
     })
@@ -247,12 +303,22 @@ export async function loadTeamUsage(
     .where(eq(teams.id, teamId))
     .limit(1);
   const row = rows[0];
-  const tier = row?.tier ?? "free";
+  // Effective tier so the usage page's displayed limits match enforcement
+  // (an expired pro reads free caps; trial-pro keeps the finite Pro caps).
+  const tier = effectiveTier(
+    row?.tier ?? "free",
+    row?.currentPeriodEnd ?? null,
+    nowSeconds,
+  );
+  // testResults has no live counter (see the module doc / `appendRunResults`):
+  // count it from the authoritative rows so the page stays exact without the
+  // hot-path bump. runs + artifact bytes are still live counters.
+  const testResultsCount = await countTeamTestResults(teamId, periodStart);
   return {
     tier,
     periodStart,
     runsCount: row?.runsCount ?? 0,
-    testResultsCount: row?.testResultsCount ?? 0,
+    testResultsCount,
     artifactBytes: row?.artifactBytes ?? 0,
     artifactCount: row?.artifactCount ?? 0,
     limits: tierLimits(tier),
@@ -292,15 +358,9 @@ export async function reconcileUsage(
       .from(runs)
       .where(and(eq(runs.teamId, team.id), gte(runs.createdAt, periodStart)));
 
-    const trRows = await db
-      .select({ n: numericSql(sql`count(*)`) })
-      .from(testResults)
-      .where(
-        and(
-          gte(testResults.createdAt, periodStart),
-          sql`${testResults.projectId} in ${teamProjectIds}`,
-        ),
-      );
+    // Same query `loadTeamUsage` uses to display testResults, so the cron's
+    // stored count and the live page count can't disagree.
+    const testResultsCount = await countTeamTestResults(team.id, periodStart);
 
     const artRows = await db
       .select({
@@ -316,7 +376,6 @@ export async function reconcileUsage(
       );
 
     const runsCount = runRows[0]?.n ?? 0;
-    const testResultsCount = trRows[0]?.n ?? 0;
     const artifactBytes = artRows[0]?.bytes ?? 0;
     const artifactCount = artRows[0]?.n ?? 0;
 

@@ -1,9 +1,15 @@
 // Single status registry for the whole dashboard UI. Every presentation
 // concern keyed off a test/run status — the colour token, the human label,
-// the Badge variant, the worst-status sort order, and the collapse rule that
-// folds `timedout → failed` / `interrupted → flaky` — lives here, so a
+// the Badge variant, and the worst-status sort order — lives here, so a
 // maintainer adding a new Playwright status or renaming a token edits one
 // record instead of hunting ~10 components.
+//
+// The collapse rule that folds `timedout → failed` / `interrupted → flaky` is
+// NOT defined here: it lives in the dependency-free `./status-buckets`
+// (`STATUS_BUCKETS` / `statusGroupKey`), the single source of truth shared with
+// ingest's server-side aggregate buckets (`STATUS_BUCKET_MEMBERS`) so the two
+// can't drift. This module re-exports `statusGroupKey` + `StatusGroupKey` so
+// existing `@/lib/status` importers are unaffected.
 //
 // IMPORTANT: this registry stores a CSS custom-property NAME (`cssVar`), never
 // a raw colour literal. `styles.css` (the `@theme` + light/dark blocks) remains
@@ -14,12 +20,9 @@
 // Unknown statuses (e.g. a future Playwright status we don't yet model) fall
 // back to a muted, neutral presentation so the surprise never reads as a real
 // failure.
-//
-// Sibling table: ingest's aggregate-count buckets (`STATUS_BUCKET_MEMBERS` in
-// `@/lib/ingest`) encode the same `timedout → failed` collapse but have NO
-// `interrupted` row — per-test statuses on the wire never include it (it only
-// occurs run-level), while this registry must render it wherever a run status
-// appears. Keep the shared rows in sync when editing either table.
+
+export { statusGroupKey } from "./status-buckets";
+export type { StatusGroupKey } from "./status-buckets";
 
 export type Status =
   | "passed"
@@ -28,9 +31,6 @@ export type Status =
   | "skipped"
   | "timedout"
   | "interrupted";
-
-/** The four user-facing buckets statuses collapse into for grouping/counts. */
-export type StatusGroupKey = "passed" | "failed" | "flaky" | "skipped";
 
 /** Badge variant a status maps to — a subset of the `ui/badge` variants. */
 export type StatusBadgeVariant = "success" | "error" | "warning" | "secondary";
@@ -47,8 +47,6 @@ interface StatusEntry {
    * within-group row ordering. `timedout` slots just after `failed`.
    */
   sortKey: number;
-  /** Bucket the status collapses into for counts and filtering. */
-  groupKey: StatusGroupKey;
 }
 
 export const STATUS = {
@@ -57,42 +55,36 @@ export const STATUS = {
     label: "Failed",
     badge: "error",
     sortKey: 0,
-    groupKey: "failed",
   },
   timedout: {
     cssVar: "--fail",
     label: "Timed out",
     badge: "error",
     sortKey: 1,
-    groupKey: "failed",
   },
   flaky: {
     cssVar: "--flaky",
     label: "Flaky",
     badge: "warning",
     sortKey: 2,
-    groupKey: "flaky",
   },
   interrupted: {
     cssVar: "--flaky",
     label: "Interrupted",
     badge: "warning",
     sortKey: 3,
-    groupKey: "flaky",
   },
   skipped: {
     cssVar: "--skipped",
     label: "Skipped",
     badge: "secondary",
     sortKey: 4,
-    groupKey: "skipped",
   },
   passed: {
     cssVar: "--pass",
     label: "Passed",
     badge: "success",
     sortKey: 5,
-    groupKey: "passed",
   },
 } as const satisfies Record<Status, StatusEntry>;
 
@@ -130,18 +122,4 @@ export function statusBadgeVariant(
 /** Worst-status-first sort key (lower = worse). Unknown → trailing. */
 export function statusSortKey(status: string): number {
   return isStatus(status) ? STATUS[status].sortKey : FALLBACK_SORT_KEY;
-}
-
-/**
- * Bucket a status collapses into for counts/filtering:
- * `timedout → failed`, `interrupted → flaky`.
- *
- * Returns `null` for any status that is NOT in the registry — importantly,
- * `"queued"` (the in-flight placeholder prefilled by ingest before a test
- * starts) returns `null` so that in-progress runs never inflate any of the
- * four user-facing chips. Callers skip null when accumulating counts or
- * applying a status filter.
- */
-export function statusGroupKey(status: string): StatusGroupKey | null {
-  return isStatus(status) ? STATUS[status].groupKey : null;
 }

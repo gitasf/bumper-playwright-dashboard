@@ -168,3 +168,6 @@ node_modules
 # Conductor also excludes it via .git/info/exclude, but oxfmt/oxlint (vp check)
 # read .gitignore, not info/exclude — list it here so `vp check` skips it too.
 .context/
+
+# Serena MCP project metadata (local tooling cache/config)
+.serena/

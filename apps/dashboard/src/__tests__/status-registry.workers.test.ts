@@ -124,10 +124,14 @@ describe("statusGroupKey", () => {
     expect(statusGroupKey("totally-unknown")).toBeNull();
   });
 
-  it("every registry entry's groupKey is one of the four buckets", () => {
+  it("every registry status collapses into one of the four buckets", () => {
+    // groupKey is derived from the shared `status-buckets` spec (re-exported
+    // here), not stored on the registry entry — so this asserts every status
+    // the registry models has a bucket in that spec.
     const buckets = new Set(["passed", "failed", "flaky", "skipped"]);
     for (const status of ALL_STATUSES) {
-      expect(buckets.has(STATUS[status].groupKey)).toBe(true);
+      const group = statusGroupKey(status);
+      expect(group !== null && buckets.has(group)).toBe(true);
     }
   });
 });
