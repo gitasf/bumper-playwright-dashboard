@@ -22,15 +22,15 @@ and nothing else, which is why it read as "doesn't do anything."
 
 ## Details
 
-| File | Change |
-| --- | --- |
-| `src/lib/density.ts` | **Deleted** — the density contract module (storage key, class, default, helpers). |
-| `src/components/density-toggle.tsx` | **Deleted** — the `DensityToggle` component. |
-| `src/__tests__/density.workers.test.ts` | **Deleted** — the density contract test (it asserted the now-removed density branch of `themeInitScript`). |
-| `src/components/sidebar-user-menu.tsx` | Removed the `DensityToggle` import and its `<DensityToggle variant="menu-row" />` row from the popover. |
-| `src/lib/theme-init-script.ts` | Dropped the `@/lib/density` imports and the density `try/catch` branch from the inline boot script; trimmed the doc comment to describe the theme-only behaviour. The CSP discussion (why `script-src 'unsafe-inline'` is load-bearing) is unchanged and still accurate. |
-| `src/styles.css` | Removed the four density tokens (the now-empty `:root, .dark { … }` block) and the `.density-compact { … }` override block. |
-| `src/components/run-progress.tsx` | Replaced `min-h-[var(--row-h-dense)]` with `min-h-8` (Tailwind `min-h-8` = 2rem = 32px = the prior comfortable/default value), so the default rendered output is identical. |
+| File                                    | Change                                                                                                                                                                                                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/lib/density.ts`                    | **Deleted** — the density contract module (storage key, class, default, helpers).                                                                                                                                                                                        |
+| `src/components/density-toggle.tsx`     | **Deleted** — the `DensityToggle` component.                                                                                                                                                                                                                             |
+| `src/__tests__/density.workers.test.ts` | **Deleted** — the density contract test (it asserted the now-removed density branch of `themeInitScript`).                                                                                                                                                               |
+| `src/components/sidebar-user-menu.tsx`  | Removed the `DensityToggle` import and its `<DensityToggle variant="menu-row" />` row from the popover.                                                                                                                                                                  |
+| `src/lib/theme-init-script.ts`          | Dropped the `@/lib/density` imports and the density `try/catch` branch from the inline boot script; trimmed the doc comment to describe the theme-only behaviour. The CSP discussion (why `script-src 'unsafe-inline'` is load-bearing) is unchanged and still accurate. |
+| `src/styles.css`                        | Removed the four density tokens (the now-empty `:root, .dark { … }` block) and the `.density-compact { … }` override block.                                                                                                                                              |
+| `src/components/run-progress.tsx`       | Replaced `min-h-[var(--row-h-dense)]` with `min-h-8` (Tailwind `min-h-8` = 2rem = 32px = the prior comfortable/default value), so the default rendered output is identical.                                                                                              |
 
 The theme toggle (`@/lib/theme`, `ThemeToggle`, the `.dark` half of the boot
 script) is unaffected — only the density sibling was removed.
