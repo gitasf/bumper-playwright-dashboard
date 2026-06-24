@@ -178,7 +178,7 @@ function TypeCard({
       className="group flex flex-col gap-2.5 rounded-[11px] border border-line-1 bg-bg-1 p-5 transition-colors hover:border-accent/50 hover:bg-bg-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       href={href}
     >
-      <span className="flex size-10 items-center justify-center rounded-[10px] border border-line-1 bg-bg-2 text-accent">
+      <span className="flex size-10 items-center justify-center rounded-[10px] border border-line-1 bg-bg-2 text-info">
         <MonTypeGlyph size={18} type={glyph} />
       </span>
       <span className="text-[14.5px] font-semibold">{title}</span>
