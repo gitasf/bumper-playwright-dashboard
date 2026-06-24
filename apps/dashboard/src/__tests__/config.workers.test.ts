@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
+  billingEnabled,
   githubOAuthEnabled,
   openSignupAllowed,
+  r2DirectConfig,
+  r2DirectEnabled,
   resolveArtifactTokenSecret,
 } from "@/lib/config";
 
@@ -56,6 +59,53 @@ describe("config flag resolvers", () => {
         githubOAuthEnabled({
           AUTH_GITHUB_CLIENT_ID: "",
           AUTH_GITHUB_CLIENT_SECRET: "secret",
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe("billingEnabled", () => {
+    it("is true only when BOTH Polar secrets are present", () => {
+      expect(
+        billingEnabled({
+          POLAR_ACCESS_TOKEN: "polar_oat_xxx",
+          POLAR_WEBHOOK_SECRET: "whsec_xxx",
+        }),
+      ).toBe(true);
+    });
+
+    it("is false when either secret is missing (billing OFF ⇒ unlimited)", () => {
+      expect(
+        billingEnabled({
+          POLAR_ACCESS_TOKEN: "polar_oat_xxx",
+          POLAR_WEBHOOK_SECRET: undefined,
+        }),
+      ).toBe(false);
+      expect(
+        billingEnabled({
+          POLAR_ACCESS_TOKEN: undefined,
+          POLAR_WEBHOOK_SECRET: "whsec_xxx",
+        }),
+      ).toBe(false);
+    });
+
+    it("is false when both are missing (the OSS / self-host default)", () => {
+      expect(billingEnabled({})).toBe(false);
+    });
+
+    it("treats an empty-string secret as unset (matches env.ts .optional() schema)", () => {
+      // An "" secret passes the optional-string schema but must not count as
+      // configured — Boolean("") is false. Mirrors githubOAuthEnabled.
+      expect(
+        billingEnabled({
+          POLAR_ACCESS_TOKEN: "polar_oat_xxx",
+          POLAR_WEBHOOK_SECRET: "",
+        }),
+      ).toBe(false);
+      expect(
+        billingEnabled({
+          POLAR_ACCESS_TOKEN: "",
+          POLAR_WEBHOOK_SECRET: "whsec_xxx",
         }),
       ).toBe(false);
     });
@@ -123,6 +173,57 @@ describe("config flag resolvers", () => {
           BETTER_AUTH_SECRET: "session",
         }),
       ).toBe("");
+    });
+  });
+
+  /**
+   * The direct-R2 byte-path signal (ADR 0003). All four R2 S3-API keys must be
+   * present, mirroring billingEnabled's presence-not-truthiness rule; missing or
+   * empty-string ⇒ the worker-proxy fallback. `r2DirectConfig` returns the typed
+   * bundle exactly when the flag is on.
+   */
+  const fullR2 = {
+    R2_ACCOUNT_ID: "acct",
+    R2_ACCESS_KEY_ID: "key",
+    R2_SECRET_ACCESS_KEY: "secret",
+    R2_BUCKET: "bucket",
+  };
+
+  describe("r2DirectEnabled", () => {
+    it("is true only when ALL FOUR R2 keys are present", () => {
+      expect(r2DirectEnabled(fullR2)).toBe(true);
+    });
+
+    it("is false when any key is missing", () => {
+      for (const k of Object.keys(fullR2) as (keyof typeof fullR2)[]) {
+        expect(r2DirectEnabled({ ...fullR2, [k]: undefined })).toBe(false);
+      }
+    });
+
+    it("treats an empty-string in ANY of the four keys as unset (env.ts .optional())", () => {
+      for (const k of Object.keys(fullR2) as (keyof typeof fullR2)[]) {
+        expect(r2DirectEnabled({ ...fullR2, [k]: "" })).toBe(false);
+      }
+    });
+
+    it("is false for the OSS / self-host default (nothing set)", () => {
+      expect(r2DirectEnabled({})).toBe(false);
+    });
+  });
+
+  describe("r2DirectConfig", () => {
+    it("returns the typed credential bundle when enabled", () => {
+      expect(r2DirectConfig(fullR2)).toEqual({
+        accountId: "acct",
+        accessKeyId: "key",
+        secretAccessKey: "secret",
+        bucket: "bucket",
+      });
+    });
+
+    it("returns null when disabled (single null check at call sites)", () => {
+      expect(r2DirectConfig({})).toBeNull();
+      expect(r2DirectConfig({ ...fullR2, R2_BUCKET: undefined })).toBeNull();
     });
   });
 });

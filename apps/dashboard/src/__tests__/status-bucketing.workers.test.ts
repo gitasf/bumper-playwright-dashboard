@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vite-plus/test";
 import { STATUS_BUCKET_MEMBERS, statusBucket } from "@/lib/ingest";
+import { STATUS_BUCKETS, WIRE_INVISIBLE_STATUSES } from "@/lib/status-buckets";
 
 /**
  * Guards the status → aggregate-bucket mapping that two code paths must agree
@@ -60,5 +61,25 @@ describe("STATUS_BUCKET_MEMBERS / statusBucket", () => {
         seen.add(status);
       }
     }
+  });
+
+  it("is exactly STATUS_BUCKETS minus the wire-invisible statuses", () => {
+    // The per-test aggregate is DERIVED from the shared UI superset
+    // (`STATUS_BUCKETS`) with the wire-invisible statuses filtered out. This
+    // pins that relationship, so editing the shared spec (or the filter set)
+    // can't silently desync the server aggregate from the UI collapse —
+    // exactly the cross-side drift neither per-side canary used to catch.
+    const expected = Object.fromEntries(
+      Object.entries(STATUS_BUCKETS).map(([bucket, statuses]) => [
+        bucket,
+        statuses.filter((s) => !WIRE_INVISIBLE_STATUSES.has(s)),
+      ]),
+    );
+    expect(STATUS_BUCKET_MEMBERS).toEqual(expected);
+    // `interrupted` is the wire-invisible row: in the UI superset's flaky
+    // bucket, absent from the per-test aggregate's.
+    expect(STATUS_BUCKETS.flaky).toContain("interrupted");
+    expect(WIRE_INVISIBLE_STATUSES.has("interrupted")).toBe(true);
+    expect(STATUS_BUCKET_MEMBERS.flaky).not.toContain("interrupted");
   });
 });

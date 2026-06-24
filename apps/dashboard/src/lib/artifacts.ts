@@ -120,6 +120,19 @@ export function filenameFromKey(key: string): string {
 }
 
 /**
+ * The `Content-Disposition: attachment` header value for an artifact, keyed off
+ * the R2 key's trailing filename segment. One source of truth shared by the
+ * worker-proxy response (`buildArtifactHeaders`) and the direct-R2 path (signed
+ * as a `response-content-disposition` query param on the presigned GET), so both
+ * force a download on top-level navigation identically. RFC 5987 `filename*` +
+ * `encodeURIComponent` percent-encodes `\r`, `\n`, `"` so a hostile artifact
+ * name cannot inject a header.
+ */
+export function artifactContentDisposition(r2Key: string): string {
+  return `attachment; filename*=UTF-8''${encodeURIComponent(filenameFromKey(r2Key))}`;
+}
+
+/**
  * The byte-cap precheck: the first artifact whose declared `sizeBytes` exceeds
  * the per-artifact ceiling, or `null` if all are within limits. Bytes are
  * validated again at upload time against the registered `sizeBytes`; this
@@ -134,11 +147,25 @@ export function findOversizedArtifact<
 export interface ArtifactUpload {
   artifactId: string;
   /**
-   * Relative worker route (`/api/artifacts/:id/upload`) the reporter PUTs to —
-   * the bytes stream through the worker into R2, not to a presigned R2 host.
+   * The URL the reporter PUTs to. By default a relative worker route
+   * (`/api/artifacts/:id/upload`) — bytes stream through the worker into R2.
+   * When the direct-R2 path is configured (`r2DirectEnabled`), `registerArtifacts`
+   * replaces it with an absolute SigV4-presigned R2 PUT URL so bytes go direct.
    */
   uploadUrl: string;
   r2Key: string;
+}
+
+/**
+ * An {@link ArtifactUpload} carrying the registered `contentType` + `sizeBytes`
+ * the presigned-PUT step needs (to sign `Content-Type`/`Content-Length`). These
+ * extra fields are internal to the planning → presign → respond pipeline;
+ * `registerArtifacts` strips back to the wire {@link ArtifactUpload} before
+ * returning, so they never reach the response payload.
+ */
+export interface PlannedArtifactUpload extends ArtifactUpload {
+  contentType: string;
+  sizeBytes: number;
 }
 
 /** A row already registered for one of the requested testResultIds. */
@@ -154,7 +181,7 @@ export interface ExistingArtifactRow {
 
 export interface ArtifactRegistrationPlan {
   rowsToInsert: Array<typeof artifacts.$inferInsert>;
-  uploads: ArtifactUpload[];
+  uploads: PlannedArtifactUpload[];
 }
 
 /**
@@ -195,7 +222,7 @@ export function planArtifactRegistration(args: {
   }
 
   const rowsToInsert: Array<typeof artifacts.$inferInsert> = [];
-  const uploads: ArtifactUpload[] = [];
+  const uploads: PlannedArtifactUpload[] = [];
 
   for (const a of requestedArtifacts) {
     const identity = artifactIdentity({ ...a, role: a.role ?? null });
@@ -207,6 +234,8 @@ export function planArtifactRegistration(args: {
         artifactId: existing.id,
         uploadUrl: `/api/artifacts/${existing.id}/upload`,
         r2Key: existing.r2Key,
+        contentType: a.contentType,
+        sizeBytes: a.sizeBytes,
       });
       continue;
     }
@@ -236,12 +265,25 @@ export function planArtifactRegistration(args: {
       artifactId,
       uploadUrl: `/api/artifacts/${artifactId}/upload`,
       r2Key,
+      contentType: a.contentType,
+      sizeBytes: a.sizeBytes,
     });
     byIdentity.set(identity, { id: artifactId, r2Key });
   }
 
   return { rowsToInsert, uploads };
 }
+
+/**
+ * Mints a presigned R2 PUT URL for one artifact object. Injected into
+ * {@link registerArtifacts} at the route boundary (built from `r2DirectConfig`)
+ * so the lib stays free of `env` + the S3 signer and remains unit-testable;
+ * `undefined` ⇒ the worker-proxy upload URLs are returned unchanged.
+ */
+export type ArtifactPutSigner = (
+  r2Key: string,
+  opts: { contentType: string; contentLength: number },
+) => Promise<string>;
 
 export type RegisterArtifactsResult =
   | { kind: "ok"; uploads: ArtifactUpload[] }
@@ -273,7 +315,37 @@ export async function registerArtifacts(
   payload: RegisterArtifactsPayload,
   maxBytes: number,
   nowSeconds: number,
+  signPut?: ArtifactPutSigner,
 ): Promise<RegisterArtifactsResult> {
+  // Project the planned uploads onto the wire shape, presigning each PUT URL
+  // when the direct-R2 path is configured (else the relative worker URLs ride
+  // through unchanged). Strips the internal contentType/sizeBytes either way.
+  async function finalizeUploads(
+    planned: PlannedArtifactUpload[],
+  ): Promise<ArtifactUpload[]> {
+    if (!signPut) {
+      return planned.map(({ artifactId, uploadUrl, r2Key }) => ({
+        artifactId,
+        uploadUrl,
+        r2Key,
+      }));
+    }
+    return Promise.all(
+      planned.map(async ({ artifactId, r2Key, contentType, sizeBytes }) => ({
+        artifactId,
+        r2Key,
+        uploadUrl: await signPut(r2Key, {
+          // Sign the SANITIZED type so the direct-R2 object carries the same
+          // Content-Type the worker path would store (storeArtifactUpload writes
+          // safeContentType). Registration already rejects non-allowlisted types,
+          // so this equals the reporter's sent type — no signature mismatch.
+          contentType: safeContentType(contentType),
+          contentLength: sizeBytes,
+        }),
+      })),
+    );
+  }
+
   const oversized = findOversizedArtifact(payload.artifacts, maxBytes);
   if (oversized) {
     return { kind: "oversized", name: oversized.name, maxBytes };
@@ -335,7 +407,9 @@ export async function registerArtifacts(
       runId: payload.runId,
       nowSeconds,
     });
-    if (rowsToInsert.length === 0) return { kind: "ok", uploads };
+    if (rowsToInsert.length === 0) {
+      return { kind: "ok", uploads: await finalizeUploads(uploads) };
+    }
 
     // Enforce the team's artifact-byte quota on FRESH bytes only (rows about to
     // be inserted) — an idempotent re-registration plans 0 fresh rows and so is
@@ -370,7 +444,7 @@ export async function registerArtifacts(
           ...(bump ? [bump] : []),
         ];
       });
-      return { kind: "ok", uploads };
+      return { kind: "ok", uploads: await finalizeUploads(uploads) };
     } catch (err) {
       if (!isUniqueViolation(err) || attempt > 0) throw err;
     }
@@ -638,11 +712,7 @@ export function buildArtifactHeaders(
   headers.set("etag", read.httpEtag);
   headers.set("content-length", String(read.size));
   headers.set("cache-control", "public, max-age=31536000, immutable");
-  const filename = filenameFromKey(opts.r2Key);
-  headers.set(
-    "content-disposition",
-    `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
-  );
+  headers.set("content-disposition", artifactContentDisposition(opts.r2Key));
   headers.set("access-control-allow-origin", opts.allowedOrigin);
   headers.set("vary", "Origin");
   headers.set("access-control-allow-methods", "GET, HEAD, OPTIONS");

@@ -358,6 +358,10 @@ describe("planArtifactRegistration", () => {
         artifactId: "art-1",
         uploadUrl: "/api/artifacts/art-1/upload",
         r2Key: "t/team-1/p/proj-1/runs/run-1/tr-1/art-1/shot.png",
+        // contentType + sizeBytes ride along so registerArtifacts can presign a
+        // PUT (direct-R2); stripped to the wire shape before the response.
+        contentType: "image/png",
+        sizeBytes: 100,
       },
     ]);
   });
@@ -387,6 +391,8 @@ describe("planArtifactRegistration", () => {
         artifactId: "existing-art",
         uploadUrl: "/api/artifacts/existing-art/upload",
         r2Key: "reused/key.png",
+        contentType: "image/png",
+        sizeBytes: 100,
       },
     ]);
   });
@@ -571,6 +577,126 @@ describe("registerArtifacts", () => {
     // are metered atomically with the row), so the write goes through the
     // db.transaction wrapper (runBatch).
     expect(transactionSpy).toHaveBeenCalled();
+  });
+
+  it("returns presigned PUT URLs when a signer is injected (direct-R2)", async () => {
+    awaitResults = [
+      [{ id: "run-1" }],
+      [{ id: "tr-1" }],
+      [],
+      [{ tier: "free", runsCount: 0, testResultsCount: 0, artifactBytes: 0 }],
+    ];
+    const signPut = vi.fn(
+      async (
+        r2Key: string,
+        opts: { contentType: string; contentLength: number },
+      ) =>
+        `https://acct.r2.cloudflarestorage.com/bkt/${r2Key}?X-Amz-Signature=stub&clen=${opts.contentLength}`,
+    );
+    const payload: RegisterArtifactsPayload = {
+      runId: "run-1",
+      artifacts: [artifact()],
+    };
+    const result = await registerArtifacts(
+      scope,
+      payload,
+      MAX_BYTES,
+      NOW,
+      signPut,
+    );
+    if (result.kind !== "ok") throw new Error("expected ok");
+    const upload = result.uploads[0];
+    // The signer gets the registered size + type so R2 can bind/assert them.
+    expect(signPut).toHaveBeenCalledWith(upload.r2Key, {
+      contentType: "image/png",
+      contentLength: 100,
+    });
+    // Wire shape: an absolute presigned PUT URL, with the internal
+    // contentType/sizeBytes stripped off (never reach the response payload).
+    expect(upload.uploadUrl).toBe(
+      `https://acct.r2.cloudflarestorage.com/bkt/${upload.r2Key}?X-Amz-Signature=stub&clen=100`,
+    );
+    expect(upload).not.toHaveProperty("sizeBytes");
+    expect(upload).not.toHaveProperty("contentType");
+  });
+
+  it("presigns the reused PUT URL on an idempotent re-register (early-return path)", async () => {
+    // ownerRun found; tr-1 valid; existing-artifacts SELECT → an identity match,
+    // so rowsToInsert is empty and registerArtifacts takes the EARLY ok-return —
+    // which must also run finalizeUploads (presign + strip), not just the post-insert one.
+    awaitResults = [
+      [{ id: "run-1" }],
+      [{ id: "tr-1" }],
+      [
+        {
+          id: "existing-art",
+          testResultId: "tr-1",
+          type: "screenshot",
+          name: "shot.png",
+          attempt: 0,
+          role: null,
+          r2Key: "reused/key.png",
+        },
+      ],
+    ];
+    const signPut = vi.fn(
+      async (
+        r2Key: string,
+        opts: { contentType: string; contentLength: number },
+      ) =>
+        `https://acct.r2.cloudflarestorage.com/bkt/${r2Key}?clen=${opts.contentLength}`,
+    );
+    const payload: RegisterArtifactsPayload = {
+      runId: "run-1",
+      artifacts: [artifact()],
+    };
+    const result = await registerArtifacts(
+      scope,
+      payload,
+      MAX_BYTES,
+      NOW,
+      signPut,
+    );
+    if (result.kind !== "ok") throw new Error("expected ok");
+    expect(transactionSpy).not.toHaveBeenCalled(); // pure reuse, no insert
+    const upload = result.uploads[0];
+    expect(signPut).toHaveBeenCalledWith("reused/key.png", {
+      contentType: "image/png",
+      contentLength: 100,
+    });
+    expect(upload.uploadUrl).toBe(
+      "https://acct.r2.cloudflarestorage.com/bkt/reused/key.png?clen=100",
+    );
+    expect(upload).not.toHaveProperty("sizeBytes");
+    expect(upload).not.toHaveProperty("contentType");
+  });
+
+  it("signs the SANITIZED content-type on the PUT (parity with the worker path)", async () => {
+    awaitResults = [
+      [{ id: "run-1" }],
+      [{ id: "tr-1" }],
+      [],
+      [{ tier: "free", runsCount: 0, testResultsCount: 0, artifactBytes: 0 }],
+    ];
+    const signPut = vi.fn(async () => "https://r2/url");
+    const payload: RegisterArtifactsPayload = {
+      runId: "run-1",
+      // A param-carrying / mixed-case type that safeContentType normalizes; the
+      // worker path stores safeContentType(...), so the signed PUT type must too.
+      artifacts: [artifact({ contentType: "IMAGE/PNG; charset=binary" })],
+    };
+    const result = await registerArtifacts(
+      scope,
+      payload,
+      MAX_BYTES,
+      NOW,
+      signPut,
+    );
+    if (result.kind !== "ok") throw new Error("expected ok");
+    expect(signPut).toHaveBeenCalledWith(expect.any(String), {
+      contentType: "image/png",
+      contentLength: 100,
+    });
   });
 
   it("de-dupes identical artifacts within one request to a single inserted row", async () => {

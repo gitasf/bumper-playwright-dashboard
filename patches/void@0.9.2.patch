@@ -1,0 +1,38 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 472d9d8bd76f27dc66409a48a914db203d3440ce..d3552d11ae5f77e7ecea434753e00ad8daa46ebd 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -596,8 +596,6 @@ import { getRuntimeBinding } from ${JSON.stringify(envModuleResolved)};
+ ${schemaImport}
+ export { ${DRIZZLE_OPERATORS} } from ${JSON.stringify(drizzleOrmResolved)};
+ 
+-let _prodInstance;
+-
+ function getConnectionString() {
+   const url = getRuntimeBinding("DATABASE_URL");
+   if (url) return url;
+@@ -607,15 +605,15 @@ function getConnectionString() {
+ }
+ 
+ function getInstance() {
+-  // Local dev (DATABASE_URL): create a fresh Pool per query chain.
+-  // workerd kills TCP sockets between requests, so pg.Pool's cached
+-  // connections go stale and hang. Fresh Pool = fresh connection every time.
+-  if (getRuntimeBinding("DATABASE_URL")) {
+-    return drizzle(new pg.Pool({ connectionString: getRuntimeBinding("DATABASE_URL"), max: 1 })${drizzleConfig});
+-  }
+-  // Production (Hyperdrive): cache the instance — Hyperdrive handles pooling.
+-  _prodInstance ??= drizzle(getConnectionString()${drizzleConfig});
+-  return _prodInstance;
++  // Create a fresh Pool per query chain in BOTH local dev (DATABASE_URL) and
++  // production (Hyperdrive). workerd binds each TCP socket to the request that
++  // opened it and severs it at request end, so a pg.Pool cached across requests
++  // hangs the next request ("the Worker's code had hung and would never
++  // generate a response"). Hyperdrive maintains the origin-side pool, so a
++  // fresh local Pool per chain is fast.
++  // Refs: developers.cloudflare.com/hyperdrive/concepts/connection-lifecycle/
++  //       developers.cloudflare.com/workers/runtime-apis/tcp-sockets/
++  return drizzle(new pg.Pool({ connectionString: getConnectionString(), max: 1 })${drizzleConfig});
+ }
+ 
+ export const db = new Proxy({}, {

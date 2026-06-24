@@ -1,4 +1,4 @@
-import { defineScheduled } from "void";
+import { loggedScheduled } from "@/lib/cron-logging";
 import { env } from "void/env";
 import { logger } from "void/log";
 import { sweepRetention } from "@/lib/retention";
@@ -17,7 +17,7 @@ import { sweepRetention } from "@/lib/retention";
  */
 export const cron = "0 */6 * * *";
 
-export default defineScheduled(async () => {
+export default loggedScheduled("sweep-retention", async () => {
   const now = Math.floor(Date.now() / 1000);
   const result = await sweepRetention({
     now,

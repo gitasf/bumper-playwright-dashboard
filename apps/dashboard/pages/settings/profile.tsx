@@ -152,6 +152,29 @@ function ConnectedAccountsCard({
     }
   }
 
+  // Linking a GitHub account to the signed-in user. Better Auth's
+  // `/link-social` is POST-only (like `/sign-in/social`), so it can't be a
+  // plain `<a href>` — that GETs the route → 404. The client method POSTs,
+  // then follows the returned GitHub authorize URL via a full-page redirect.
+  async function handleConnect() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await authClient.linkSocial({
+        provider: "github",
+        callbackURL: "/settings/profile",
+      });
+      if (result?.error) {
+        setError(result.error.message ?? "Could not connect.");
+        setBusy(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not connect.");
+      setBusy(false);
+    }
+  }
+
   return (
     <SettingsCard title="Connected accounts">
       {error && (
@@ -190,7 +213,11 @@ function ConnectedAccountsCard({
           </Button>
         ) : (
           <Button
-            render={<a href="/api/auth/sign-in/social?provider=github" />}
+            disabled={busy}
+            loading={busy}
+            onClick={() => {
+              void handleConnect();
+            }}
             size="sm"
             variant="outline"
           >

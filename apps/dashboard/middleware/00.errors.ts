@@ -2,6 +2,7 @@ import { defineMiddleware } from "void";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { logger } from "void/log";
+import { describeError } from "../src/lib/error-cause";
 import {
   type ErrorOutcome,
   isApiPath,
@@ -67,8 +68,7 @@ export default defineMiddleware(async (c, next) => {
         logger.error("unhandled error on api request", {
           path,
           status: apiStatus ?? 500,
-          message: err instanceof Error ? err.message : String(err),
-          stack: err instanceof Error ? err.stack : undefined,
+          ...describeError(err),
         });
       }
       throw err;
@@ -99,8 +99,7 @@ export default defineMiddleware(async (c, next) => {
       logger.error("api 5xx response", {
         path,
         status: apiStatus,
-        message: c.error instanceof Error ? c.error.message : undefined,
-        stack: c.error instanceof Error ? c.error.stack : undefined,
+        ...(c.error != null ? describeError(c.error) : {}),
       });
     }
     return;
@@ -159,7 +158,7 @@ async function applyOutcome(
       logger.error("unhandled error in request pipeline", {
         path,
         status: outcome.status,
-        message: err instanceof Error ? err.message : undefined,
+        ...describeError(err),
       });
       const rewritten = await c.rewrite(OOPS_PATH);
       // Preserve the original 5xx status (the rewrite target renders 200).

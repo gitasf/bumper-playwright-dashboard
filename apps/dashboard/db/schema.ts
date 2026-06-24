@@ -65,12 +65,20 @@ export const teams = pgTable(
     lastActivityAt: big("lastActivityAt"),
     /**
      * Billing tier — drives which limit set `checkQuota` (`src/lib/usage.ts`)
-     * enforces. `'free'` (default) → the env-configured `WRIGHTFUL_FREE_*`
-     * ceilings; any other tier is treated as unlimited (no quota block). Stripe
-     * binding (a `stripeCustomerId` column flipped by a webhook) is a later,
-     * additive change — the metering + enforcement layer is tier-agnostic.
+     * enforces. When billing is ON (`billingEnabled()`): `'free'` (default) →
+     * the `WRIGHTFUL_FREE_*` ceilings, `'pro'` (incl. the 14-day app-managed
+     * trial) → the higher, configurable, FINITE `WRIGHTFUL_PRO_*` ceilings.
+     * When billing is OFF (the OSS / self-host default) every tier is UNLIMITED
+     * — see the `tierLimits` short-circuit. The Polar billing mirror below is
+     * the source for paid/trial gating; this column is the enforcement seam.
      */
     tier: text("tier").notNull().default("free"),
+    // ---- Polar billing mirror (Polar is source of truth; this is a read-cache for synchronous gating). ----
+    polarCustomerId: text("polarCustomerId"), // null = trial-pro or free; non-null = paid
+    polarSubscriptionId: text("polarSubscriptionId"),
+    subscriptionStatus: text("subscriptionStatus"), // 'active' | 'canceled' | 'revoked' | ...
+    currentPeriodEnd: big("currentPeriodEnd"), // epoch-seconds: paid-through / trial-end (D3/D9)
+    billingUpdatedAt: big("billingUpdatedAt"), // epoch-seconds: ordering guard — apply-if-newer (D9)
     /**
      * Two-axis data-retention windows in DAYS, both nullable (null → the
      * `WRIGHTFUL_RETENTION_*` env default). Separate because the cost/value
@@ -280,9 +288,14 @@ export const apiKeys = pgTable(
 /**
  * Per-team usage meter, one row per (team, calendar-month). The live counter
  * the ingest pipeline increments in the SAME transaction as its writes
- * (`usageBumpStatement` in `src/lib/usage.ts`) — so a run open / results flush /
- * artifact registration bumps usage atomically with the data it meters, never a
- * separate round-trip. `periodStart` is the UTC month-boundary epoch-seconds
+ * (`usageBumpStatement` in `src/lib/usage.ts`) — a run open bumps `runsCount`,
+ * an artifact registration bumps `artifactBytes`/`artifactCount` — atomically
+ * with the data it meters, never a separate round-trip. `testResultsCount` is
+ * the EXCEPTION: it is NOT bumped on the /results hot path (that upsert
+ * serialized every concurrent flush of a team on this single row). Since
+ * testResults is never quota-gated, it is derived on read (`countTeamTestResults`)
+ * and re-based by the cron, so the stored column is a backstop, not the source
+ * the usage page reads. `periodStart` is the UTC month-boundary epoch-seconds
  * (`monthStartSeconds`), so a new month lands on a fresh row via the upsert's
  * `onConflictDoUpdate` — no reset job. `checkQuota` reads the current row to
  * gate ingest against the team's tier limits; the `rollup-usage` cron

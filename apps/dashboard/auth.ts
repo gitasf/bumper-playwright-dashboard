@@ -1,4 +1,6 @@
 import { defineAuth, type VoidAuthConfigContext } from "void/auth";
+import { checkout, polar, portal, webhooks } from "@polar-sh/better-auth";
+import { Polar } from "@polar-sh/sdk";
 import { ulid } from "ulid";
 import type { MirrorableAccount } from "@/lib/github-account-mirror";
 
@@ -49,9 +51,14 @@ type AccountContext = Parameters<AccountAfter>[1];
 // OAuth app), and open signup off unless explicitly truthy — are owned for the
 // request-time loaders by `@/lib/config` (`githubOAuthEnabled` /
 // `openSignupAllowed`). They're inlined HERE, not imported, because `void
-// prepare` evaluates this file in a bare Node context that can't resolve the
-// `@/lib` alias for a static value import (the same reason the github mirror
-// below is loaded via a deferred dynamic import). Keep the two in sync.
+// prepare` evaluates this file in a bare Node context that cannot statically
+// import the `@/lib/config` source: the `@/lib` alias doesn't resolve, and a
+// relative `./src/lib/config` import fails too — extensionless resolution can't
+// find the module, and adding the `.ts` extension trips tsgo's TS5097
+// (`allowImportingTsExtensions` is off). Both were verified 2026-06-22. So the
+// rule is duplicated by hand here; `config.workers.test.ts` pins the canonical
+// copy, and the github mirror below is deferred via dynamic import for the same
+// config-time-loadability reason. Keep the two in sync.
 const githubClientId = process.env.AUTH_GITHUB_CLIENT_ID;
 const githubClientSecret = process.env.AUTH_GITHUB_CLIENT_SECRET;
 const openSignupAllowed = /^(true|1)$/i.test(
@@ -65,6 +72,20 @@ const openSignupAllowed = /^(true|1)$/i.test(
 // self-hoster who hasn't set up CES is unaffected (and the send hooks below are
 // graceful no-ops via `sendEmail`).
 const emailConfigured = Boolean(process.env.EMAIL_FROM);
+
+// Polar billing config, read via `process.env` for the same config-time
+// (`void prepare`) reason as the creds above. `polarConfigured` is the inline,
+// config-time twin of `billingEnabled()` (`@/lib/config`) — it reads the SAME
+// two keys, so plugin registration here and the request-time quota/UI gates can't
+// disagree. No build flag is needed: the plugin declares no DB tables (fact 1)
+// and `new Polar()` never throws (fact 2). When false (the OSS / self-host
+// default) no plugin registers, so `POST /api/auth/polar/webhooks` 404s.
+const polarAccessToken = process.env.POLAR_ACCESS_TOKEN ?? "";
+const polarWebhookSecret = process.env.POLAR_WEBHOOK_SECRET ?? "";
+const polarProductId = process.env.POLAR_PRO_PRODUCT_ID;
+const polarServer =
+  process.env.POLAR_MODE === "production" ? "production" : "sandbox";
+const polarConfigured = Boolean(polarAccessToken && polarWebhookSecret);
 
 // Auth emails (verification + reset) are rendered + sent through a request-time
 // dynamic import for the same config-time-loadability reason as the github
@@ -101,8 +122,64 @@ function mirrorGithubAccount(
   );
 }
 
+// Builds the Polar Better Auth plugin (checkout + portal + auto-mounted webhook
+// at POST /api/auth/polar/webhooks). Only invoked when `polarConfigured` is true.
+// DB-touching webhook handlers are deferred via request-time dynamic import
+// (mirrors the github-mirror / auth-email pattern) so `void prepare` stays clean.
+function buildPolarPlugin() {
+  const polarSdk = new Polar({
+    accessToken: polarAccessToken,
+    server: polarServer,
+  });
+  return polar({
+    client: polarSdk,
+    createCustomerOnSignUp: false, // D8: lazy team-keyed customer at first checkout
+    use: [
+      checkout({
+        // `slug: "pro"` resolves against this map; productId from env (per-environment).
+        products: polarProductId
+          ? [{ productId: polarProductId, slug: "pro" }]
+          : [],
+        // Default success URL — only a fallback. The browser ALWAYS passes a
+        // team-scoped `successUrl` (billing-actions.tsx) so teamSlug resolves on
+        // return (D6 / S7), making this default effectively unreachable. It points
+        // at the generic /settings landing rather than a `__`-placeholder team slug
+        // that would 404 if it ever did fire.
+        successUrl: "/settings",
+        authenticatedUsersOnly: true,
+        theme: "dark",
+      }),
+      portal(),
+      webhooks({
+        secret: polarWebhookSecret,
+        // Defer DB-touching handlers (request-time dynamic import — keeps void prepare clean):
+        onSubscriptionActive: (p) =>
+          import("@/lib/billing/polar-webhook").then((m) =>
+            m.onSubscriptionActive(p),
+          ),
+        onSubscriptionCanceled: (p) =>
+          import("@/lib/billing/polar-webhook").then((m) =>
+            m.onSubscriptionCanceled(p),
+          ),
+        onSubscriptionRevoked: (p) =>
+          import("@/lib/billing/polar-webhook").then((m) =>
+            m.onSubscriptionRevoked(p),
+          ),
+        onOrderPaid: (p) =>
+          import("@/lib/billing/polar-webhook").then((m) => m.onOrderPaid(p)),
+      }),
+    ],
+  });
+}
+
 export default defineAuth(({ defaults }) => ({
   ...defaults,
+  // Polar billing plugin, registered ONLY when billing is configured. Preserve
+  // any void-default plugins (spread first) so we add rather than clobber.
+  plugins: [
+    ...(defaults.plugins ?? []),
+    ...(polarConfigured ? [buildPolarPlugin()] : []),
+  ],
   advanced: {
     ...defaults.advanced,
     database: { ...defaults.advanced?.database, generateId: () => ulid() },

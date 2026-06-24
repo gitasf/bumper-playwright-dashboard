@@ -32,6 +32,17 @@ import { SLUG_MAX_LEN } from "@/lib/slug";
 export { SLUG_MAX_LEN } from "@/lib/slug";
 
 /**
+ * New teams start on a 14-day app-managed Pro trial (D3): `tier="pro"` +
+ * `currentPeriodEnd = now + TRIAL_SECONDS` + `polarCustomerId = null` (the
+ * trial-vs-paid discriminator — no Polar subscription behind it). The D9 expiry
+ * gate (`effectiveTier`) re-caps to free once the date passes. Harmless when
+ * billing is OFF: the `tierLimits` short-circuit makes the team unlimited
+ * regardless of tier.
+ */
+const TRIAL_DAYS = 14;
+const TRIAL_SECONDS = TRIAL_DAYS * 24 * 60 * 60;
+
+/**
  * Failure to derive even a base slug from a name. Status-agnostic on purpose:
  * the form action redirects with `?error=`, the JSON route returns 400.
  */
@@ -170,6 +181,9 @@ export async function createTeamForUser(
       name,
       createdAt: nowSeconds,
       lastActivityAt: null,
+      tier: "pro", // D3: 14-day trial
+      currentPeriodEnd: nowSeconds + TRIAL_SECONDS,
+      polarCustomerId: null, // explicit-null: discriminates trial-pro from paid-pro
     }),
     tx.insert(memberships).values({
       id: ulid(),
