@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Engineering onboarding for Wrightful — a Playwright test-reporting dashboard.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AD%3C/text%3E%3C/svg%3E">
+<title>Wrightful — Engineering Onboarding</title>
+
+<style>
+  :root {
+    --ground: #f5f7f8;
+    --surface: #ffffff;
+    --ink: #14191b;
+    --muted: #5c6a6c;
+    --faint: #8593934;
+    --line: #e3e8e9;
+    --line-strong: #d3dadb;
+    --accent: #0b6b73;
+    --accent-bright: #0e8a93;
+    --accent-soft: #e3f0f0;
+    --code-bg: #0f1719;
+    --code-surface: #16211f;
+    --code-ink: #d8e3e1;
+    --code-muted: #6f8483;
+    --code-prompt: #4fc7bd;
+    --good: #1b9e54;
+    --good-soft: #e4f2e9;
+    --warn: #b9760a;
+    --warn-soft: #f8eed9;
+    --crit: #cf3d3d;
+    --crit-soft: #f7e3e3;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --maxprose: 70ch;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 clamp(20px, 4vw, 56px);
+  }
+
+  /* ---------- Masthead ---------- */
+  header.mast {
+    border-bottom: 1px solid var(--line-strong);
+    background:
+      radial-gradient(120% 140% at 88% -20%, var(--accent-soft) 0%, transparent 55%),
+      var(--surface);
+  }
+  .mast-inner { padding: clamp(40px, 6vw, 76px) 0 clamp(32px, 4vw, 48px); }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 22px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 26px; height: 1px;
+    background: var(--accent);
+    display: inline-block;
+  }
+  .wordmark {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: clamp(40px, 7vw, 68px);
+    letter-spacing: -0.03em;
+    line-height: 1;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .wordmark .tilde { color: var(--accent); }
+  .lede {
+    max-width: 62ch;
+    font-size: clamp(17px, 2.2vw, 20px);
+    line-height: 1.5;
+    color: #2b3536;
+    margin: 22px 0 0;
+    text-wrap: pretty;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 28px;
+  }
+  .chip {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    color: var(--muted);
+    background: var(--ground);
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    padding: 5px 12px;
+  }
+  .statusbar {
+    margin-top: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-family: var(--mono);
+    font-size: 13px;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 10px;
+    padding: 12px 16px;
+  }
+  .statusbar .sep { color: var(--code-muted); }
+  .statusbar .live {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: #7fe3d6;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 0 0 rgba(27,158,84,0.6);
+    animation: pulse 2.2s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(127,227,214,0.55); }
+    70% { box-shadow: 0 0 0 7px rgba(127,227,214,0); }
+    100% { box-shadow: 0 0 0 0 rgba(127,227,214,0); }
+  }
+  .statusbar a { color: #7fe3d6; text-decoration: none; }
+  .statusbar a:hover { text-decoration: underline; }
+
+  /* ---------- Layout ---------- */
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding: clamp(36px, 5vw, 60px) 0 96px;
+  }
+  @media (min-width: 940px) {
+    .layout { grid-template-columns: 216px minmax(0, 1fr); gap: 56px; }
+  }
+
+  /* ---------- TOC ---------- */
+  nav.toc { display: none; }
+  @media (min-width: 940px) {
+    nav.toc {
+      display: block;
+      position: sticky;
+      top: 28px;
+      align-self: start;
+      max-height: calc(100vh - 56px);
+      overflow-y: auto;
+    }
+  }
+  nav.toc .toc-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--faint);
+    color: #93a0a0;
+    margin: 0 0 14px;
+  }
+  nav.toc ol {
+    list-style: none;
+    margin: 0; padding: 0;
+    counter-reset: toc;
+    display: flex; flex-direction: column;
+    gap: 2px;
+  }
+  nav.toc a {
+    counter-increment: toc;
+    display: block;
+    font-size: 13.5px;
+    line-height: 1.35;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 6px 10px 6px 12px;
+    border-left: 2px solid transparent;
+    border-radius: 0 6px 6px 0;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  nav.toc a::before {
+    content: counter(toc, decimal-leading-zero);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--faint);
+    color: #aab5b5;
+    margin-right: 9px;
+  }
+  nav.toc a:hover { color: var(--ink); background: #eef2f2; }
+  nav.toc a.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  nav.toc a.active::before { color: var(--accent); }
+
+  /* ---------- Sections ---------- */
+  main { min-width: 0; }
+  section { padding-top: 8px; margin-bottom: 60px; scroll-margin-top: 24px; }
+  section > .prose { max-width: var(--maxprose); }
+  .sec-eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 10px;
+  }
+  h2 {
+    font-size: clamp(24px, 3.4vw, 31px);
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 17px;
+    letter-spacing: -0.01em;
+    margin: 30px 0 10px;
+  }
+  p { margin: 0 0 16px; max-width: var(--maxprose); }
+  a.inline { color: var(--accent-bright); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  a.inline:hover { border-bottom-color: var(--accent-bright); }
+  strong { font-weight: 650; }
+
+  code, kbd {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: #eaeeee;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 6px;
+    color: #0c4f54;
+    word-break: break-word;
+  }
+
+  /* ---------- Code blocks (terminal) ---------- */
+  .term {
+    background: var(--code-bg);
+    border: 1px solid #243231;
+    border-radius: 12px;
+    margin: 0 0 18px;
+    overflow: hidden;
+    max-width: 100%;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 14px;
+    background: var(--code-surface);
+    border-bottom: 1px solid #243231;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--code-muted);
+  }
+  .term-bar .lights { display: inline-flex; gap: 6px; }
+  .term-bar .lights i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+  .l-r { background: #e06360; } .l-y { background: #e3b341; } .l-g { background: #54b87f; }
+  .term pre {
+    margin: 0;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--code-ink);
+  }
+  .term pre .pr { color: var(--code-prompt); user-select: none; }
+  .term pre .cm { color: var(--code-muted); }
+  .term pre .fl { color: #d8b46a; }
+
+  /* ---------- Login card ---------- */
+  .login {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--surface);
+    max-width: var(--maxprose);
+    margin: 6px 0 8px;
+  }
+  @media (min-width: 560px) { .login { grid-template-columns: repeat(3, 1fr); } }
+  .login .cell { padding: 16px 18px; border-top: 1px solid var(--line); }
+  @media (min-width: 560px) {
+    .login .cell { border-top: none; border-left: 1px solid var(--line); }
+    .login .cell:first-child { border-left: none; }
+  }
+  .login .k {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--faint);
+    color: #94a0a0;
+    margin: 0 0 6px;
+  }
+  .login .v { font-family: var(--mono); font-size: 14px; color: var(--ink); word-break: break-all; }
+  .login .v a { color: var(--accent-bright); text-decoration: none; }
+
+  /* ---------- Cards: shape ---------- */
+  .pieces {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+    margin: 4px 0 8px;
+  }
+  @media (min-width: 680px) { .pieces { grid-template-columns: repeat(3, 1fr); } }
+  .piece {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    padding: 18px;
+  }
+  .piece .pkg { font-family: var(--mono); font-size: 13px; color: var(--accent); margin: 0 0 8px; }
+  .piece p { font-size: 14px; margin: 0; color: #313b3c; }
+
+  .flow {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 2;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px dashed var(--line-strong);
+    border-radius: 11px;
+    padding: 14px 18px;
+    margin: 0 0 22px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .flow b { color: var(--accent); font-weight: 600; }
+  .flow .arr { color: #b6c2c2; padding: 0 6px; }
+
+  /* ---------- Tables ---------- */
+  .tablewrap { overflow-x: auto; margin: 0 0 8px; border: 1px solid var(--line); border-radius: 11px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: #eef2f2;
+  }
+  tr:last-child td { border-bottom: none; }
+  td code { white-space: nowrap; }
+  td.path { font-family: var(--mono); font-size: 12.5px; color: var(--accent); white-space: nowrap; }
+
+  /* command grid */
+  .cmds { display: grid; grid-template-columns: 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
+  @media (min-width: 620px) { .cmds { grid-template-columns: 1fr 1fr; } }
+  .cmd { background: var(--surface); padding: 13px 16px; }
+  .cmd .c { font-family: var(--mono); font-size: 13px; color: #0c4f54; }
+  .cmd .d { font-size: 13px; color: var(--muted); margin-top: 3px; }
+
+  /* ---------- Gotcha cards ---------- */
+  .gotchas { display: flex; flex-direction: column; gap: 12px; }
+  .gotcha {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left-width: 4px;
+    border-radius: 0 11px 11px 0;
+    padding: 16px 18px;
+  }
+  .gotcha.crit { border-left-color: var(--crit); }
+  .gotcha.warn { border-left-color: var(--warn); }
+  .gotcha.note { border-left-color: var(--accent); }
+  .gotcha .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 7px; }
+  .gotcha h3 { margin: 0; font-size: 16px; }
+  .sev {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 5px;
+  }
+  .sev.crit { background: var(--crit-soft); color: #9c2a2a; }
+  .sev.warn { background: var(--warn-soft); color: #8a5806; }
+  .sev.note { background: var(--accent-soft); color: var(--accent); }
+  .gotcha p { font-size: 14px; margin: 0; color: #313b3c; max-width: none; }
+
+  /* ---------- Callout ---------- */
+  .callout {
+    display: flex; gap: 13px;
+    background: var(--warn-soft);
+    border: 1px solid #ecd9ad;
+    border-radius: 11px;
+    padding: 14px 16px;
+    margin: 0 0 18px;
+    max-width: var(--maxprose);
+    font-size: 14px;
+  }
+  .callout .tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a5806; flex-shrink: 0; padding-top: 1px; }
+  .callout p { margin: 0; color: #5b4209; }
+  .callout code { background: #f3e6c6; border-color: #e7d3a3; color: #74510a; }
+
+  details.alt {
+    border: 1px solid var(--line-strong);
+    border-radius: 11px;
+    background: var(--surface);
+    margin: 0 0 18px;
+    max-width: var(--maxprose);
+    overflow: hidden;
+  }
+  details.alt > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 14px 18px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink);
+    display: flex; align-items: center; gap: 10px;
+  }
+  details.alt > summary::-webkit-details-marker { display: none; }
+  details.alt > summary .twist { color: var(--accent); transition: transform .2s; }
+  details.alt[open] > summary .twist { transform: rotate(90deg); }
+  details.alt > summary .hint { color: var(--muted); font-family: var(--sans); margin-left: auto; font-size: 12px; }
+  details.alt .body { padding: 0 18px 6px; border-top: 1px solid var(--line); }
+  details.alt .body p:first-child { margin-top: 16px; }
+
+  /* ---------- Read next ---------- */
+  .reads { display: grid; grid-template-columns: 1fr; gap: 10px; max-width: var(--maxprose); }
+  @media (min-width: 620px) { .reads { grid-template-columns: 1fr 1fr; } }
+  .read {
+    display: flex; flex-direction: column; gap: 4px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px;
+    text-decoration: none; color: inherit;
+    transition: border-color .15s, background .15s;
+  }
+  .read:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .read:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .read .f { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12.5px; color: var(--accent); word-break: break-all; }
+  .read .go { margin-left: auto; flex-shrink: 0; color: var(--accent); font-size: 14px; transition: transform .15s; }
+  .read:hover .go { transform: translate(2px, -2px); }
+  .read .w { font-size: 13px; color: var(--muted); }
+
+  footer {
+    border-top: 1px solid var(--line-strong);
+    padding: 26px 0 60px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  footer .mono { font-family: var(--mono); }
+
+  ul.tight { margin: 0 0 16px; padding-left: 20px; max-width: var(--maxprose); }
+  ul.tight li { margin-bottom: 6px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot { animation: none; }
+  }
+</style>
+</head>
+<body>
+<header class="mast">
+  <div class="wrap mast-inner">
+    <p class="eyebrow">Internal · Engineering Onboarding</p>
+    <h1 class="wordmark">Wright<span class="tilde">ful</span></h1>
+    <p class="lede">
+      A Playwright test-reporting dashboard. A custom reporter streams test results and
+      artifacts <em>live</em> as each test finishes; a Cloudflare Workers dashboard stores,
+      analyzes, and broadcasts them. This is your map to the codebase, the setup, and the
+      few things that will bite you if you don't know them.
+    </p>
+    <div class="chips">
+      <span class="chip">Pre-launch · 0 users</span>
+      <span class="chip">pnpm monorepo</span>
+      <span class="chip">Cloudflare Workers · Void</span>
+      <span class="chip">Postgres + Drizzle</span>
+      <span class="chip">R2 · void/ws realtime</span>
+    </div>
+    <div class="statusbar">
+      <span class="live"><span class="dot"></span> running</span>
+      <span class="sep">·</span>
+      <a href="http://localhost:5173">localhost:5173</a>
+      <span class="sep">·</span>
+      <span>demo@wrightful.local / demo1234</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="layout">
+    <nav class="toc" aria-label="Contents">
+      <p class="toc-label">On this page</p>
+      <ol>
+        <li><a href="#shape">The shape</a></li>
+        <li><a href="#layout">Repo layout</a></li>
+        <li><a href="#setup">Local setup</a></li>
+        <li><a href="#login">Logging in</a></li>
+        <li><a href="#commands">Everyday commands</a></li>
+        <li><a href="#gotchas">Gotchas that bite</a></li>
+        <li><a href="#settled">Settled decisions</a></li>
+        <li><a href="#state">Current state</a></li>
+        <li><a href="#reads">Read next</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <section id="shape">
+        <p class="sec-eyebrow">The 30-second model</p>
+        <h2>Three pieces, one data flow</h2>
+        <div class="prose">
+          <p>
+            Everything hangs off the live ingest path: a test finishes in CI, the reporter
+            posts it, the worker writes it to Postgres + R2 and broadcasts the delta to any
+            browser watching the run.
+          </p>
+        </div>
+        <div class="flow">
+          Playwright&nbsp;CI <span class="arr">──▶</span> <b>@wrightful/reporter</b>
+          <span class="arr">──▶</span> Worker <b>/api/runs/*</b>
+          <span class="arr">──▶</span> Postgres <span class="arr">+</span> R2
+          <span class="arr">──▶</span> <b>void/ws</b> rooms <span class="arr">──▶</span> live dashboard
+        </div>
+        <div class="pieces">
+          <div class="piece">
+            <p class="pkg">@wrightful/reporter</p>
+            <p>The Playwright reporter. Streams results + artifacts as each test reaches its
+              final outcome (retries aggregated into <code>flaky</code>). Published via Changesets.</p>
+          </div>
+          <div class="piece">
+            <p class="pkg">@wrightful/dashboard</p>
+            <p>The app (<code>apps/dashboard</code>), built on Void: Hono file-based API in
+              <code>routes/</code>, SSR pages in <code>pages/</code>, Drizzle schema in
+              <code>db/schema.ts</code>. This is where you'll spend your time.</p>
+          </div>
+          <div class="piece">
+            <p class="pkg">packages/e2e</p>
+            <p>Playwright E2E — a demo suite for dogfooding and the canonical dashboard suite
+              that self-boots a real Void dashboard.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="layout">
+        <p class="sec-eyebrow">Where things live</p>
+        <h2>Repo layout</h2>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Path</th><th>What it is</th></tr></thead>
+            <tbody>
+              <tr><td class="path">apps/dashboard</td><td>The dashboard app. API handlers in <code>routes/</code>, pages as <code>*.tsx</code> + co-located <code>*.server.ts</code> loaders/actions, middleware in <code>middleware/</code>, schema in <code>db/schema.ts</code>.</td></tr>
+              <tr><td class="path">packages/reporter</td><td>The Playwright reporter. Wire types in <code>src/types.ts</code> — kept in sync with the dashboard's Zod schemas.</td></tr>
+              <tr><td class="path">packages/e2e</td><td>Demo suite + canonical dashboard suite.</td></tr>
+              <tr><td class="path">docs/</td><td><code>ARCHITECTURE.md</code>, <code>PRD.md</code>, <code>roadmap/</code>, <code>adr/</code>, and <code>worklog/</code> — the project's source of truth for <em>why</em>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="setup">
+        <p class="sec-eyebrow">Get running</p>
+        <h2>Local setup</h2>
+        <div class="prose">
+          <p>
+            The dashboard is <strong>Postgres-only</strong>. The happy path boots a local
+            Postgres via Docker, writes <code>.env.local</code>, migrates the DB, starts the
+            dev server, and seeds a demo team / project / API key + monitors.
+          </p>
+        </div>
+        <div class="term">
+          <div class="term-bar"><span class="lights"><i class="l-r"></i><i class="l-y"></i><i class="l-g"></i></span> happy path — needs Docker</div>
+<pre><span class="pr">$</span> pnpm install
+<span class="pr">$</span> pnpm setup:local        <span class="cm"># Docker Postgres + .env.local + migrate + seed</span>
+<span class="pr">$</span> pnpm dev                <span class="cm"># dashboard on http://localhost:5173</span></pre>
+        </div>
+        <p class="prose">Optional — seed months of synthetic history instead of the small fixture set:</p>
+        <div class="term">
+          <div class="term-bar"><span class="lights"><i class="l-r"></i><i class="l-y"></i><i class="l-g"></i></span> more data</div>
+<pre><span class="pr">$</span> pnpm setup:local <span class="fl">--history</span>                    <span class="cm"># 3 months</span>
+<span class="pr">$</span> pnpm setup:local <span class="fl">--history --history-months</span> 6  <span class="cm"># 6 months</span></pre>
+        </div>
+
+        <details class="alt">
+          <summary><span class="twist">▸</span> No Docker? Native Postgres path <span class="hint">alternative setup</span></summary>
+          <div class="body">
+            <p><code>setup:local</code> hard-requires Docker for any <code>localhost</code> DB URL.
+              Without it, run a native Postgres and do the post-Docker steps by hand:</p>
+            <div class="term">
+              <div class="term-bar"><span class="lights"><i class="l-r"></i><i class="l-y"></i><i class="l-g"></i></span> native postgres</div>
+<pre><span class="cm"># 1. Install + start Postgres 16 (matches CI's postgres:16)</span>
+<span class="pr">$</span> brew install postgresql@16 &amp;&amp; brew services start postgresql@16
+
+<span class="cm"># 2. Create the role + db (same creds as docker-compose.pg.yml)</span>
+<span class="pr">$</span> psql -d postgres -c "CREATE ROLE wrightful LOGIN PASSWORD 'wrightful' SUPERUSER;"
+<span class="pr">$</span> psql -d postgres -c "CREATE DATABASE wrightful_dev OWNER wrightful;"
+
+<span class="cm"># 3. Point .env.local at it, then migrate + seed manually</span>
+<span class="pr">$</span> export DATABASE_URL="postgresql://wrightful:wrightful@localhost:5432/wrightful_dev"
+<span class="pr">$</span> cd apps/dashboard &amp;&amp; npx void db reset        <span class="cm"># wipe + migrate</span>
+<span class="pr">$</span> cd ../.. &amp;&amp; pnpm dev &amp;                           <span class="cm"># leave running on :5173</span>
+<span class="cm"># once /api/auth/get-session responds:</span>
+<span class="pr">$</span> cd apps/dashboard
+<span class="pr">$</span> WRIGHTFUL_URL=http://localhost:5173 node scripts/seed-demo.mjs
+<span class="pr">$</span> WRIGHTFUL_URL=http://localhost:5173 \
+    WRIGHTFUL_TOKEN=$(node -e "console.log(require('./.env.seed.json').apiKey)") \
+    node scripts/upload-fixtures.mjs</pre>
+            </div>
+            <div class="callout">
+              <span class="tag">trap</span>
+              <p>Don't try to dodge the Docker check with <code>[::1]</code> in <code>DATABASE_URL</code> — the
+                <code>void</code> CLI's connection parser can't handle the bracketed IPv6 literal
+                (<code>ENOTFOUND [::1]</code>). Keep <code>localhost</code> in the URL and run the steps manually.</p>
+            </div>
+            <p>A hosted Postgres (e.g. a free Neon branch) also works — set <code>DATABASE_URL</code>
+              to it and <code>setup:local</code> skips Docker entirely.</p>
+          </div>
+        </details>
+      </section>
+
+      <section id="login">
+        <p class="sec-eyebrow">First sign-in</p>
+        <h2>Logging in</h2>
+        <div class="prose">
+          <p>
+            Open the dashboard; <code>/</code> redirects you to the Better Auth sign-in screen.
+            Use the seeded demo credentials — they land you in the <strong>Demo</strong> team →
+            <strong>Playwright</strong> project with the seeded runs and monitors.
+          </p>
+        </div>
+        <div class="login">
+          <div class="cell"><p class="k">URL</p><p class="v"><a href="http://localhost:5173">localhost:5173</a></p></div>
+          <div class="cell"><p class="k">Email</p><p class="v">demo@wrightful.local</p></div>
+          <div class="cell"><p class="k">Password</p><p class="v">demo1234</p></div>
+        </div>
+        <p class="prose">
+          Need more API keys (to push test data)? Mint them in the UI at
+          <code>/settings/teams/demo/p/playwright/keys</code>. There's no GitHub button locally —
+          <code>AUTH_GITHUB_*</code> is unset.
+        </p>
+      </section>
+
+      <section id="commands">
+        <p class="sec-eyebrow">Day to day</p>
+        <h2>Everyday commands</h2>
+        <div class="prose">
+          <p>Tooling is <strong>Vite+ (<code>vp</code>)</strong>, not raw npm — <code>pnpm check</code>
+            wraps oxfmt + oxlint + type-aware checking in one pass; the typechecker is <code>tsgo</code>.
+            A pre-commit hook runs <code>vp staged</code> on staged files.</p>
+        </div>
+        <div class="cmds">
+          <div class="cmd"><div class="c">pnpm dev</div><div class="d">Dashboard dev server (:5173)</div></div>
+          <div class="cmd"><div class="c">pnpm test</div><div class="d">Dashboard + reporter unit tests (vitest)</div></div>
+          <div class="cmd"><div class="c">pnpm check</div><div class="d">Format + lint + type-check, one pass</div></div>
+          <div class="cmd"><div class="c">pnpm check:fix</div><div class="d">Auto-fix format + lint</div></div>
+          <div class="cmd"><div class="c">pnpm build</div><div class="d">Build dashboard + reporter</div></div>
+          <div class="cmd"><div class="c">pnpm test:e2e</div><div class="d">Playwright E2E</div></div>
+          <div class="cmd"><div class="c">pnpm db:generate</div><div class="d">Regenerate Drizzle migrations from schema</div></div>
+          <div class="cmd"><div class="c">pnpm setup:local</div><div class="d">Reset to a clean seeded local instance</div></div>
+        </div>
+      </section>
+
+      <section id="gotchas">
+        <p class="sec-eyebrow">Read this before your first PR</p>
+        <h2>The mental model &amp; the gotchas that bite</h2>
+        <div class="gotchas">
+          <div class="gotcha crit">
+            <div class="top"><h3>Tenancy is logical, not physical</h3><span class="sev crit">will bite · security</span></div>
+            <p>There's no per-team boundary. <em>Every</em> query against a run-scoped table
+              (<code>runs</code>, <code>testResults</code>, <code>artifacts</code>, …) must filter by
+              <code>projectId</code> (and <code>teamId</code> where present). The branded
+              <code>AuthorizedProjectId</code> / <code>TenantScope</code> in <code>src/lib/scope.ts</code>
+              make forgetting a <em>type</em> error. Start tenant loaders with <code>requireTenantContext(c)</code>;
+              never do raw id lookups.</p>
+          </div>
+          <div class="gotcha crit">
+            <div class="top"><h3>Postgres dual-dialect trap</h3><span class="sev crit">will bite · correctness</span></div>
+            <p>node-postgres returns <code>int8</code>/<code>numeric</code> as <strong>strings</strong>; the fast
+              pglite test lane returns <strong>numbers</strong>. Coercions live in <code>numericSql</code>
+              (<code>src/lib/db/sql-ops.ts</code>) and the raw-read <code>cast(… as integer)</code> idiom.
+              A real <code>postgres:16</code> CI leg + <code>pg-integration.test.ts</code> exist to catch what
+              green pglite tests hide — don't trust the fast lane alone.</p>
+          </div>
+          <div class="gotcha warn">
+            <div class="top"><h3>The wire contract is duplicated</h3><span class="sev warn">keep in mind</span></div>
+            <p>TS interfaces in <code>packages/reporter/src/types.ts</code> and Zod schemas in
+              <code>apps/dashboard/src/lib/schemas.ts</code> must stay in sync. The canary is
+              <code>contract.test.ts</code> — it parses reporter-built payloads through the dashboard's schemas.</p>
+          </div>
+          <div class="gotcha warn">
+            <div class="top"><h3>Two auth systems coexist</h3><span class="sev warn">keep in mind</span></div>
+            <p>Better Auth <strong>sessions</strong> (<code>void/auth</code>) for the dashboard UI; Bearer
+              <strong>API keys</strong> for ingest (<code>/api/*</code>). Keys are SHA-256 hashed, looked up by
+              8-char prefix. Reporter requests also carry <code>X-Wrightful-Version: 3</code>.</p>
+          </div>
+          <div class="gotcha note">
+            <div class="top"><h3>Ingest is a deep module</h3><span class="sev note">convention</span></div>
+            <p>Handlers under <code>routes/api/runs/*</code> are auth + translation only. The real pipeline
+              lives behind <code>openRun</code> / <code>appendRunResults</code> / <code>completeRun</code> in
+              <code>src/lib/ingest.ts</code>; multi-statement writes go through <code>runBatch</code> (a transaction).</p>
+          </div>
+          <div class="gotcha note">
+            <div class="top"><h3>UI: reuse before hand-rolling</h3><span class="sev note">convention</span></div>
+            <p>~50 Base UI wrappers in <code>src/components/ui/</code> — use them; don't import
+              <code>@base-ui-components/react</code> directly from page code. Tailwind v4 (no config; tokens in
+              <code>src/styles.css</code> under <code>@theme</code>). New components: <code>npx shadcn@latest add @coss/&lt;name&gt;</code>.
+              URL state via <code>useSearchParam</code> — no nuqs.</p>
+          </div>
+          <div class="gotcha note">
+            <div class="top"><h3>Worklogs are mandatory</h3><span class="sev note">process</span></div>
+            <p>Any significant change gets a dated entry in <code>docs/worklog/</code>
+              (<code>YYYY-MM-DD-short-description.md</code>). This is how the project records decisions beyond
+              <code>git log</code> — future you relies on it.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="settled">
+        <p class="sec-eyebrow">Don't re-open these</p>
+        <h2>Settled architectural decisions</h2>
+        <div class="prose">
+          <p>
+            Read <code>docs/worklog/void-migration-consolidated.md</code> first. The durable calls,
+            not to be re-litigated:
+          </p>
+          <ul class="tight">
+            <li><strong>One shared Postgres DB with logical tenancy</strong> — not per-team Durable Objects.</li>
+            <li><strong><code>void/ws</code> rooms are the only realtime transport</strong> — SSE was removed (see <code>docs/adr/0001-realtime-websocket-rooms.md</code>).</li>
+            <li>The store moved <strong>D1 → Postgres</strong> (<code>docs/worklog/2026-06-16-postgres-only.md</code>), but "single shared store, logical tenancy" still stands.</li>
+          </ul>
+          <p>Worklogs dated before the Void migration describe the prior rwsdk / Durable-Object / Kysely
+            architecture and are historical — don't take them as current.</p>
+        </div>
+      </section>
+
+      <section id="state">
+        <p class="sec-eyebrow">Where the project is</p>
+        <h2>Current state</h2>
+        <div class="prose">
+          <p>
+            <strong>Pre-launch, zero users.</strong> The core loop — streaming ingest → analytics →
+            flaky detection → artifacts → realtime — is solid, and roadmap Tiers 1–3 are largely shipped:
+            metering/quotas, retention, GitHub Checks, tag filtering, flaky quarantine,
+            ownership/CODEOWNERS, run-diff, export API, TCP/ping monitors, granular RBAC, audit logs.
+          </p>
+          <p>
+            Recent work has been <strong>consolidation, not features</strong>: the D1→Postgres migration,
+            own-account Cloudflare deploy support, and two "architecture deepening" refactor passes.
+            See <code>docs/roadmap/README.md</code> for what's left.
+          </p>
+          <div class="callout">
+            <span class="tag">deferred</span>
+            <p><strong>SSO/SAML</strong> — <code>@better-auth/sso</code> isn't Cloudflare-Workers-compatible.
+              Scaffolding was built then reverted; the blocker + how to finish it are documented in
+              <code>docs/roadmap/3.3-sso-saml.md</code>.</p>
+          </div>
+          <p>Schema/migrations are still malleable (<code>void db generate</code>, destructive OK) — the
+            frozen-migration rule only snaps on at first production deploy.</p>
+        </div>
+      </section>
+
+      <section id="reads">
+        <p class="sec-eyebrow">Go deeper</p>
+        <h2>Read next</h2>
+        <div class="prose">
+          <p>The first three open <strong>rendered, readable</strong> pages (built by
+            <code>scripts/render-docs.mjs</code>). The rest — roadmap, worklogs, ADRs, the PRD —
+            stay as Markdown; browse those in your IDE or on GitHub.</p>
+        </div>
+        <div class="reads">
+          <a class="read" href="ARCHITECTURE.html"><span class="f">docs/ARCHITECTURE<span class="go">↗</span></span><span class="w">One-page system map. Read in full.</span></a>
+          <a class="read" href="../CLAUDE.html"><span class="f">CLAUDE<span class="go">↗</span></span><span class="w">Conventions + the full command reference.</span></a>
+          <a class="read" href="../SELF-HOSTING.html"><span class="f">SELF-HOSTING<span class="go">↗</span></span><span class="w">Postgres + own-account Cloudflare deploy specifics.</span></a>
+          <a class="read" href="roadmap/"><span class="f">docs/roadmap/ <span style="opacity:.6">(raw)</span><span class="go">↗</span></span><span class="w">What's shipped, what's left, the reuse seams.</span></a>
+          <a class="read" href="worklog/"><span class="f">docs/worklog/ <span style="opacity:.6">(raw)</span><span class="go">↗</span></span><span class="w">Dated decision history — the "why" behind every change.</span></a>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <span>Wrightful — engineering onboarding</span>
+    <span class="mono">apps/dashboard · packages/reporter · packages/e2e</span>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+    var map = {};
+    links.forEach(function (a) {
+      var id = a.getAttribute('href').slice(1);
+      var sec = document.getElementById(id);
+      if (sec) map[id] = a;
+    });
+    var sections = Object.keys(map).map(function (id) { return document.getElementById(id); });
+    if (!('IntersectionObserver' in window) || sections.length === 0) return;
+    var visible = new Set();
+    function setActive() {
+      var current = null;
+      for (var i = 0; i < sections.length; i++) {
+        if (visible.has(sections[i].id)) { current = sections[i].id; break; }
+      }
+      links.forEach(function (a) { a.classList.remove('active'); });
+      if (current && map[current]) map[current].classList.add('active');
+    }
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) visible.add(e.target.id);
+        else visible.delete(e.target.id);
+      });
+      setActive();
+    }, { rootMargin: '-10% 0px -75% 0px', threshold: 0 });
+    sections.forEach(function (s) { obs.observe(s); });
+  })();
+</script>
+</body>
+</html>

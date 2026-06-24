@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%84%3C/text%3E%3C/svg%3E">
+<title>Architecture · Wrightful docs</title>
+<style>
+:root{
+  --ground:#f5f7f8;--surface:#fff;--ink:#14191b;--muted:#5c6a6c;--line:#e3e8e9;
+  --line-strong:#d3dadb;--accent:#0b6b73;--accent-bright:#0e8a93;--accent-soft:#e3f0f0;
+  --code-bg:#0f1719;--code-ink:#d8e3e1;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.68;-webkit-font-smoothing:antialiased}
+.docbar{position:sticky;top:0;z-index:10;background:rgba(245,247,248,.86);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line-strong)}
+.docbar-inner{max-width:860px;margin:0 auto;padding:11px clamp(20px,4vw,40px);
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.home{font-family:var(--mono);font-size:13px;color:var(--accent);text-decoration:none;white-space:nowrap}
+.home:hover{color:var(--accent-bright);text-decoration:underline}
+.crumbs{font-family:var(--mono);font-size:12px;color:var(--muted);overflow-x:auto;white-space:nowrap}
+.crumbs span:last-child{color:var(--ink)}
+.crumb-sep{color:#b6c2c2;padding:0 6px}
+main.doc{max-width:860px;margin:0 auto;padding:clamp(28px,5vw,52px) clamp(20px,4vw,40px) 96px}
+.doc h1,.doc h2,.doc h3,.doc h4{letter-spacing:-.02em;line-height:1.2;text-wrap:balance;scroll-margin-top:64px}
+.doc h1{font-size:clamp(28px,5vw,38px);margin:0 0 8px}
+.doc h2{font-size:clamp(21px,3vw,27px);margin:46px 0 14px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+.doc h3{font-size:18px;margin:30px 0 10px}
+.doc h4{font-size:15px;margin:22px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)}
+.doc p{margin:0 0 16px}
+.doc a{color:var(--accent-bright);text-decoration:none;border-bottom:1px solid var(--accent-soft)}
+.doc a:hover{border-bottom-color:var(--accent-bright)}
+.doc strong{font-weight:650}
+.doc ul,.doc ol{margin:0 0 16px;padding-left:24px}
+.doc li{margin-bottom:6px}
+.doc li>ul,.doc li>ol{margin:6px 0}
+.doc code{font-family:var(--mono);font-size:.86em;background:#eaeeee;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#0c4f54;word-break:break-word}
+.doc pre{background:var(--code-bg);border:1px solid #243231;border-radius:11px;padding:16px 18px;overflow-x:auto;margin:0 0 18px}
+.doc pre code{background:none;border:none;padding:0;color:var(--code-ink);font-size:13px;line-height:1.7;word-break:normal}
+.doc blockquote{margin:0 0 18px;padding:2px 18px;border-left:3px solid var(--accent);background:var(--accent-soft);border-radius:0 8px 8px 0;color:#274b4d}
+.doc blockquote p:last-child{margin-bottom:12px}
+.doc blockquote p:first-child{margin-top:12px}
+.doc hr{border:none;border-top:1px solid var(--line-strong);margin:32px 0}
+.doc table{border-collapse:collapse;width:100%;font-size:14px;margin:0 0 18px;display:block;overflow-x:auto}
+.doc th,.doc td{border:1px solid var(--line);padding:9px 13px;text-align:left;vertical-align:top}
+.doc th{background:#eef2f2;font-family:var(--mono);font-size:12px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
+.doc img{max-width:100%}
+.docfoot{max-width:860px;margin:0 auto;padding:22px clamp(20px,4vw,40px) 50px;border-top:1px solid var(--line-strong);font-size:12.5px;color:var(--muted);font-family:var(--mono)}
+</style>
+</head>
+<body>
+<header class="docbar">
+  <div class="docbar-inner">
+    <a class="home" href="onboarding.html#reads">&#8617; Back to onboarding</a>
+    <nav class="crumbs">docs<span class="crumb-sep">/</span><span>ARCHITECTURE.html</span></nav>
+  </div>
+</header>
+<main class="doc">
+<h1 id="architecture">Architecture</h1>
+<p>A one-page orientation. For the narrative behind each decision, read the dated entries in <a href="./worklog/"><code>docs/worklog/</code></a> — they are the project&#39;s source of truth for <em>why</em>. The rwsdk → Void migration that produced today&#39;s shape is summarized in <a href="./worklog/void-migration-consolidated.md"><code>docs/worklog/void-migration-consolidated.md</code></a>.</p>
+<h2 id="shape">Shape</h2>
+<pre><code>Playwright CI ──@wrightful/reporter──▶ Worker (/api/runs/*)
+                                        │
+                                        ├─ Postgres (Drizzle/Hyperdrive) ── auth + tenancy lookup, runs + derived rows
+                                        │
+                                        ├─ R2 (worker-proxied PUT/GET) ── artifact bytes
+                                        │
+                                        └─ void/ws ── broadcastRunRoom / broadcastProjectRoom
+
+Browser ────────SSR pages (Inertia)────▶ Worker (/t/:team/p/:project/…)
+                                        │
+                                        ├─ Better Auth session (void/auth) ── dashboard auth
+                                        ├─ Postgres (Drizzle/Hyperdrive) ──── teams, projects, memberships, runs
+                                        └─ void/ws ── useRunRoom / useProjectRoom realtime
+
+Cron (every 1m / 5m / 6h / daily) ─────▶ Worker (scheduled)
+                                        ├─ sweep due monitors → Queues (monitors / uptime) → executor → run ingest
+                                        └─ sweep stale runs · retention · synthetic-key + execution reapers · usage rollup
+</code></pre>
+<p>The dashboard is the <code>@wrightful/dashboard</code> app in <code>apps/dashboard</code>, built on <a href="https://void.cloud">Void</a> (a fullstack Vite plugin + deploy platform for Cloudflare). <code>void deploy</code> is the entire deploy pipeline; it provisions the Postgres database (over Hyperdrive), R2 bucket, the <code>monitors</code> / <code>uptime</code> Queue consumers, the Sandbox container (browser monitors), and any KV bindings.</p>
+<h2 id="storage">Storage</h2>
+<p>One <strong>Postgres database</strong> — over Cloudflare Hyperdrive in production, a direct <code>DATABASE_URL</code> in local dev — accessed through Drizzle (<code>db</code> from <code>void/db</code>, tables from <code>@schema</code>, schema source <code>apps/dashboard/db/schema.ts</code> in pg-core). Postgres result-shape coercions (node-postgres returns <code>int8</code>/<code>numeric</code> as strings, where pglite returns numbers) live in <code>numericSql</code> (<code>src/lib/db/sql-ops.ts</code>) and the raw-read <code>cast(… as integer)</code> idiom; multi-statement atomicity goes through <code>runBatch</code> (a <code>db.transaction</code>) in <code>src/lib/db-batch.ts</code>. See <a href="../SELF-HOSTING.html"><code>SELF-HOSTING.md</code></a> for deploy specifics and the Postgres-only worklog (<code>docs/worklog/2026-06-16-postgres-only.md</code>) for the D1-removal rationale.</p>
+<ul>
+<li><strong>Control tables.</strong> <code>teams</code> (incl. <code>tier</code> + per-team retention windows), <code>projects</code>, <code>memberships</code>, <code>teamInvites</code>, <code>apiKeys</code>, <code>userGithubAccounts</code>, <code>userState</code>, <code>usageCounters</code> (per-team-month run/test-result/artifact-byte meters), <code>githubInstallations</code> (GitHub App install → team).</li>
+<li><strong>Tenant tables.</strong> <code>runs</code> (carries <code>origin</code>, <code>monitorId</code>, <code>githubCheckRunId</code>, <code>lastActivityAt</code>, <code>expectedTotalTests</code>), <code>testResults</code>, <code>testResultAttempts</code>, <code>testTags</code>, <code>testAnnotations</code>, <code>artifacts</code>, plus the test-management tables <code>quarantinedTests</code>, <code>testOwners</code>, and the synthetic-monitoring tables <code>monitors</code> + <code>monitorExecutions</code>. Every run-scoped child carries denormalized <code>teamId</code> (on <code>runs</code>) and <code>projectId</code> so scope is enforced without joining through <code>runs</code>. Reached only through the auth-checked <code>TenantScope</code> from <code>src/lib/scope.ts</code> / <code>src/lib/tenant-context.ts</code>.</li>
+<li><strong><code>auditLog</code>.</strong> Team-scoped audit trail (member/key/config/project mutations); <code>actorUserId</code> is a logical FK (no DB constraint), like <code>memberships.userId</code>. <code>projectId</code> is <code>set null</code> so a row survives a project delete.</li>
+<li><strong>Better Auth tables</strong> (<code>user</code>, <code>session</code>, <code>account</code>, <code>verification</code>) are owned by <code>void/auth</code> — bootstrapped idempotently against the same database and intentionally not declared in the schema. Cross-table joins use raw SQL.</li>
+<li><strong>R2.</strong> Artifact bytes only. Both directions are <strong>worker-proxied</strong> — the worker is on the byte path. Upload: the reporter PUTs to a relative worker route (<code>/api/artifacts/:id/upload</code>) returned by <code>register</code>, which streams the body into R2 via <code>storage.put</code>. Download: a worker route (<code>/api/artifacts/:id/download</code>) authorized by a signed HMAC token that carries the R2 key (so GETs don&#39;t touch the DB), which then <code>storage.get</code>s and streams the bytes back. There is no S3-style presigned R2 URL today; offloading bytes off the worker would be a separate, deliberate change.</li>
+<li><strong>Realtime.</strong> <code>void/ws</code> rooms are the only realtime transport (SSE / <code>void/live</code> was deleted — see <a href="./adr/0001-realtime-websocket-rooms.md">ADR-0001</a>). Two hibernatable rooms — <code>routes/ws/run/[runId].ws.ts</code> (per-test deltas) and <code>routes/ws/project/[projectId].ws.ts</code> (run-list lifecycle). Ingest publishes via <code>broadcastRunRoom</code> / <code>broadcastProjectRoom</code> (<code>src/realtime/publish.ts</code>) after each batch write (a non-fatal, internal DO-to-DO POST gated by a build-baked secret); clients subscribe with <code>useRunRoom</code> / <code>useProjectRoom</code>. No event replay (connect-before-broadcast; SSR seed + id-dedupe cover the gap), 256-connection cap per room.</li>
+</ul>
+<p><strong>Tenant isolation is logical, not physical.</strong> There is no per-team Durable Object boundary — every query against a run-scoped table must filter by <code>projectId</code> (and <code>teamId</code> where present). The branded <code>AuthorizedProjectId</code> / <code>AuthorizedTeamId</code> on <code>TenantScope</code> force the auth-checked ids through the type system so a query can&#39;t silently cross tenants.</p>
+<p>Schema changes are Drizzle migrations, committed under <code>apps/dashboard/db/migrations/</code>; <code>pnpm db:generate</code> (= <code>void db generate</code>) regenerates them from <code>db/schema.ts</code>. On <code>void deploy</code> they&#39;re applied automatically; for an own-account remote DB, <code>pnpm db:migrate:remote</code> applies them explicitly (<code>wrangler deploy</code> does <strong>not</strong> auto-apply migrations).</p>
+<h2 id="auth">Auth</h2>
+<p>Two systems coexist on the same worker:</p>
+<ul>
+<li><strong>Dashboard sessions</strong> — Better Auth via <code>void/auth</code>. Email + password, optional GitHub OAuth. Config in <code>apps/dashboard/auth.ts</code>; providers declared in <code>void.json#auth</code>. Server helpers <code>getSession()</code> / <code>getUser()</code> / <code>requireAuth(c)</code> come from <code>void/auth</code>.</li>
+<li><strong>Ingest API keys</strong> — Bearer tokens, SHA-256 hashed at rest, looked up by 8-char prefix and hash-compared (<code>src/lib/api-key.ts</code>). Each key is scoped to a single project. Applied via <code>middleware/02.api-auth.ts</code>; handlers read <code>getApiKey(c)</code>. Reporter requests also carry <code>X-Wrightful-Version: 3</code>; older protocols return 409.</li>
+</ul>
+<h2 id="routing">Routing</h2>
+<p>Void file-based routing. API handlers in <code>apps/dashboard/routes/</code>, pages in <code>apps/dashboard/pages/</code> (<code>*.tsx</code> + co-located <code>*.server.ts</code> loaders/actions). Cross-cutting concerns are ordered middleware in <code>apps/dashboard/middleware/</code>.</p>
+<ul>
+<li><code>/</code> — team / project picker.</li>
+<li><code>/t/:teamSlug/p/:projectSlug/…</code> — tenant-scoped UI. Every loader starts with <code>requireTenantContext(c)</code> (reads the active project resolved once by <code>middleware/01.context.ts</code>). Pages: runs list + run detail, <strong>test catalog</strong> (tags + file/suite grouping), <strong>flaky</strong> (quarantine + ownership), <strong>run diff</strong>, <strong>insights</strong>, and <strong>monitors</strong> (browser / HTTP / TCP·ping).</li>
+<li><code>/settings/…</code> — profile, team management (general / members / projects), project keys, invites, <strong>usage</strong> (quota meters), <strong>audit log</strong>.</li>
+<li><code>/api/runs/*</code>, <code>/api/artifacts/*</code> — ingest + artifact API. Guarded by <code>middleware/02.api-auth.ts</code> (Bearer key) + protocol version negotiation (<code>X-Wrightful-Version: 3</code>).</li>
+<li><code>/api/v1/*</code> — <strong>public query/export API</strong> (Bearer key, no version handshake): <code>runs</code>, <code>runs/:id</code>, <code>runs/:id/tests</code>, with <code>?format=csv</code> + the <code>WRIGHTFUL_EXPORT_MAX_ROWS</code> cap. See <a href="./api/query-export.md"><code>docs/api/query-export.md</code></a>.</li>
+<li><code>/api/t/:teamSlug/p/:projectSlug/*</code> — session-authed tenant API (quarantine, test-ownership, search, run-diff, summary, CSV export).</li>
+<li><code>/api/github/*</code> — GitHub App install callback (<code>setup</code>) + webhook (installation / check-run), gated by <code>githubAppEnabled</code>.</li>
+</ul>
+<p>Cross-cutting middleware: <code>00.errors</code> (error → page/redirect), <code>01.context</code> (tenant bundle) / <code>01.head</code> (theme), <code>02.api-auth</code> (Bearer key on ingest), <code>03.rate-limit</code> (per-surface Cloudflare rate-limiter bindings — <code>AUTH</code> / <code>API</code> / <code>QUERY</code> / <code>ARTIFACT</code> / <code>INGEST_IP</code>; runs after auth so it can key by resolved <code>apiKey.id</code>).</p>
+<p><strong>Ingest pipeline.</strong> <code>routes/api/runs/*</code> handlers are auth + translation only; the verify-ownership → batch (<code>db.transaction</code>) → summary → activity-bump → broadcast pipeline lives behind <code>openRun</code> / <code>appendRunResults</code> / <code>completeRun</code> in <code>src/lib/ingest.ts</code>.</p>
+<h2 id="background-work-crons-queues">Background work (crons + queues)</h2>
+<p>Six Void crons (each a unique cron expression, dispatched via <code>switch(controller.cron)</code>):</p>
+<ul>
+<li><code>sweep-monitors</code> (every 1m) — arms due monitors&#39; <code>nextRunAt</code>, enqueues them to the <code>monitors</code> (browser) / <code>uptime</code> (http·tcp) Queues.</li>
+<li><code>sweep-stuck-runs</code> (every 5m) — finalizes runs stuck at <code>running</code> past <code>WRIGHTFUL_RUN_STALE_MINUTES</code>.</li>
+<li><code>sweep-stuck-executions</code> / <code>sweep-synthetic-keys</code> (every 5m, offset) — reap non-terminal monitor executions + orphaned per-run ingest keys.</li>
+<li><code>sweep-retention</code> (every 6h) — two-axis sweep (R2 artifact bytes, then <code>testResults</code> rows) per the team/instance retention windows.</li>
+<li><code>rollup-usage</code> (daily) — rolls per-team-month meters into <code>usageCounters</code>.</li>
+</ul>
+<p><strong>Monitor execution</strong> is the schedule→queue→execute pipeline: the <code>monitors</code> / <code>uptime</code> Queue consumers (<code>createMonitorConsumer</code>, <code>src/lib/monitors/queue-consumer.ts</code>) run the pure <code>runMonitorJob</code> against the resolved <code>MonitorExecutor</code> — <code>sandbox</code> (Void Sandbox container running the user&#39;s Playwright) or <code>stub</code> (in-process, for dev/CI), selected by <code>WRIGHTFUL_MONITOR_EXECUTOR</code> — and stream the outcome through the normal run ingest path.</p>
+<h2 id="frontend">Frontend</h2>
+<ul>
+<li>Server-rendered Inertia-style pages (<code>@void/react</code>); add <code>&quot;use client&quot;</code> only at interactive leaves.</li>
+<li>Base UI primitives wrapped as a local component library in <code>apps/dashboard/src/components/ui/</code> (~50 components). Don&#39;t import <code>@base-ui-components/react</code> directly from page code — go through the wrappers.</li>
+<li>Tailwind v4 with theme tokens in <code>apps/dashboard/src/styles.css</code> under <code>@theme { … }</code>. No <code>tailwind.config.*</code>.</li>
+<li>New components come from the COSS registry (<code>components.json</code>): <code>npx shadcn@latest add @coss/&lt;name&gt;</code>.</li>
+<li>URL-backed UI state uses <code>useSearchParam</code> / <code>useNavigatingSearchParam</code> (<code>src/lib/use-search-param.ts</code>) — no nuqs.</li>
+</ul>
+<h2 id="configuration">Configuration</h2>
+<p>Every env key is declared (with docs + defaults) in <code>apps/dashboard/env.ts</code> — the authoritative source. Only <code>WRIGHTFUL_PUBLIC_URL</code> + <code>BETTER_AUTH_SECRET</code> are required; the rest are optional/defaulted, grouped as: GitHub OAuth (<code>AUTH_GITHUB_*</code>), GitHub App / Checks (<code>GITHUB_APP_*</code>), usage quotas (<code>WRIGHTFUL_FREE_*</code>, <code>WRIGHTFUL_QUOTA_SOFT_WARN_PCT</code>), retention (<code>WRIGHTFUL_RETENTION_*</code>), export (<code>WRIGHTFUL_EXPORT_MAX_ROWS</code>), synthetic monitors (<code>WRIGHTFUL_MONITOR_*</code>, <code>WRIGHTFUL_HTTP_MONITOR_*</code>, <code>WRIGHTFUL_TCP_MONITOR_*</code>, <code>WRIGHTFUL_HTTP_CHECK_MAX_BODY_BYTES</code>), artifacts/watchdog, and the realtime internal secret. The self-host env table is in <a href="../SELF-HOSTING.html"><code>SELF-HOSTING.md</code></a>.</p>
+<h2 id="tooling">Tooling</h2>
+<ul>
+<li>Typecheck: <code>tsgo</code> (native TS preview); the dashboard&#39;s <code>typecheck</code> runs <code>void prepare &amp;&amp; tsgo --noEmit</code>.</li>
+<li>Lint: <code>oxlint</code>. Format: <code>oxfmt</code>. Both via <code>vp check</code>. Pre-commit hook runs <code>vp staged</code> on staged files.</li>
+<li>Reporter releases: Changesets. <code>pnpm release</code> runs from the root; the dashboard deploys separately via <code>void deploy</code>, not published.</li>
+<li>IDs: ULIDs for every primary key.</li>
+</ul>
+
+</main>
+<footer class="docfoot">Wrightful docs · rendered from Markdown by scripts/render-docs.mjs</footer>
+</body>
+</html>
