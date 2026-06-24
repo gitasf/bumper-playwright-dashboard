@@ -6,7 +6,8 @@
   "scripts": {
     "test": "vp test run",
     "test:playwright": "npx playwright test",
-    "test:dashboard": "npx playwright test --config=playwright.dashboard.config.ts",
+    "test:dashboard": "node scripts/run-dashboard-e2e.mjs",
+    "test:dashboard:raw": "npx playwright test --config=playwright.dashboard.config.ts",
     "test:load": "bash scripts/run-load-test.sh"
   },
   "devDependencies": {
