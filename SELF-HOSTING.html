@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%84%3C/text%3E%3C/svg%3E">
+<title>Self-hosting Wrightful · Wrightful docs</title>
+<style>
+:root{
+  --ground:#f5f7f8;--surface:#fff;--ink:#14191b;--muted:#5c6a6c;--line:#e3e8e9;
+  --line-strong:#d3dadb;--accent:#0b6b73;--accent-bright:#0e8a93;--accent-soft:#e3f0f0;
+  --code-bg:#0f1719;--code-ink:#d8e3e1;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.68;-webkit-font-smoothing:antialiased}
+.docbar{position:sticky;top:0;z-index:10;background:rgba(245,247,248,.86);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line-strong)}
+.docbar-inner{max-width:860px;margin:0 auto;padding:11px clamp(20px,4vw,40px);
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.home{font-family:var(--mono);font-size:13px;color:var(--accent);text-decoration:none;white-space:nowrap}
+.home:hover{color:var(--accent-bright);text-decoration:underline}
+.crumbs{font-family:var(--mono);font-size:12px;color:var(--muted);overflow-x:auto;white-space:nowrap}
+.crumbs span:last-child{color:var(--ink)}
+.crumb-sep{color:#b6c2c2;padding:0 6px}
+main.doc{max-width:860px;margin:0 auto;padding:clamp(28px,5vw,52px) clamp(20px,4vw,40px) 96px}
+.doc h1,.doc h2,.doc h3,.doc h4{letter-spacing:-.02em;line-height:1.2;text-wrap:balance;scroll-margin-top:64px}
+.doc h1{font-size:clamp(28px,5vw,38px);margin:0 0 8px}
+.doc h2{font-size:clamp(21px,3vw,27px);margin:46px 0 14px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+.doc h3{font-size:18px;margin:30px 0 10px}
+.doc h4{font-size:15px;margin:22px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)}
+.doc p{margin:0 0 16px}
+.doc a{color:var(--accent-bright);text-decoration:none;border-bottom:1px solid var(--accent-soft)}
+.doc a:hover{border-bottom-color:var(--accent-bright)}
+.doc strong{font-weight:650}
+.doc ul,.doc ol{margin:0 0 16px;padding-left:24px}
+.doc li{margin-bottom:6px}
+.doc li>ul,.doc li>ol{margin:6px 0}
+.doc code{font-family:var(--mono);font-size:.86em;background:#eaeeee;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#0c4f54;word-break:break-word}
+.doc pre{background:var(--code-bg);border:1px solid #243231;border-radius:11px;padding:16px 18px;overflow-x:auto;margin:0 0 18px}
+.doc pre code{background:none;border:none;padding:0;color:var(--code-ink);font-size:13px;line-height:1.7;word-break:normal}
+.doc blockquote{margin:0 0 18px;padding:2px 18px;border-left:3px solid var(--accent);background:var(--accent-soft);border-radius:0 8px 8px 0;color:#274b4d}
+.doc blockquote p:last-child{margin-bottom:12px}
+.doc blockquote p:first-child{margin-top:12px}
+.doc hr{border:none;border-top:1px solid var(--line-strong);margin:32px 0}
+.doc table{border-collapse:collapse;width:100%;font-size:14px;margin:0 0 18px;display:block;overflow-x:auto}
+.doc th,.doc td{border:1px solid var(--line);padding:9px 13px;text-align:left;vertical-align:top}
+.doc th{background:#eef2f2;font-family:var(--mono);font-size:12px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
+.doc img{max-width:100%}
+.docfoot{max-width:860px;margin:0 auto;padding:22px clamp(20px,4vw,40px) 50px;border-top:1px solid var(--line-strong);font-size:12.5px;color:var(--muted);font-family:var(--mono)}
+</style>
+</head>
+<body>
+<header class="docbar">
+  <div class="docbar-inner">
+    <a class="home" href="docs/onboarding.html#reads">&#8617; Back to onboarding</a>
+    <nav class="crumbs"><span>SELF-HOSTING.html</span></nav>
+  </div>
+</header>
+<main class="doc">
+<h1 id="self-hosting-wrightful">Self-hosting Wrightful</h1>
+<p>Wrightful&#39;s dashboard is a <a href="https://void.cloud">Void</a> app that runs on Cloudflare Workers: one Worker for the dashboard + ingest API, one <strong>Postgres</strong> database (auth, tenancy, runs, and test data) reached over <strong>Cloudflare Hyperdrive</strong>, and one R2 bucket for artifact bytes. You bring your own Postgres — <a href="https://neon.tech">Neon</a> has a free tier that&#39;s ample for self-hosting, and <a href="https://planetscale.com">PlanetScale Postgres</a> is a good scale-up. The R2 binding <code>STORAGE</code> and the <code>HYPERDRIVE</code> (Postgres) binding are the only data bindings — no KV. Synthetic monitoring (optional) adds two Cloudflare <strong>Queues</strong> (<code>monitors</code>, <code>uptime</code>) and, for <strong>browser</strong> monitors, a <strong>Sandbox container</strong>; five rate-limiter bindings ship in <code>wrangler.jsonc</code>. See <a href="#synthetic-monitors-optional">Synthetic monitors</a> for what a self-hoster needs to provision (HTTP/TCP monitors need only the queues; browser monitors need the container — or set <code>WRIGHTFUL_MONITOR_EXECUTOR=stub</code> to skip both).</p>
+<p>There are two ways to deploy:</p>
+<ul>
+<li><strong><a href="#recommended-deploy-to-your-own-cloudflare-account">Deploy to your own Cloudflare account</a> (recommended)</strong> — <code>wrangler deploy</code> against a Postgres database (reached over Hyperdrive) + an R2 bucket you create. The build output is a standard Cloudflare Worker, so this is the most predictable, production-ready path today.</li>
+<li><strong><a href="#alternative-one-command-deploy-with-void-still-early">One-command deploy with Void</a> (simpler, still early)</strong> — <code>void deploy</code> ships to Void&#39;s managed Cloudflare platform and auto-provisions everything with no Cloudflare account. The platform is young, so prefer the Cloudflare path above for anything you depend on.</li>
+</ul>
+<p>Both produce the same Worker from the same checked-in migrations.</p>
+<hr>
+<h2 id="recommended-deploy-to-your-own-cloudflare-account">Recommended: deploy to your own Cloudflare account</h2>
+<p>Prerequisites: Node 20+, <code>pnpm</code>, a Cloudflare account, and <code>wrangler</code> (<code>npm i -g wrangler</code>, then <code>wrangler login</code>).</p>
+<pre><code class="language-bash">git clone https://github.com/&lt;your-username&gt;/wrightful.git
+cd wrightful
+pnpm install
+cd apps/dashboard          # the wrangler/build steps below run from here
+</code></pre>
+<h3 id="1-provision-postgres-create-the-cloudflare-resources">1. Provision Postgres + create the Cloudflare resources</h3>
+<p>You need a Postgres database, a Hyperdrive config that points at it, and an R2 bucket. Provision the Postgres database first — <a href="https://neon.tech">Neon</a> (free tier) is the easy default; <a href="https://planetscale.com">PlanetScale Postgres</a> or any other Postgres works too — and copy its connection string. Then create the Hyperdrive config (the runtime path to that Postgres) and the bucket:</p>
+<pre><code class="language-bash"># A Hyperdrive config over your Postgres — prints a config id; keep it for step 2.
+wrangler hyperdrive create wrightful-pg --connection-string=&quot;postgres://USER:PASS@HOST/DB?sslmode=require&quot;
+wrangler r2 bucket create wrightful-artifacts
+</code></pre>
+<h3 id="2-point-wrangler-at-your-resources-via-cf_-env-vars">2. Point Wrangler at your resources (via <code>CF_*</code> env vars)</h3>
+<p><strong>You do not hand-edit <code>wrangler.jsonc</code>.</strong> It&#39;s gitignored and generated from the committed <code>apps/dashboard/wrangler.template.jsonc</code> by <code>scripts/gen-wrangler.mjs</code>, which injects your deployment IDs from <code>CF_*</code> env vars and materializes <code>wrangler.jsonc</code> in the dev/build/deploy pre-hooks (the same generated-from-committed-sources pattern as <code>db/migrations/</code>). So no account-specific IDs are ever committed.</p>
+<p>One time only, drop any locally-tracked copy so the generator owns it:</p>
+<pre><code class="language-bash">git rm --cached apps/dashboard/wrangler.jsonc   # if it&#39;s still tracked in your clone
+</code></pre>
+<p>Then set these as env vars (in <code>apps/dashboard/.env.local</code> for local dev, or as build vars in CI — see <a href="#auto-deploy-on-push-recommended">Auto-deploy on push</a>):</p>
+<pre><code class="language-bash"># The Worker name (any name you like).
+CF_WORKER_NAME=wrightful-dashboard-void
+# The R2 bucket from step 1 (→ STORAGE binding).
+CF_R2_BUCKET=wrightful-artifacts
+# From `wrangler hyperdrive create` in step 1 (→ HYPERDRIVE binding).
+CF_HYPERDRIVE_ID=&lt;config id from step 1&gt;
+</code></pre>
+<p><code>gen-wrangler</code> injects a <code>hyperdrive[HYPERDRIVE]</code> block from <code>CF_HYPERDRIVE_ID</code> plus an <code>r2_buckets[STORAGE]</code> block from <code>CF_R2_BUCKET</code>. The rate-limiter bindings and Void&#39;s <code>main</code>/<code>assets</code>/<code>migrations</code> are handled by the template + plugin — you don&#39;t touch those.</p>
+<p>At runtime the Worker reaches Postgres through Hyperdrive (the <code>HYPERDRIVE</code> binding). <strong>Local dev and migrations connect directly</strong> via a <code>DATABASE_URL</code> instead (Hyperdrive is runtime-only) — set that in <code>apps/dashboard/.env.local</code>:</p>
+<pre><code class="language-bash">DATABASE_URL=postgresql://USER:PASS@HOST:5432/DB?sslmode=require
+</code></pre>
+<h3 id="3-apply-migrations-to-the-remote-database">3. Apply migrations to the remote database</h3>
+<p><code>pnpm db:migrate:remote</code> applies the committed <code>db/migrations/</code> to your remote/prod Postgres over <code>$DATABASE_URL</code> — the <strong>direct</strong> connection, since Hyperdrive is runtime-only and can&#39;t be used for migrations:</p>
+<pre><code class="language-bash">DATABASE_URL=postgresql://USER:PASS@HOST:5432/DB?sslmode=require   pnpm db:migrate:remote
+</code></pre>
+<h3 id="4-build-and-deploy">4. Build and deploy</h3>
+<pre><code class="language-bash">pnpm deploy:cf      # = vp build &amp;&amp; wrangler deploy; prints your https://&lt;worker&gt;.&lt;subdomain&gt;.workers.dev URL
+</code></pre>
+<p><code>vp build</code> runs the Cloudflare Vite plugin, which writes <code>dist/wrangler.json</code> (your real IDs + Void&#39;s <code>main</code>/<code>assets</code>/triggers) plus a <code>.wrangler/deploy/config.json</code> redirect; <code>wrangler deploy</code> reads that redirect so it ships the built output rather than re-reading the source <code>wrangler.jsonc</code>.</p>
+<h3 id="5-set-secrets">5. Set secrets</h3>
+<p><code>wrangler secret put</code> applies to the live Worker immediately (no redeploy needed). Until they&#39;re set the dashboard 500s on sign-in pages — that&#39;s expected on first deploy.</p>
+<pre><code class="language-bash">openssl rand -base64 32 | wrangler secret put BETTER_AUTH_SECRET
+wrangler secret put WRIGHTFUL_PUBLIC_URL     # paste the URL wrangler printed in step 4
+</code></pre>
+<p>Use the <code>workers.dev</code> URL from step 4, or a <a href="https://developers.cloudflare.com/workers/configuration/routing/custom-domains/">custom domain</a> you map to the Worker. See <a href="#environment-variables">Environment variables</a> for the optional keys (GitHub OAuth, open signup, etc.), then jump to <a href="#sign-up--wire-up-the-reporter">Sign up + wire up the reporter</a>.</p>
+<h3 id="updating">Updating</h3>
+<pre><code class="language-bash">git pull origin main
+pnpm install
+cd apps/dashboard
+pnpm db:migrate:remote   # apply any new migrations first (see step 3)
+pnpm deploy:cf
+</code></pre>
+<h3 id="auto-deploy-on-push-recommended">Auto-deploy on push (recommended)</h3>
+<p>The recommended CD path is <strong><a href="https://developers.cloudflare.com/workers/ci-cd/builds/">Cloudflare Workers Builds</a></strong> — connect the repo once and Cloudflare builds + deploys on push, with previews for non-production branches. Connect your repo under the Worker&#39;s <strong>Settings → Builds</strong>, then configure:</p>
+<ul>
+<li><strong>Root directory:</strong> <code>apps/dashboard</code></li>
+<li><strong>Build command:</strong> <code>pnpm build</code></li>
+<li><strong>Production deploy command:</strong> <code>pnpm db:migrate:remote &amp;&amp; npx wrangler deploy</code></li>
+<li><strong>Non-production deploy command:</strong> <code>npx wrangler versions upload</code> (no migration)</li>
+</ul>
+<p>The migration runs in the <strong>production</strong> deploy command only — the build runs for every branch (including preview branches), so you don&#39;t want every preview mutating your prod schema. Non-prod branches upload a version without migrating.</p>
+<p>Set the deployment IDs as build <strong>variables</strong> (<code>CF_WORKER_NAME</code>, <code>CF_R2_BUCKET</code>, <code>CF_HYPERDRIVE_ID</code>), and <code>DATABASE_URL</code> (your prod Postgres <strong>direct</strong> connection) as a build <strong>secret</strong>. The build environment runs <code>gen-wrangler</code> (via the <code>prebuild</code> hook) and the migration, so <strong>your prod database must be reachable from Cloudflare&#39;s build environment</strong> for <code>db:migrate:remote</code> to apply. Runtime app secrets (<code>BETTER_AUTH_SECRET</code>, <code>WRIGHTFUL_PUBLIC_URL</code>, …) are set separately as Worker secrets (<code>wrangler secret put</code>) and persist across deploys.</p>
+<blockquote>
+<p><strong>Migration safety (expand/contract).</strong> Migrate-before-deploy is safe for <strong>additive</strong> (&quot;expand&quot;) migrations: if the deploy fails after the migration, the old code keeps serving on the new schema — just re-run. <strong>Destructive (&quot;contract&quot;) changes</strong> — dropping a column the live code still reads — must ship in a <strong>later</strong> deploy, once no running version depends on the old shape. Migrations are forward-only and tracked, so each runs once.</p>
+</blockquote>
+<details>
+<summary>GitHub Actions alternative</summary>
+
+<p>If you&#39;d rather run CD from Actions, add <code>CLOUDFLARE_API_TOKEN</code> (Workers Scripts + R2 edit scopes) and <code>CLOUDFLARE_ACCOUNT_ID</code>, plus <code>DATABASE_URL</code> (your prod Postgres direct connection), as repo secrets:</p>
+<pre><code class="language-yaml">name: Deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # CF_WORKER_NAME / CF_R2_BUCKET / CF_HYPERDRIVE_ID / DATABASE_URL as needed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: &quot;22&quot;, cache: &quot;pnpm&quot; }
+      - run: pnpm install
+      - working-directory: apps/dashboard
+        run: |
+          pnpm db:migrate:remote
+          pnpm deploy:cf
+</code></pre>
+</details>
+
+<hr>
+<h2 id="alternative-one-command-deploy-with-void-still-early">Alternative: one-command deploy with Void (still early)</h2>
+<blockquote>
+<p>Void&#39;s managed deploy provisions Postgres (over Hyperdrive) + R2 and applies migrations in a single command with <strong>no Cloudflare account</strong> — handy for a quick throwaway or preview instance. The platform is still early, so for anything you rely on, prefer the <a href="#recommended-deploy-to-your-own-cloudflare-account">Cloudflare path</a> above.</p>
+</blockquote>
+<p>Prerequisites: Node 20+, <code>pnpm</code>, a Void account.</p>
+<pre><code class="language-bash">pnpm install
+
+# 1. Authenticate + link a Void project (interactive). Saves .void/project.json.
+pnpm --filter @wrightful/dashboard exec void auth login
+
+# 2. Set secrets (remote secrets persist across deploys).
+openssl rand -base64 32 | pnpm --filter @wrightful/dashboard exec void secret put BETTER_AUTH_SECRET
+pnpm --filter @wrightful/dashboard exec void secret put WRIGHTFUL_PUBLIC_URL
+
+# 3. Deploy — builds, applies db/migrations/, provisions Postgres + R2, goes live.
+pnpm deploy
+</code></pre>
+<p><code>pnpm deploy</code> runs <code>void deploy</code>, which reads the checked-in <code>apps/dashboard/db/migrations/</code>, fails if the schema source (<code>db/schema.ts</code>) has drifted ahead of them (run <code>pnpm db:generate</code>, commit, retry), applies any pending migrations, and goes live — no separate migrate step, no hand-edited binding config. For auto-deploy on push, <code>void init --github</code> writes a <code>.github/workflows/deploy.yml</code> that runs <code>void deploy</code> with a <code>VOID_TOKEN</code> secret (from <code>void auth token</code>).</p>
+<hr>
+<h2 id="environment-variables">Environment variables</h2>
+<p>Every key is declared and validated in <code>apps/dashboard/env.ts</code>. For local dev, copy <code>apps/dashboard/.env.example</code> to <code>apps/dashboard/.env.local</code> and fill it in. For production, set values as secrets — <code>wrangler secret put NAME</code> (Cloudflare path) or <code>void secret put NAME</code> (Void path). A missing required key 500s the dashboard at runtime; <code>void deploy</code> additionally hard-errors before upload.</p>
+<p><strong>Required:</strong></p>
+<ul>
+<li><code>WRIGHTFUL_PUBLIC_URL</code> — the public origin users hit (e.g. <code>https://wrightful-dashboard-void.&lt;you&gt;.workers.dev</code> or a custom domain). Used by Better Auth for OAuth callbacks and for the artifact-download token audience.</li>
+<li><code>BETTER_AUTH_SECRET</code> — 32+ random bytes (<code>openssl rand -base64 32</code>). Signs session cookies and artifact download tokens. (On Void&#39;s managed platform this is auto-created if unset.)</li>
+</ul>
+<p><strong>Optional:</strong></p>
+<ul>
+<li><code>AUTH_GITHUB_CLIENT_ID</code> / <code>AUTH_GITHUB_CLIENT_SECRET</code> — enable &quot;Continue with GitHub&quot;. Register an <a href="https://github.com/settings/developers">OAuth app</a> with callback <code>${WRIGHTFUL_PUBLIC_URL}/api/auth/callback/github</code>. Both must be set or the button stays hidden.</li>
+<li><code>ALLOW_OPEN_SIGNUP</code> (<code>true</code>/<code>false</code>, default <code>false</code>) — allow anyone to register. Off by default; on a public instance, pair it with <code>EMAIL_FROM</code> so new registrations must verify their address before signing in. Left off, add users via invites.</li>
+<li><code>EMAIL_FROM</code> — From address for outbound email (account verification, password reset, monitor alerts), e.g. <code>Wrightful &lt;noreply@mail.example.com&gt;</code>. Sent via the Cloudflare Email Service (CES) <code>EMAIL</code> binding, so the address must live on a domain you&#39;ve <a href="https://developers.cloudflare.com/email-service/">onboarded to CES</a> (CES provisions SPF/DKIM/DMARC). CES sending needs a Workers Paid plan and is in public beta. <strong>Optional</strong> — leave it unset and all email features stay off and degrade gracefully: signup needs no verification, the password-reset page reports email isn&#39;t configured, and monitor alerts are skipped.</li>
+<li><code>ARTIFACT_TOKEN_SECRET</code> — optional dedicated signer for the short-lived artifact-download tokens. Defaults to <code>BETTER_AUTH_SECRET</code>; set a separate value to revoke leaked artifact links by rotating it, without invalidating every user session.</li>
+<li><code>REALTIME_INTERNAL_SECRET</code> — pins the secret that authenticates the dashboard&#39;s internal realtime broadcasts (ingest worker → WebSocket room). Defaults to a fresh random value baked into each build; see <a href="#production-notes">Production notes</a> for why you may want to pin it.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Required?</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>WRIGHTFUL_PUBLIC_URL</code></td>
+<td>Yes</td>
+<td>—</td>
+<td>Public origin. OAuth callbacks + artifact download token audience.</td>
+</tr>
+<tr>
+<td><code>BETTER_AUTH_SECRET</code></td>
+<td>Yes</td>
+<td>—</td>
+<td>Signs session cookies + artifact download tokens. 32+ random bytes.</td>
+</tr>
+<tr>
+<td><code>ARTIFACT_TOKEN_SECRET</code></td>
+<td>No</td>
+<td><code>BETTER_AUTH_SECRET</code></td>
+<td>Dedicated signer for artifact download tokens — rotate to revoke leaked links without logging everyone out. 32+ bytes.</td>
+</tr>
+<tr>
+<td><code>AUTH_GITHUB_CLIENT_ID</code></td>
+<td>No</td>
+<td>—</td>
+<td>Enables &quot;Continue with GitHub&quot; sign-in.</td>
+</tr>
+<tr>
+<td><code>AUTH_GITHUB_CLIENT_SECRET</code></td>
+<td>No</td>
+<td>—</td>
+<td>Pair with <code>AUTH_GITHUB_CLIENT_ID</code>.</td>
+</tr>
+<tr>
+<td><code>ALLOW_OPEN_SIGNUP</code></td>
+<td>No</td>
+<td><code>false</code></td>
+<td>Allow public sign-up.</td>
+</tr>
+<tr>
+<td><code>EMAIL_FROM</code></td>
+<td>No</td>
+<td>—</td>
+<td>From address for verification / password-reset / monitor-alert email (Cloudflare Email Service). Unset = email off.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_MAX_ARTIFACT_BYTES</code></td>
+<td>No</td>
+<td>50 MiB</td>
+<td>Per-artifact upload size cap.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_RUN_STALE_MINUTES</code></td>
+<td>No</td>
+<td>30</td>
+<td>How long a run can sit <code>running</code> before the cron watchdog interrupts it.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_SWEEP_BATCH_SIZE</code></td>
+<td>No</td>
+<td>200</td>
+<td>Max stale runs the watchdog finalizes per cron invocation.</td>
+</tr>
+<tr>
+<td><code>REALTIME_INTERNAL_SECRET</code></td>
+<td>No</td>
+<td>per-build random</td>
+<td>Pins the internal realtime-broadcast secret across deploys. 32+ random bytes.</td>
+</tr>
+</tbody></table>
+<p>The keys above are the foundation set. The feature areas below add their own optional keys — all defaulted, so an instance runs without setting any of them.</p>
+<h3 id="github-checks-pr-commit-status">GitHub Checks (PR commit status)</h3>
+<p>Posts a check run on a PR&#39;s head commit reflecting the run outcome. <strong>All-or-nothing</strong>: enabled only when <code>GITHUB_APP_ID</code> + <code>GITHUB_APP_PRIVATE_KEY</code> + <code>GITHUB_APP_WEBHOOK_SECRET</code> are all set. This is a GitHub <strong>App</strong> (mints an installation token that works on fork PRs) — distinct from the <code>AUTH_GITHUB_*</code> OAuth creds used for sign-in.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Required?</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>GITHUB_APP_ID</code></td>
+<td>For Checks</td>
+<td>—</td>
+<td>GitHub App id.</td>
+</tr>
+<tr>
+<td><code>GITHUB_APP_PRIVATE_KEY</code></td>
+<td>For Checks</td>
+<td>—</td>
+<td>App private key, <strong>PKCS#8</strong> PEM (<code>BEGIN PRIVATE KEY</code>). Convert GitHub&#39;s PKCS#1: <code>openssl pkcs8 -topk8 -nocrypt -in key.pem</code>.</td>
+</tr>
+<tr>
+<td><code>GITHUB_APP_WEBHOOK_SECRET</code></td>
+<td>For Checks</td>
+<td>—</td>
+<td>Verifies inbound App webhooks (installation / check-run).</td>
+</tr>
+<tr>
+<td><code>GITHUB_APP_SLUG</code></td>
+<td>No</td>
+<td>—</td>
+<td>The App&#39;s public slug (<code>github.com/apps/&lt;slug&gt;</code>). Drives the one-click &quot;Install&quot; button on team settings; without it the page shows manual instructions.</td>
+</tr>
+</tbody></table>
+<h3 id="usage-quotas">Usage quotas</h3>
+<p>Bind only for teams on the <code>free</code> tier (other tiers are unlimited). Runs + artifact-bytes are <strong>hard-blocked</strong> at the limit; test-results is metered + soft-warned only. To run an instance with no limits, leave teams off the free tier (or raise these).</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>WRIGHTFUL_FREE_MONTHLY_RUNS</code></td>
+<td>1000</td>
+<td>Free-tier monthly run-open allowance (hard block on <code>POST /api/runs</code>).</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_FREE_MONTHLY_TEST_RESULTS</code></td>
+<td>100000</td>
+<td>Free-tier monthly test-result allowance (soft-warn only, not blocked).</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_FREE_ARTIFACT_BYTES</code></td>
+<td>5 GiB</td>
+<td>Free-tier monthly artifact-byte allowance (hard block on fresh bytes).</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_QUOTA_SOFT_WARN_PCT</code></td>
+<td>90</td>
+<td>Percent of a limit at which the ingest response warns before the 100% block.</td>
+</tr>
+</tbody></table>
+<h3 id="data-retention">Data retention</h3>
+<p>Two independent axes (artifact bytes vs. test-result rows) swept by the <code>sweep-retention</code> cron. These are instance-wide defaults; a team can override its own windows in team settings. <strong>Invariant:</strong> <code>WRIGHTFUL_RETENTION_ARTIFACT_DAYS</code> ≤ <code>WRIGHTFUL_RETENTION_TEST_RESULTS_DAYS</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>WRIGHTFUL_RETENTION_ARTIFACT_DAYS</code></td>
+<td>30</td>
+<td>Age after which artifact R2 objects + rows are swept.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_RETENTION_TEST_RESULTS_DAYS</code></td>
+<td>90</td>
+<td>Age after which <code>testResults</code> rows (+ cascaded children) are swept (run summaries kept).</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_RETENTION_SWEEP_BATCH_SIZE</code></td>
+<td>200</td>
+<td>Max rows per axis per project per cron pass (drains across passes).</td>
+</tr>
+</tbody></table>
+<h3 id="data-export-query-api">Data export / query API</h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>WRIGHTFUL_EXPORT_MAX_ROWS</code></td>
+<td>50000</td>
+<td>Hard cap on rows a single CSV export streams (<code>/api/v1/*?format=csv</code>, <code>/api/t/.../export/*</code>). Past it, the response sets <code>X-Wrightful-Export-Truncated: true</code> rather than silently truncating.</td>
+</tr>
+</tbody></table>
+<p>The Bearer-authed read/query API lives under <code>/api/v1/*</code> (rate-limited via the <code>QUERY</code> limiter). See <a href="./docs/api/query-export.md"><code>docs/api/query-export.md</code></a>.</p>
+<h3 id="synthetic-monitors-optional">Synthetic monitors (optional)</h3>
+<p>Scheduled browser / HTTP / TCP·ping checks. The <code>sweep-monitors</code> cron enqueues due monitors to the <code>monitors</code> (browser) / <code>uptime</code> (http·tcp) Queues; the consumers run them via the configured executor. <strong>HTTP/TCP monitors</strong> need only the two Queues (plain <code>fetch()</code> / <code>connect()</code> — no container). <strong>Browser monitors</strong> additionally need a Sandbox container running the user&#39;s Playwright. To skip synthetic monitoring entirely in production, set <code>WRIGHTFUL_MONITOR_EXECUTOR</code> accordingly and don&#39;t create browser monitors.</p>
+<p>Container provisioning on the Cloudflare path: build <code>apps/dashboard/Dockerfile.sandbox</code>, push it to a registry, and replace the <code>REPLACE_WITH_REGISTRY/wrightful-sandbox:latest</code> placeholder in <code>apps/dashboard/void.json</code>&#39;s <code>sandbox</code> block. Queue creation + container wiring follow Void&#39;s <a href="https://void.cloud/integrations/cloudflare">Cloudflare integration guide</a>. On the Void managed path these are provisioned automatically.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>WRIGHTFUL_MONITOR_EXECUTOR</code></td>
+<td><code>sandbox</code></td>
+<td><code>sandbox</code> (Void Sandbox container) or <code>stub</code> (in-process synthetic run; dev/CI, no Docker).</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_MONITOR_MAX_PER_PROJECT</code></td>
+<td>25</td>
+<td>Per-project cap on <strong>browser</strong> monitors (each multiplies container runs).</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_HTTP_MONITOR_MAX_PER_PROJECT</code></td>
+<td>50</td>
+<td>Per-project cap on HTTP (uptime) monitors.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_TCP_MONITOR_MAX_PER_PROJECT</code></td>
+<td>50</td>
+<td>Per-project cap on TCP/ping monitors.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_HTTP_CHECK_MAX_BODY_BYTES</code></td>
+<td>256 KiB</td>
+<td>Max response-body bytes buffered for an HTTP body/JSON assertion.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_MONITOR_MAX_DURATION_SECONDS</code></td>
+<td>300</td>
+<td>Hard per-execution wall-clock cap for a browser run.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_MONITOR_EXECUTION_STALE_MINUTES</code></td>
+<td>30</td>
+<td>Minutes a <code>queued</code>/<code>running</code> execution can sit before the reaper marks it <code>error</code>.</td>
+</tr>
+<tr>
+<td><code>WRIGHTFUL_MONITOR_SWEEP_BATCH_SIZE</code></td>
+<td>200</td>
+<td>Max due monitors the sweep cron enqueues per invocation.</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="production-notes">Production notes</h2>
+<p><strong>Pin <code>REALTIME_INTERNAL_SECRET</code></strong> — the worker authenticates its internal realtime broadcasts (run/project live updates) with a secret that, by default, is a fresh random value baked into each build. During a rolling deploy, the old and new versions briefly hold different secrets, so cross-version broadcasts are rejected (a logged 403). This is non-fatal — the data is already in the database and live views catch up on reload — but if you deploy often and care about uninterrupted live updates, set a stable value once: <code>openssl rand -base64 32 | wrangler secret put REALTIME_INTERNAL_SECRET</code> (or <code>void secret put</code> on the Void path).</p>
+<p><strong>Rate limiting needs a trusted client-IP header</strong> — the auth/API rate limiters key unauthenticated requests by <code>CF-Connecting-IP</code>, falling back to the first hop of <code>X-Forwarded-For</code>. When the Worker runs on Cloudflare (both deploy paths above), <code>CF-Connecting-IP</code> is always set by the edge and cannot be spoofed. If you front the instance with anything else — or proxy to it through your own infrastructure — note that <code>X-Forwarded-For</code> is client-controlled: a sender can rotate it freely to dodge per-IP limits. Make sure your edge sets <code>CF-Connecting-IP</code> (or strips and rewrites <code>X-Forwarded-For</code>) from the real client address before the request reaches the Worker.</p>
+<p><strong>What &quot;closed signup&quot; actually closes</strong> — with <code>ALLOW_OPEN_SIGNUP=false</code>, email/password registration is disabled, but GitHub OAuth sign-in (when configured) can still create accounts. That is deliberate: invites don&#39;t create accounts, so OAuth signup is how an invited teammate gets one on a closed instance. The resource boundary is enforced one step later — a self-registered account with no team membership cannot <strong>create a team</strong> (and therefore can&#39;t reach projects, API keys, or synthetic monitors). The only exception is a fresh instance with zero teams, so the first user — you — can bootstrap. Existing members can always create additional teams.</p>
+<p><strong>Features fail closed when unconfigured</strong> — these shipped surfaces silently no-op (rather than erroring) until configured, so an unconfigured instance is fine: GitHub Checks are skipped unless the three <code>GITHUB_APP_*</code> secrets are set (the <code>/api/github/webhook</code> 404s otherwise); browser monitors error at execution if <code>WRIGHTFUL_MONITOR_EXECUTOR=sandbox</code> but no container is wired (HTTP/TCP monitors still work); usage quotas only bind for <code>free</code>-tier teams.</p>
+<p><strong>Email is optional (<code>EMAIL_FROM</code>)</strong> — account verification, password reset, and monitor down/recovery alerts only send when <code>EMAIL_FROM</code> is set and its domain is onboarded to Cloudflare Email Service. Without it the dashboard runs normally: signup skips verification (so a public instance with open signup but no email lets anyone in unverified — set <code>EMAIL_FROM</code> for public instances), the password-reset page reports that email isn&#39;t configured, and monitor alerts are silently skipped. In local <code>vp dev</code> the send is <strong>simulated</strong> — logged to the console with the rendered HTML/text written to a temp file — so you never send real mail while developing.</p>
+<p><strong>Retention is destructive + invariant-checked</strong> — the <code>sweep-retention</code> cron permanently deletes aged artifact bytes and test-result rows. Keep <code>WRIGHTFUL_RETENTION_ARTIFACT_DAYS</code> ≤ <code>WRIGHTFUL_RETENTION_TEST_RESULTS_DAYS</code> (artifacts are the costly axis, swept sooner). Both are instance defaults; teams can widen/narrow their own windows in settings.</p>
+<hr>
+<h2 id="sign-up-wire-up-the-reporter">Sign up + wire up the reporter</h2>
+<p>Open your <code>WRIGHTFUL_PUBLIC_URL</code> in a browser.</p>
+<ol>
+<li><strong>Sign up</strong> with email/password (or GitHub if configured). Set <code>ALLOW_OPEN_SIGNUP=true</code> first if you&#39;re the first user, then turn it off.</li>
+<li>Create a team via <code>/settings/teams/new</code>.</li>
+<li>Create a project via <code>/settings/teams/&lt;team-slug&gt;/projects/new</code>.</li>
+<li>Generate an API key from the project&#39;s keys page (<code>/settings/teams/&lt;team-slug&gt;/p/&lt;project-slug&gt;/keys</code>). Save the printed key — only its SHA-256 hash is stored server-side.</li>
+</ol>
+<p>In your Playwright project&#39;s CI, set:</p>
+<pre><code class="language-bash">WRIGHTFUL_URL=https://&lt;your-dashboard-origin&gt;
+WRIGHTFUL_TOKEN=&lt;the key from step 4&gt;
+</code></pre>
+<p>Then install the reporter:</p>
+<pre><code class="language-bash">pnpm add -D @wrightful/reporter
+</code></pre>
+<pre><code class="language-ts">// playwright.config.ts
+import { defineConfig } from &quot;@playwright/test&quot;;
+
+export default defineConfig({
+  reporter: [[&quot;list&quot;], [&quot;@wrightful/reporter&quot;]],
+});
+</code></pre>
+<p>Results stream to your dashboard as tests run.</p>
+<hr>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong>First load 500s on sign-in pages</strong> — <code>WRIGHTFUL_PUBLIC_URL</code> or <code>BETTER_AUTH_SECRET</code> isn&#39;t set. List what&#39;s set with <code>wrangler secret list</code> (or <code>void env check --remote</code> on the Void path); tail runtime logs with <code>wrangler tail</code> (or <code>void project logs --level error</code>).</p>
+<p><strong>Schema drift on build/deploy</strong> — the schema source (<code>db/schema.ts</code>) is ahead of the committed migrations. Run <code>pnpm db:generate</code> (= <code>void db generate</code>), review the new files under <code>db/migrations/</code>, and commit them. On the Cloudflare path, re-apply with <code>pnpm db:migrate:remote</code> then redeploy; <code>void deploy</code> applies pending migrations itself.</p>
+<p><strong>Migration discipline</strong> — schema changes are forward-only / additive (new tables, new nullable columns). Generate a new numbered migration with <code>pnpm db:generate</code> (from <code>db/schema.ts</code>); never edit a migration that has already been applied to a live database.</p>
+<p><strong>&quot;Continue with GitHub&quot; doesn&#39;t appear</strong> — both <code>AUTH_GITHUB_CLIENT_ID</code> and <code>AUTH_GITHUB_CLIENT_SECRET</code> must be set; the button is gated on both being present. The provider is enabled in <code>apps/dashboard/auth.ts</code> at startup when those creds exist — it is deliberately <strong>not</strong> declared in <code>apps/dashboard/void.json</code>&#39;s <code>auth.providers</code> (which lists only <code>email</code>), because declaring it there would make Void hard-require the GitHub creds on every deploy.</p>
+<p><strong>Artifacts fail to upload</strong> — confirm the <code>STORAGE</code> (R2) binding resolved. On the Cloudflare path that means <code>CF_R2_BUCKET</code> was set so <code>gen-wrangler</code> injected the <code>r2_buckets</code> block into the generated <code>wrangler.jsonc</code> with a real <code>bucket_name</code>; tail logs with <code>wrangler tail</code>. Per-artifact size is capped by <code>WRIGHTFUL_MAX_ARTIFACT_BYTES</code> (default 50 MiB).</p>
+<hr>
+<h2 id="what39s-under-the-hood">What&#39;s under the hood</h2>
+<p>See <a href="./docs/ARCHITECTURE.html"><code>docs/ARCHITECTURE.md</code></a> for the full architecture overview (Postgres over Hyperdrive + Drizzle, logical tenancy, R2 artifact storage, <code>void/ws</code> realtime rooms, the streaming ingest protocol, and the cron/queue background work). For the exact binding-merge semantics on the Cloudflare path, see the Void <a href="https://void.cloud/integrations/cloudflare#deploy-to-your-own-cloudflare-account">Cloudflare integration guide</a>.</p>
+
+</main>
+<footer class="docfoot">Wrightful docs · rendered from Markdown by scripts/render-docs.mjs</footer>
+</body>
+</html>

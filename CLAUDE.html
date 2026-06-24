@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%84%3C/text%3E%3C/svg%3E">
+<title>CLAUDE.md · Wrightful docs</title>
+<style>
+:root{
+  --ground:#f5f7f8;--surface:#fff;--ink:#14191b;--muted:#5c6a6c;--line:#e3e8e9;
+  --line-strong:#d3dadb;--accent:#0b6b73;--accent-bright:#0e8a93;--accent-soft:#e3f0f0;
+  --code-bg:#0f1719;--code-ink:#d8e3e1;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.68;-webkit-font-smoothing:antialiased}
+.docbar{position:sticky;top:0;z-index:10;background:rgba(245,247,248,.86);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line-strong)}
+.docbar-inner{max-width:860px;margin:0 auto;padding:11px clamp(20px,4vw,40px);
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.home{font-family:var(--mono);font-size:13px;color:var(--accent);text-decoration:none;white-space:nowrap}
+.home:hover{color:var(--accent-bright);text-decoration:underline}
+.crumbs{font-family:var(--mono);font-size:12px;color:var(--muted);overflow-x:auto;white-space:nowrap}
+.crumbs span:last-child{color:var(--ink)}
+.crumb-sep{color:#b6c2c2;padding:0 6px}
+main.doc{max-width:860px;margin:0 auto;padding:clamp(28px,5vw,52px) clamp(20px,4vw,40px) 96px}
+.doc h1,.doc h2,.doc h3,.doc h4{letter-spacing:-.02em;line-height:1.2;text-wrap:balance;scroll-margin-top:64px}
+.doc h1{font-size:clamp(28px,5vw,38px);margin:0 0 8px}
+.doc h2{font-size:clamp(21px,3vw,27px);margin:46px 0 14px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+.doc h3{font-size:18px;margin:30px 0 10px}
+.doc h4{font-size:15px;margin:22px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono)}
+.doc p{margin:0 0 16px}
+.doc a{color:var(--accent-bright);text-decoration:none;border-bottom:1px solid var(--accent-soft)}
+.doc a:hover{border-bottom-color:var(--accent-bright)}
+.doc strong{font-weight:650}
+.doc ul,.doc ol{margin:0 0 16px;padding-left:24px}
+.doc li{margin-bottom:6px}
+.doc li>ul,.doc li>ol{margin:6px 0}
+.doc code{font-family:var(--mono);font-size:.86em;background:#eaeeee;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#0c4f54;word-break:break-word}
+.doc pre{background:var(--code-bg);border:1px solid #243231;border-radius:11px;padding:16px 18px;overflow-x:auto;margin:0 0 18px}
+.doc pre code{background:none;border:none;padding:0;color:var(--code-ink);font-size:13px;line-height:1.7;word-break:normal}
+.doc blockquote{margin:0 0 18px;padding:2px 18px;border-left:3px solid var(--accent);background:var(--accent-soft);border-radius:0 8px 8px 0;color:#274b4d}
+.doc blockquote p:last-child{margin-bottom:12px}
+.doc blockquote p:first-child{margin-top:12px}
+.doc hr{border:none;border-top:1px solid var(--line-strong);margin:32px 0}
+.doc table{border-collapse:collapse;width:100%;font-size:14px;margin:0 0 18px;display:block;overflow-x:auto}
+.doc th,.doc td{border:1px solid var(--line);padding:9px 13px;text-align:left;vertical-align:top}
+.doc th{background:#eef2f2;font-family:var(--mono);font-size:12px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
+.doc img{max-width:100%}
+.docfoot{max-width:860px;margin:0 auto;padding:22px clamp(20px,4vw,40px) 50px;border-top:1px solid var(--line-strong);font-size:12.5px;color:var(--muted);font-family:var(--mono)}
+</style>
+</head>
+<body>
+<header class="docbar">
+  <div class="docbar-inner">
+    <a class="home" href="docs/onboarding.html#reads">&#8617; Back to onboarding</a>
+    <nav class="crumbs"><span>CLAUDE.html</span></nav>
+  </div>
+</header>
+<main class="doc">
+<h1 id="claudemd">CLAUDE.md</h1>
+<p>This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.</p>
+<h2 id="what-is-wrightful">What is Wrightful</h2>
+<p>Wrightful is a Playwright test reporting dashboard. A custom Playwright reporter streams test results live to a <a href="https://void.cloud">Void</a>-based dashboard on Cloudflare that stores auth/tenancy and test data in a Postgres database (via Drizzle, over Cloudflare Hyperdrive in production) and artifacts in R2. Realtime run progress is broadcast over <code>void/ws</code> rooms.</p>
+<h2 id="monorepo-structure">Monorepo Structure</h2>
+<p>pnpm workspace, <code>apps/*</code> + <code>packages/*</code>:</p>
+<ul>
+<li><strong><code>apps/dashboard</code></strong> — the dashboard app (<code>@wrightful/dashboard</code>), built on <a href="https://void.cloud">Void</a> (a fullstack Vite plugin + deploy platform for Cloudflare). Hono file-based API routing (<code>routes/</code>) + Inertia-style server-rendered pages (<code>pages/</code> + <code>@void/react</code>) with co-located <code>*.server.ts</code> loaders/actions. <strong>Postgres + Drizzle</strong> (<code>void/db</code>, Postgres over Cloudflare Hyperdrive in prod / a direct <code>DATABASE_URL</code> in local dev; schema source <code>db/schema.ts</code>, pg-core) holds everything — users, teams, projects, memberships, API keys, invites, runs, and derived tables; tenant isolation is logical (every run-scoped query filters by <code>teamId AND projectId</code>). See <code>SELF-HOSTING.md</code> for the Postgres + own-account deploy specifics. R2 for artifact bytes. Styled with Tailwind v4 + Base UI primitives wrapped as a local component library in <code>src/components/ui/</code>. Dashboard auth is Better Auth via <code>void/auth</code> (sessions, email + password, optional GitHub OAuth); API auth is Bearer API keys. Serves the streaming ingest + artifact API (<code>/api/runs/*</code>, <code>/api/artifacts/*</code>) and the tenant-scoped UI (<code>/t/:teamSlug/p/:projectSlug/…</code>).</li>
+<li><strong><code>packages/reporter</code></strong> — Playwright reporter (<code>@wrightful/reporter</code>). Streams results + artifacts to the dashboard as each test completes. Built with tsdown via <code>vp pack</code>. Per-test emission: one row per test at its final outcome, with retries aggregated into <code>flaky</code>. Opt-in <code>postPrComment</code> upserts a GitHub PR summary comment from CI.</li>
+<li><strong><code>packages/e2e</code></strong> — Playwright E2E tests. Two suites: a <strong>demo suite</strong> (<code>tests/</code>, <code>playwright.config.ts</code>) that drives a sample app to generate reports for dogfooding (uses the reporter when <code>WRIGHTFUL_URL</code> / <code>WRIGHTFUL_TOKEN</code> is set), and the <strong>canonical dashboard suite</strong> (<code>tests-dashboard/</code>, <code>playwright.dashboard.config.ts</code>, self-booting on <code>:5189</code>). Both the dashboard Playwright suite and the Vitest e2e suite (<code>src/e2e.test.ts</code>) boot a real Void dashboard via the shared <code>src/dashboard-fixture.ts</code> (<code>bootDashboard</code> — <code>.env.local</code> + <code>void db reset</code>). Run the dashboard suite with <code>pnpm --filter @wrightful/e2e test:dashboard</code>.</li>
+</ul>
+<h2 id="commands">Commands</h2>
+<pre><code class="language-bash"># Install
+pnpm install
+
+# Dev server (dashboard) — runs the Void dashboard
+pnpm dev
+
+# Build
+pnpm build                                   # dashboard (vp build) + reporter (vp pack)
+pnpm --filter @wrightful/reporter build      # reporter only
+
+# Tests
+pnpm test                                    # dashboard + reporter unit tests (vitest)
+pnpm --filter @wrightful/dashboard test      # dashboard tests only
+pnpm --filter @wrightful/reporter test       # reporter tests only
+pnpm test:e2e                                # e2e (playwright)
+
+# Single test file
+pnpm --filter @wrightful/dashboard exec vitest run src/__tests__/schemas.test.ts
+pnpm --filter @wrightful/reporter exec vitest run src/__tests__/aggregation.test.ts
+
+# Static checks (format + lint + type-check, all via vp check)
+pnpm check                              # vp check
+pnpm check:fix                          # vp check --fix
+
+# Local setup (.env.local + demo team/project/API key over HTTP)
+pnpm setup:local
+
+# Database — Postgres only. Committed migrations in apps/dashboard/db/migrations/.
+#   pnpm db:generate   # = void db generate (regenerate migrations from db/schema.ts)
+#   void db push       # push schema directly (prototyping)
+# Migrations are applied on `void deploy`. There is no separate migrate step
+# in the deploy pipeline beyond that. For a remote own-account DB, use
+# pnpm db:migrate:remote (see SELF-HOSTING.md).
+
+# Deploy
+pnpm deploy                             # void deploy (Void managed platform; auto-provisions Postgres/Hyperdrive/R2)
+pnpm deploy:cf                          # own-account Cloudflare (vp build &amp;&amp; wrangler deploy)
+# Own-account wrangler.jsonc is GENERATED by scripts/gen-wrangler.mjs from
+# wrangler.template.jsonc (injects CF_* deployment IDs); do NOT hand-edit it.
+# Remote DB migrations: pnpm db:migrate:remote. See SELF-HOSTING.md.
+</code></pre>
+<h2 id="key-architecture-details">Key Architecture Details</h2>
+<p><strong>Dashboard routing</strong> (Void file-based): API handlers live in <code>apps/dashboard/routes/</code> (Hono <code>defineHandler</code>), pages in <code>apps/dashboard/pages/</code> as <code>*.tsx</code> + co-located <code>*.server.ts</code> loader/action modules. Cross-cutting concerns are ordered middleware in <code>apps/dashboard/middleware/</code> — <code>00.errors.ts</code> (error → page/redirect mapping), <code>01.context.ts</code> (per-request tenant bundle), <code>01.head.ts</code> (theme/FOUC), <code>02.api-auth.ts</code> (Bearer key on ingest routes).</p>
+<p><strong>Streaming ingest flow</strong>: <code>@wrightful/reporter</code> loads in the user&#39;s <code>playwright.config.ts</code>. At <code>onBegin</code> it opens a run via <code>POST /api/runs</code>; per-test <code>onTestEnd</code> events buffer until the test is done (all retries finished) and then flush in batches via <code>POST /api/runs/:id/results</code>. Each response returns <code>clientKey → testResultId</code>, which the reporter uses to register + PUT artifacts via <code>POST /api/artifacts/register</code> (which returns a relative worker upload URL — bytes stream through the worker into R2, there is no presigned R2 endpoint). <code>onEnd</code> calls <code>POST /api/runs/:id/complete</code> to set the terminal status.</p>
+<p><strong>Ingest is a deep module.</strong> The route handlers under <code>routes/api/runs/*</code> are auth + translation only — the verify-ownership → batch → summary → activity-bump → broadcast pipeline lives behind <code>openRun</code> / <code>appendRunResults</code> / <code>completeRun</code> in <code>src/lib/ingest.ts</code>. Multi-statement writes go through <code>runBatch</code> (a <code>db.transaction</code>) for atomicity; statements are chunked under Postgres&#39;s 65535 bound-param ceiling.</p>
+<p><strong>Shared schema contract</strong>: Wire types live in both <code>packages/reporter/src/types.ts</code> (TypeScript interfaces) and <code>apps/dashboard/src/lib/schemas.ts</code> (Zod). Keep them in sync when changing the API contract — <code>packages/reporter/src/__tests__/contract.test.ts</code> is the canary that imports the dashboard&#39;s Zod schemas and parses reporter-built payloads through them.</p>
+<p><strong>Data layer</strong>: one query builder (Drizzle) over Postgres, accessed via <code>db</code> from <code>void/db</code> with tables from <code>@schema</code>. Postgres result-shape coercions (node-postgres returns <code>int8</code>/<code>numeric</code> as strings, where pglite returns numbers) live in <code>numericSql</code> (<code>src/lib/db/sql-ops.ts</code>) and the raw-read <code>cast(… as integer)</code> idiom; atomic multi-statement writes go through <code>runBatch</code> (<code>src/lib/db-batch.ts</code>), raw reads through <code>runRows</code> (<code>src/lib/db-run.ts</code>), and analytics time-bucketing through <code>src/lib/analytics/bucketing-sql.ts</code>. The real-<code>postgres:16</code> CI leg + <code>src/__tests__/pg-integration.test.ts</code> guard result-shape parity (the fast pglite lane hides the int8-as-string trap).</p>
+<ul>
+<li><strong>Tenant tables</strong> — <code>runs</code>, <code>testResults</code>, <code>testResultAttempts</code>, <code>testTags</code>, <code>testAnnotations</code>, <code>artifacts</code>. Every one carries denormalized <code>teamId</code> (on <code>runs</code>) and <code>projectId</code> so scope is enforced without joins.</li>
+<li><strong>Control tables</strong> — <code>teams</code>, <code>projects</code>, <code>memberships</code>, <code>teamInvites</code>, <code>apiKeys</code>, <code>userGithubAccounts</code>.</li>
+<li><strong>Better Auth tables</strong> (<code>user</code>, <code>session</code>, <code>account</code>, <code>verification</code>) are <strong>owned by <code>void/auth</code></strong> — bootstrapped idempotently against the same database and intentionally NOT declared in the schema source. Cross-table joins to them use raw SQL.</li>
+<li><strong>Tenant isolation is logical, enforced by the type system.</strong> There is no per-team DO boundary; every query against a run-scoped table <strong>must</strong> filter by <code>projectId</code> (and usually <code>teamId</code>). The branded <code>AuthorizedProjectId</code> / <code>AuthorizedTeamId</code> on <code>TenantScope</code> (<code>src/lib/scope.ts</code>) make the auth-checked ids impossible to bypass.</li>
+<li><strong>Realtime</strong> — <code>void/ws</code> rooms (run + project rooms); ingest handlers call <code>publishRunUpdate(runId, event)</code> after each write. Run-detail/list islands subscribe via <code>useRunRoom</code> / <code>useProjectRoom</code>.</li>
+</ul>
+<p><strong>Auth</strong>: API key auth via <code>Authorization: Bearer &lt;key&gt;</code>. Keys are SHA-256 hashed, looked up by 8-char prefix, then hash-compared. Defined in <code>apps/dashboard/src/lib/api-key.ts</code> / <code>src/lib/api-auth.ts</code>.</p>
+<p><strong>Protocol versioning</strong>: <code>X-Wrightful-Version</code> header. Currently only version 3 is supported — older reporters/CLIs get a 409.</p>
+<h2 id="frontend-stack-amp-ui-conventions">Frontend Stack &amp; UI Conventions</h2>
+<p>The dashboard uses Tailwind v4 + Base UI, wrapped as a local component library. Prefer reuse over hand-rolled markup.</p>
+<ul>
+<li><strong>Check <code>apps/dashboard/src/components/ui/</code> first.</strong> ~50 components already exist (<code>button</code>, <code>dialog</code>, <code>table</code>, <code>input</code>, <code>select</code>, <code>tabs</code>, <code>tooltip</code>, <code>toast</code>, etc.) — each is a thin wrapper over a Base UI primitive, styled with Tailwind + <code>class-variance-authority</code>. Use an existing wrapper if one fits; extend one if it&#39;s close; only hand-roll if nothing matches. Do <strong>not</strong> import <code>@base-ui-components/react</code> directly from page code — go through the <code>ui/</code> wrappers.</li>
+<li><strong>Tailwind v4</strong> — no <code>tailwind.config.*</code>. Theme tokens (colors, fonts, radii, animations, dark-mode scope) live in <code>apps/dashboard/src/styles.css</code> under <code>@theme { … }</code>. Extend tokens there; don&#39;t inline theme values.</li>
+<li><strong><code>cn()</code> helper</strong> — <code>apps/dashboard/src/lib/cn.ts</code> (<code>twMerge(clsx(...))</code>). Use it for every merged/conditional <code>className</code>. The existing <code>ui/</code> components all use it.</li>
+<li><strong>COSS registry</strong> — <code>apps/dashboard/components.json</code> is wired to the COSS UI registry. Scaffold new components with <code>npx shadcn@latest add @coss/&lt;name&gt;</code> (drops into <code>src/components/ui/</code>). Prefer this over adding ad-hoc dependencies.</li>
+<li><strong>URL state</strong> — no nuqs. Use <code>useSearchParam</code> (shallow) / <code>useNavigatingSearchParam</code> (re-fetch) from <code>src/lib/use-search-param.ts</code> for filter/sort/pagination state.</li>
+<li><strong>Islands</strong> — pages are isomorphic (Void Inertia-style); add <code>&quot;use client&quot;</code> only when interactivity or Base UI client hooks require it. All <code>ui/</code> components are already client-boundary.</li>
+<li><strong>Internal navigation</strong> — use <code>@void/react</code>&#39;s <code>&lt;Link&gt;</code> for internal routes; plain <code>&lt;a&gt;</code> only for external links and island pages.</li>
+</ul>
+<h2 id="auth-amp-multi-tenancy">Auth &amp; Multi-Tenancy</h2>
+<p>Two auth systems coexist:</p>
+<ul>
+<li><strong>API auth</strong> (<code>/api/*</code> ingest) — Bearer API keys, scoped to a project. <code>apps/dashboard/src/lib/api-auth.ts</code>. Applied as middleware (<code>middleware/02.api-auth.ts</code>); handlers read <code>getApiKey(c)</code>.</li>
+<li><strong>Dashboard auth</strong> — Better Auth sessions via <code>void/auth</code> (email + password, optional GitHub OAuth). Config in <code>apps/dashboard/auth.ts</code>. Server helpers <code>getSession()</code> / <code>getUser()</code> / <code>requireAuth(c)</code> come from <code>void/auth</code>.</li>
+</ul>
+<p><strong>Tenancy model:</strong> <code>teams</code> → <code>projects</code> → <code>runs</code> (+ derived rows). Users join teams via <code>memberships</code> (<code>owner</code> | <code>member</code>).</p>
+<p><strong>Routes:</strong> dashboard pages live under <code>/t/:teamSlug/p/:projectSlug/…</code>; settings under <code>/settings/…</code>. <code>/</code> is a team/project picker.</p>
+<p><strong>Authorization helpers — always use these instead of raw <code>teamId</code> / <code>projectId</code> lookups:</strong></p>
+<ul>
+<li><code>resolveTeamBySlug(userId, teamSlug)</code> / <code>resolveProjectBySlugs(userId, teamSlug, projectSlug)</code> / <code>resolveTenantBundleForUser(...)</code> — <code>apps/dashboard/src/lib/authz.ts</code></li>
+<li><code>requireTenantContext(c)</code> / <code>getTenantContext(c)</code> — <code>apps/dashboard/src/lib/tenant-context.ts</code> — returns <code>{ project, scope }</code> from the active project resolved once by <code>middleware/01.context.ts</code>. <strong>Use this at the top of any <code>/t/:teamSlug/p/:projectSlug/*</code> page loader</strong> — it avoids re-running the membership join.</li>
+<li><code>tenantScopeForApiKey(apiKey)</code> — <code>apps/dashboard/src/lib/scope.ts</code> — ingest flow. <code>tenantScopeForUserBySlugs(...)</code> — same file — for session-authed API routes outside the tenant middleware&#39;s reach.</li>
+</ul>
+<p><strong>Query scoping rule:</strong> there is no DO boundary — isolation is logical. Every query against <code>runs</code> / <code>testResults</code> / <code>testResultAttempts</code> / <code>testTags</code> / <code>testAnnotations</code> / <code>artifacts</code> <strong>must</strong> filter by <code>projectId</code> (and <code>teamId</code> where present). The branded <code>AuthorizedProjectId</code> on <code>TenantScope</code> exists to make this impossible to forget.</p>
+<p><strong>Env vars</strong> (declared in <code>apps/dashboard/env.ts</code>): required <code>WRIGHTFUL_PUBLIC_URL</code>, <code>BETTER_AUTH_SECRET</code>. Optional <code>AUTH_GITHUB_CLIENT_ID</code> + <code>AUTH_GITHUB_CLIENT_SECRET</code>, <code>WRIGHTFUL_MAX_ARTIFACT_BYTES</code> (default 50 MiB), <code>WRIGHTFUL_RUN_STALE_MINUTES</code> (default 30), <code>ALLOW_OPEN_SIGNUP</code> (default false), <code>EMAIL_FROM</code> (enables verification/reset/monitor-alert email via the Cloudflare Email Service <code>EMAIL</code> binding; unset = email features off and graceful no-ops). Read values via <code>import { env } from &quot;void/env&quot;</code>.</p>
+<h2 id="worklogs">Worklogs</h2>
+<p><strong>Required.</strong> When making significant changes or adding features, you must write a worklog entry in <code>docs/worklog/</code>. This is how we track what changed, why, and what was verified — future agents and contributors rely on these to understand project history beyond what git log shows.</p>
+<p><strong>File naming:</strong> <code>YYYY-MM-DD-short-description.md</code> (e.g. <code>2026-04-16-phase1-foundation.md</code>)</p>
+<p><strong>Structure:</strong> Each entry should include:</p>
+<ul>
+<li><strong>Title</strong> — date + summary of what changed</li>
+<li><strong>What changed</strong> — narrative description of the work</li>
+<li><strong>Details</strong> — new dependencies, config changes, schema changes, scripts added, etc. (tables work well)</li>
+<li><strong>Code fixes / migrations</strong> — specific files changed and why, if non-obvious</li>
+<li><strong>Verification</strong> — what checks were run and their results (tests, lint, typecheck, manual testing)</li>
+</ul>
+<p>See existing entries in <code>docs/worklog/</code> for the expected level of detail. Err on the side of being thorough — these are the project&#39;s source of truth for decision context.</p>
+<p>Before substantive work, read <code>docs/worklog/void-migration-consolidated.md</code> — it records the rwsdk → Void migration and the durable architectural decisions (a single shared database with logical tenancy rather than per-team DOs, <code>void/ws</code> realtime rooms) that should not be re-litigated. (The store itself was later moved from D1 to Postgres — see <code>docs/worklog/2026-06-16-postgres-only.md</code> — but &quot;single shared store, logical tenancy&quot; is the durable call.) Worklogs dated before the migration describe the prior rwsdk/Durable-Object/Kysely architecture and are historical.</p>
+<h2 id="tooling-notes">Tooling Notes</h2>
+<ul>
+<li><strong>Static checks</strong>: <code>pnpm check</code> runs <code>vp check</code>, which performs format (oxfmt), lint (oxlint), and type-aware type-checking in one pass. <code>pnpm check:fix</code> auto-fixes format + lint. All config lives in the root <code>vite.config.ts</code> under <code>fmt:</code> and <code>lint:</code> blocks. Type-awareness is enabled via <code>lint.options.typeAware</code> + <code>lint.options.typeCheck</code>. Key lint rules: <code>no-floating-promises</code>, <code>no-misused-promises</code>, <code>await-thenable</code> are errors. The React plugin is activated only for <code>apps/dashboard/**/*.{tsx,jsx}</code>. Formatter uses double quotes, semicolons, trailing commas.</li>
+<li><strong>TypeScript</strong>: <code>tsgo</code> (native TS compiler preview) is installed for ad-hoc <code>tsgo --noEmit</code> runs; the dashboard&#39;s <code>typecheck</code> script runs <code>void prepare &amp;&amp; tsgo --noEmit</code> (codegen first). <code>vp check</code> is the canonical entry point.</li>
+<li><strong>Void codegen</strong>: <code>void prepare</code> generates <code>apps/dashboard/.void/{routes,db,env,queues}.d.ts</code> + tsconfig. Run it after a fresh install in CI before typechecking; <code>vp dev</code> / <code>vp build</code> regenerate it during normal workflows.</li>
+<li><strong>Pre-commit hook</strong>: <code>vp config</code> (run via the <code>prepare</code> script) installs a hook in <code>.vite-hooks/</code> that runs <code>vp staged</code> (lint --fix + fmt --write on staged files) per the <code>staged:</code> block in the root <code>vite.config.ts</code>.</li>
+<li><strong>Bundling</strong>: reporter is bundled with <code>vp pack</code> (wraps tsdown). Config: <code>packages/reporter/vite.config.ts</code>.</li>
+<li><strong>Toolchain pin</strong>: the vite-plus catalog in <code>pnpm-workspace.yaml</code> is pinned (not <code>latest</code>) — a <code>latest</code> bump previously shipped a release that couldn&#39;t build the dashboard&#39;s Void config.</li>
+<li><strong>IDs</strong>: ULIDs for all database primary keys (via <code>ulid</code> package).</li>
+</ul>
+<!--VITE PLUS START-->
+
+<h1 id="using-vite-the-unified-toolchain-for-the-web">Using Vite+, the Unified Toolchain for the Web</h1>
+<p>This project is using Vite+, a unified toolchain built on top of Vite, Rolldown, Vitest, tsdown, Oxlint, Oxfmt, and Vite Task. Vite+ wraps runtime management, package management, and frontend tooling in a single global CLI called <code>vp</code>. Vite+ is distinct from Vite, and it invokes Vite through <code>vp dev</code> and <code>vp build</code>. Run <code>vp help</code> to print a list of commands and <code>vp &lt;command&gt; --help</code> for information about a specific command.</p>
+<p>Docs are local at <code>node_modules/vite-plus/docs</code> or online at <a href="https://viteplus.dev/guide/">https://viteplus.dev/guide/</a>.</p>
+<h2 id="review-checklist">Review Checklist</h2>
+<ul>
+<li><input disabled="" type="checkbox"> Run <code>vp install</code> after pulling remote changes and before getting started.</li>
+<li><input disabled="" type="checkbox"> Run <code>vp check</code> and <code>vp test</code> to format, lint, type check and test changes.</li>
+<li><input disabled="" type="checkbox"> Check if there are <code>vite.config.ts</code> tasks or <code>package.json</code> scripts necessary for validation, run via <code>vp run &lt;script&gt;</code>.</li>
+<li><input disabled="" type="checkbox"> If setup, runtime, or package-manager behavior looks wrong, run <code>vp env doctor</code> and include its output when asking for help.</li>
+</ul>
+<!--VITE PLUS END-->
+
+<!--injected-by-void-v0.9.3-->
+
+<h2 id="void">Void</h2>
+<p>This project uses <a href="https://void.cloud">Void</a> — a fullstack Vite plugin + deployment platform for Cloudflare. <code>voidPlugin()</code> in <code>vite.config.ts</code> gives you file-based API routing on Hono (<code>routes/</code>), Inertia-inspired server-rendered pages with co-located loaders/actions (<code>pages/</code> + <code>@void/vue</code> or <code>@void/react</code>), auto-provisioned D1/KV/R2 bindings, first-class Drizzle ORM integration (schema in <code>db/schema.ts</code> -&gt; <code>void/db</code> Drizzle instance -&gt; typed routes -&gt; typed fetch client), built-in auth, queues, cron jobs, edge caching (ISR), and one-command deploys via <code>npx void deploy</code>. For first-time setup, prefer <code>npx void init</code>; in an empty directory, install <code>void</code> first and let the interactive flow scaffold the starter with Vite+ by default, add the matching framework adapter, configure project files, handle auth, and link or create the deploy project before the first deploy. In an existing app, <code>void init</code> configures Void in place by adding missing Vite scripts and creating or patching <code>vite.config.*</code> with <code>voidPlugin()</code>. Use <code>void</code> and <code>@void/*</code> package names in source code and package manifests.</p>
+<p>Database: define Drizzle tables in <code>db/schema.ts</code>, import <code>db</code> from <code>void/db</code> and tables from <code>@schema</code>. Use <code>void db push</code> for prototyping, <code>void db generate</code> for production migrations. <code>drizzle-orm</code> and <code>drizzle-kit</code> ship with void (no extra install). Migrations live in <code>db/migrations/</code>.</p>
+<p>Env: declare every env key in <code>env.ts</code> at the project root via <code>defineEnv({ KEY: string(), ... })</code> from <code>void/env</code>. Read values via <code>import { env } from &quot;void/env&quot;</code>. Schema validation runs at dev start (warns) and on <code>void deploy</code> (hard error on missing prod secrets). Use <code>VITE_*</code> prefix for keys that should be exposed to client code.</p>
+<p>CI/editor prep: run <code>void prepare</code> to generate <code>.void/routes.d.ts</code>, <code>.void/db.d.ts</code>, <code>.void/queues.d.ts</code>, <code>.void/env.d.ts</code>, and <code>.void/tsconfig.json</code> without booting Vite. Run it after <code>npm install</code> in CI or a fresh clone before typechecking; <code>vite dev</code> and <code>vite build</code> regenerate these during normal workflows.</p>
+<p>Rewrites and redirects: declare static rules in <code>void.json</code> under <code>routing.redirects</code> / <code>routing.rewrites</code> / <code>routing.fallbacks</code>, or in a <code>public/_redirects</code> file. For dynamic rewrites, call <code>c.rewrite(path)</code> in a <code>defineMiddleware</code>.</p>
+<p>Logs: surface app-level errors that should show up under <code>void project logs --level error</code> via <code>import { logger } from &quot;void/log&quot;</code> and <code>logger.error(msg, fields?)</code> (also <code>.warn</code> / <code>.info</code>). Anything caught and only persisted to your own DB is invisible to Cloudflare Tail; route it through <code>logger.*</code> or <code>console.*</code> so the platform can see it.</p>
+<p>Full docs are in <code>node_modules/void/docs/</code>. If you have the <code>void</code> skill available, use it for a complete API reference covering project structure, routing, pages mode, database, auth, typed fetch, KV, storage, queues, cron jobs, CLI, configuration, and deployment.</p>
+<!--/injected-by-void-->
+
+</main>
+<footer class="docfoot">Wrightful docs · rendered from Markdown by scripts/render-docs.mjs</footer>
+</body>
+</html>
