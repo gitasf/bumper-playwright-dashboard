@@ -353,13 +353,20 @@ function TestRow({
           title={displayTitle}
         />
       ) : null}
-      <Link
-        aria-label={`Open ${displayTitle}`}
+      {/*
+       * Decorative hover affordance only — the primary row <Link> above already
+       * navigates to the test. Keep this a non-interactive <span> (not a second
+       * <Link> to the same href): a duplicate anchor adds a redundant
+       * screen-reader link and lets the SPA schedule two competing navigations
+       * (which bounced the test-detail nav back to the run page). aria-hidden so
+       * AT ignores the redundant chevron.
+       */}
+      <span
+        aria-hidden="true"
         className="flex w-5 shrink-0 items-center justify-center px-1 text-center text-fg-3 opacity-0 group-hover:opacity-100"
-        href={href}
       >
         <ChevronRight className="size-3" strokeWidth={2} />
-      </Link>
+      </span>
     </div>
   );
 }
