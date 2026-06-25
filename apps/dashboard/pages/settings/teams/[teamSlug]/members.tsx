@@ -256,11 +256,7 @@ export default function SettingsTeamMembersPage({
               }
               value={inviteRole}
             >
-              <SelectTrigger
-                aria-label="Invite role"
-                className="sm:w-32"
-                size="sm"
-              >
+              <SelectTrigger aria-label="Invite role" className="sm:w-32">
                 <SelectValue>{(v: string) => roleLabel(v)}</SelectValue>
               </SelectTrigger>
               <SelectPopup>
