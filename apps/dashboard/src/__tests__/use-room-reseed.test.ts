@@ -76,6 +76,10 @@ vi.mock("void/ws", () => ({ connect: connectSpy }));
 const refreshSpy = vi.fn(() => Promise.resolve());
 vi.mock("@void/react", () => ({
   useRouter: () => ({ refresh: refreshSpy }),
+  // Idle so the reconnect-refresh guard (skip mid-navigation) is a no-op here —
+  // these tests assert the reconcile fires on RE-open. The skip-while-navigating
+  // path is covered in use-feed-room.test.ts.
+  useNavigation: () => ({ state: "idle" }),
 }));
 
 const { useRunRoom } = await import("@/realtime/use-run-room");
