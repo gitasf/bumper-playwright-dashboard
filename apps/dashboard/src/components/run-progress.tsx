@@ -349,7 +349,10 @@ function TestRow({
       </Link>
       {hasTrace ? (
         <TestReplayButton
-          replayHref={`/api/t/${teamSlug}/p/${projectSlug}/runs/${runId}/tests/${test.id}/replay`}
+          teamSlug={teamSlug}
+          projectSlug={projectSlug}
+          runId={runId}
+          testResultId={test.id}
           title={displayTitle}
         />
       ) : null}

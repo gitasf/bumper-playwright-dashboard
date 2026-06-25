@@ -268,14 +268,6 @@ export async function bootDashboard(
         ...(dedicatedArtifactTokenSecret
           ? [`ARTIFACT_TOKEN_SECRET=${dedicatedArtifactTokenSecret}`]
           : []),
-        // Postgres-only store: `void db reset` and the dev server read
-        // DATABASE_URL straight from .env.local (it does NOT fall back to a
-        // managed local DB). The CI postgres service / a local dev export it;
-        // pass it through so the freshly-written .env.local can connect. Absent
-        // it, void fails fast with "DATABASE_URL not found in .env.local".
-        ...(process.env.DATABASE_URL
-          ? [`DATABASE_URL=${process.env.DATABASE_URL}`]
-          : []),
         `WRIGHTFUL_PUBLIC_URL=${url}`,
         // PG-era boot: forward the developer/CI Postgres connection so the
         // `void db reset` below + `vp dev` can connect. The local-D1 era needed

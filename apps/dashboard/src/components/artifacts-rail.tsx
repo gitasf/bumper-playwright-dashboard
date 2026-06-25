@@ -1,7 +1,21 @@
-import { ArrowRight, Check, Copy, History, Terminal } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Copy,
+  History,
+  ImageIcon,
+  Play,
+  Terminal,
+} from "lucide-react";
 import { useState } from "react";
 import type { ArtifactAction } from "@/components/artifact-actions";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { TraceViewerDialog } from "@/components/trace-viewer-dialog";
 import { VisualDiffRailButton } from "@/components/visual-diff-dialog";
 import { cn } from "@/lib/cn";
@@ -30,15 +44,7 @@ export function ArtifactsRail({
   environment: EnvironmentFields;
 }): React.ReactElement | null {
   const envRows = environmentRows(environment);
-  // Video + raw screenshots are intentionally NOT surfaced as standalone
-  // buttons: the embedded Test Replay (trace) already plays the video and shows
-  // every screenshot inline, so a separate button is redundant. We keep the
-  // trace ("Test Replay") and the visual-diff grouping, which the replay viewer
-  // doesn't render as a side-by-side expected/actual/diff comparison.
-  const visibleMedia = media.filter(
-    (a) => a.type === "trace" || a.type === "visual",
-  );
-  const hasArtifacts = visibleMedia.length > 0;
+  const hasArtifacts = media.length > 0;
   const hasRepro = Boolean(reproduceCommand) || Boolean(copyPrompt);
   const hasEnv = envRows.length > 0;
   if (!hasArtifacts && !hasRepro && !hasEnv) return null;
@@ -48,7 +54,7 @@ export function ArtifactsRail({
         <section className="p-5 border-b border-border">
           <SectionLabel>Artifacts</SectionLabel>
           <div className="flex flex-col gap-2">
-            {visibleMedia.map((a) => (
+            {media.map((a) => (
               <RailArtifactButton key={a.id} artifact={a} />
             ))}
           </div>
@@ -120,6 +126,10 @@ function RailArtifactButton({
       return <RailTraceButton artifact={artifact} />;
     case "visual":
       return <VisualDiffRailButton artifact={artifact} />;
+    case "video":
+      return <RailVideoButton artifact={artifact} />;
+    case "screenshot":
+      return <RailScreenshotButton artifact={artifact} />;
     default:
       return <></>;
   }
@@ -160,6 +170,65 @@ function RailTraceButton({
       <RailIconLabel icon={<History />} label="Test Replay" />
       <ArrowRight className="opacity-50" aria-hidden />
     </TraceViewerDialog>
+  );
+}
+
+function RailVideoButton({
+  artifact,
+}: {
+  artifact: ArtifactAction;
+}): React.ReactElement {
+  return (
+    <Dialog>
+      <DialogTrigger
+        render={
+          <Button size="sm" variant="outline" className={railButtonClasses()} />
+        }
+      >
+        <RailIconLabel icon={<Play />} label="Video" />
+        <ArrowRight className="opacity-50" aria-hidden />
+      </DialogTrigger>
+      <DialogContent className="max-w-3xl">
+        <DialogTitle className="sr-only">Video: {artifact.name}</DialogTitle>
+        <video
+          className="w-full rounded-b-2xl bg-black"
+          controls
+          autoPlay
+          src={artifact.downloadHref}
+        >
+          <track kind="captions" />
+        </video>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RailScreenshotButton({
+  artifact,
+}: {
+  artifact: ArtifactAction;
+}): React.ReactElement {
+  return (
+    <Dialog>
+      <DialogTrigger
+        render={
+          <Button size="sm" variant="outline" className={railButtonClasses()} />
+        }
+      >
+        <RailIconLabel icon={<ImageIcon />} label="Screenshot" />
+        <ArrowRight className="opacity-50" aria-hidden />
+      </DialogTrigger>
+      <DialogContent className="max-w-4xl">
+        <DialogTitle className="sr-only">
+          Screenshot: {artifact.name}
+        </DialogTitle>
+        <img
+          className="w-full rounded-b-2xl bg-muted"
+          alt={artifact.name}
+          src={artifact.downloadHref}
+        />
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -2,6 +2,7 @@
 
 import { Download, ExternalLink, PlayCircle } from "lucide-react";
 import { useState } from "react";
+import { fetch } from "void/client";
 import type { ArtifactAction } from "@/components/artifact-actions";
 import { Button } from "@/components/ui/button";
 import {
@@ -143,11 +144,16 @@ export function TraceViewerDialog({
  * just leaves the dialog closed.
  */
 export function TestReplayButton({
-  replayHref,
+  teamSlug,
+  projectSlug,
+  runId,
+  testResultId,
   title,
 }: {
-  /** `/api/t/:team/p/:project/runs/:runId/tests/:testResultId/replay`. */
-  replayHref: string;
+  teamSlug: string;
+  projectSlug: string;
+  runId: string;
+  testResultId: string;
   title: string;
 }): React.ReactElement {
   const [open, setOpen] = useState(false);
@@ -164,23 +170,17 @@ export function TestReplayButton({
     }
     setLoading(true);
     try {
-      const res = await fetch(replayHref);
-      if (!res.ok) return;
-      const body = await res.json();
-      if (
-        body &&
-        typeof body === "object" &&
-        "traceViewerUrl" in body &&
-        "downloadHref" in body &&
-        typeof body.traceViewerUrl === "string" &&
-        typeof body.downloadHref === "string"
-      ) {
-        setResolved({
-          viewerUrl: body.traceViewerUrl,
-          downloadHref: body.downloadHref,
-        });
-        setOpen(true);
-      }
+      // Typed client: returns `TestReplayResponse`, so no manual shape guard —
+      // a contract change would break this at compile time.
+      const body = await fetch(
+        "/api/t/:teamSlug/p/:projectSlug/runs/:runId/tests/:testResultId/replay",
+        { params: { teamSlug, projectSlug, runId, testResultId } },
+      );
+      setResolved({
+        viewerUrl: body.traceViewerUrl,
+        downloadHref: body.downloadHref,
+      });
+      setOpen(true);
     } catch {
       // Best-effort — the button just doesn't open. The trace is still
       // reachable from the test-detail page's artifacts rail.
@@ -191,8 +191,10 @@ export function TestReplayButton({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <button
-        type="button"
+      <Button
+        size="xs"
+        variant="ghost"
+        className="text-primary"
         disabled={loading}
         onClick={(e) => {
           // The row is a <Link>; don't navigate when opening the replay.
@@ -200,11 +202,10 @@ export function TestReplayButton({
           e.stopPropagation();
           void onClick();
         }}
-        className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-primary opacity-80 transition hover:bg-primary/10 hover:opacity-100 disabled:opacity-50"
       >
         <PlayCircle className="size-3.5" strokeWidth={2} />
         Test Replay
-      </button>
+      </Button>
       {resolved ? (
         <TestReplayContent
           viewerUrl={resolved.viewerUrl}
