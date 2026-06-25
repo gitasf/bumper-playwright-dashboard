@@ -11,8 +11,9 @@ import { FAILURES_BRANCH } from "./global-setup";
  * with the framing/CSP headers that make same-origin embedding possible while
  * the rest of the app stays strict; (2) the per-row "Test Replay" button in a
  * run's test list mints a self-hosted viewer URL and opens it; (3) the
- * test-detail rail's "Test Replay" button does the same, and the redundant
- * Video/Screenshot buttons are gone.
+ * test-detail rail's "Test Replay" button does the same, alongside the
+ * standalone Video/Screenshot buttons (kept so a single asset can be grabbed
+ * without downloading the whole trace.zip).
  *
  * The seed (`upload-fixtures.mjs`, reporter `artifacts: "all"` +
  * `trace: "retain-on-failure"`) gives the `FAILURES_BRANCH` run tests that
@@ -81,7 +82,7 @@ test.describe("Test Replay (embedded trace viewer)", () => {
     );
   });
 
-  test("test-detail rail shows Test Replay (self-hosted) and no separate video/screenshot buttons", async ({
+  test("test-detail rail shows Test Replay (self-hosted) alongside the standalone video/screenshot buttons", async ({
     page,
     runsListPage,
     runDetailPage,
@@ -91,25 +92,32 @@ test.describe("Test Replay (embedded trace viewer)", () => {
     await runDetailPage.goto(runId);
 
     // Navigate into a test KNOWN to have a trace: the row that carries the
-    // list-level Test Replay button. Its sibling link opens the detail page.
+    // list-level Test Replay button. Click its sibling detail link (SPA nav, so
+    // the app stays hydrated and the rail's dialog trigger is interactive on
+    // arrival — a full `goto` would race re-hydration). The run-detail row no
+    // longer bounces back to the run page (see use-feed-room's navigation guard).
     const listReplay = page
       .getByRole("button", { name: /test replay/i })
       .first();
     await expect(listReplay).toBeVisible({ timeout: 10_000 });
     const row = listReplay.locator("xpath=..");
-    await row.getByRole("link").first().click();
+    await row.locator('a[href*="/tests/"]').first().click();
     await page.waitForURL(/\/tests\//, { timeout: 15_000 });
 
     // Rail button renamed from "Trace Viewer" → "Test Replay".
     const railReplay = page.getByRole("button", { name: /test replay/i });
     await expect(railReplay).toBeVisible({ timeout: 10_000 });
 
-    // The standalone Video / Screenshot rail buttons were dropped — the replay
-    // viewer shows both inline.
-    await expect(page.getByRole("button", { name: /^video$/i })).toHaveCount(0);
+    // The standalone Video / Screenshot rail buttons are kept alongside Test
+    // Replay — handy for grabbing a single asset without the whole trace.zip,
+    // and the embedded viewer doesn't render the video anyway. The seed run
+    // (reporter `artifacts: "all"`) carries both for a failed test.
     await expect(
-      page.getByRole("button", { name: /^screenshot$/i }),
-    ).toHaveCount(0);
+      page.getByRole("button", { name: /^video$/i }).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /^screenshot$/i }).first(),
+    ).toBeVisible();
 
     // Opening it embeds the self-hosted viewer (not trace.playwright.dev).
     await railReplay.click();
