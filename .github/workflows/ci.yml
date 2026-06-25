@@ -321,15 +321,18 @@ jobs:
     name: E2E UI Tests (Playwright)
     runs-on: ubuntu-latest
     needs: [test-reporter, test-dashboard]
-    # Throwaway Postgres for bootDashboard's `void db reset` + `vp dev` (see the
-    # note on test-e2e). Reachable only inside the runner; never a real DB.
+    # The dashboard is Postgres-only: `bootDashboard` runs `void db reset` and
+    # the dev server reads DATABASE_URL straight from .env.local (no managed-DB
+    # fallback). Provide a real postgres:16 so the suite can boot, mirroring the
+    # test-postgres job. The DB is dedicated (wrightful_e2e) — the suite resets
+    # it; reachable only inside the runner, never a real DB.
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_USER: wrightful
           POSTGRES_PASSWORD: wrightful
-          POSTGRES_DB: wrightful_test
+          POSTGRES_DB: wrightful_e2e
         ports:
           - 5432:5432
         options: >-
@@ -361,7 +364,7 @@ jobs:
         # "1" in repo settings). Until then, visual.spec self-skips.
         env:
           WRIGHTFUL_VISUAL_BASELINE_OK: ${{ vars.VISUAL_BASELINE_OK }}
-          DATABASE_URL: postgres://wrightful:wrightful@localhost:5432/wrightful_test
+          DATABASE_URL: postgres://wrightful:wrightful@localhost:5432/wrightful_e2e
         run: pnpm --filter @wrightful/e2e test:dashboard
 
       - name: Upload Playwright report on failure

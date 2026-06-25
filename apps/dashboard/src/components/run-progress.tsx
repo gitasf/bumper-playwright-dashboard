@@ -7,6 +7,7 @@ import {
   type SegmentedOption,
 } from "@/components/segmented-control";
 import { StatusGlyph } from "@/components/status-glyph";
+import { TestReplayButton } from "@/components/trace-viewer-dialog";
 import { cn } from "@/lib/cn";
 import {
   countByStatusGroup,
@@ -28,6 +29,13 @@ interface RunProgressProps {
   projectSlug: string;
   /** SSR-loaded test rows. Forwarded to the hook to seed its accumulator. */
   initialTests?: RunProgressTest[];
+  /**
+   * `testResultId`s (among `initialTests`) that have a trace artifact → gate the
+   * per-row "Test Replay" button. Computed at SSR; a test streamed in live after
+   * load won't be listed (the realtime event can't carry it — artifacts register
+   * in a later flush), so its button appears only after a reload.
+   */
+  tracedTestIds?: string[];
 }
 
 /**
@@ -56,9 +64,14 @@ export function RunProgress({
   teamSlug,
   projectSlug,
   initialTests,
+  tracedTestIds,
 }: RunProgressProps) {
   const { byId } = useRunRoom(runId, { initialTests });
   const tests = useMemo(() => Object.values(byId), [byId]);
+  const tracedIds = useMemo(
+    () => new Set(tracedTestIds ?? []),
+    [tracedTestIds],
+  );
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -182,6 +195,7 @@ export function RunProgress({
               runId={runId}
               teamSlug={teamSlug}
               tests={items}
+              tracedIds={tracedIds}
             />
           ))
         )}
@@ -199,6 +213,7 @@ function TestGroup({
   teamSlug,
   projectSlug,
   runId,
+  tracedIds,
 }: {
   groupKey: string;
   groupBy: GroupByAxis;
@@ -208,6 +223,7 @@ function TestGroup({
   teamSlug: string;
   projectSlug: string;
   runId: string;
+  tracedIds: ReadonlySet<string>;
 }) {
   const counts = useMemo(() => countByStatusGroup(tests), [tests]);
 
@@ -260,6 +276,7 @@ function TestGroup({
           {tests.map((t) => (
             <TestRow
               key={t.id}
+              hasTrace={tracedIds.has(t.id)}
               projectSlug={projectSlug}
               runId={runId}
               teamSlug={teamSlug}
@@ -277,11 +294,14 @@ function TestRow({
   teamSlug,
   projectSlug,
   runId,
+  hasTrace,
 }: {
   test: RunProgressTest;
   teamSlug: string;
   projectSlug: string;
   runId: string;
+  /** Show the inline "Test Replay" button — set when the test has a trace. */
+  hasTrace: boolean;
 }) {
   const href = `/t/${teamSlug}/p/${projectSlug}/runs/${runId}/tests/${test.id}?attempt=0`;
   // Strip the file-path prefix that the reporter sometimes bakes into the
@@ -293,37 +313,63 @@ function TestRow({
       displayTitle = displayTitle.slice(prefix.length);
   }
 
+  // The row is a <Link>, so the Test Replay button (which opens a dialog) lives
+  // as a sibling rather than nested inside the anchor.
   return (
-    <Link
+    <div
       className={cn(
         "group flex w-full items-center gap-1 py-1.5 pl-[50px] pr-6",
         "min-h-8 text-left text-foreground hover:bg-bg-1",
       )}
-      href={href}
     >
-      <span className="flex w-[18px] shrink-0 items-center justify-center">
-        <StatusGlyph size={12} status={test.status} />
-      </span>
-      <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
-        <span className="min-w-0 truncate text-[12.5px]">{displayTitle}</span>
-        {test.retryCount > 0 ? (
-          <span
-            className="shrink-0 font-mono text-[10.5px]"
-            style={{ color: statusToken("flaky") }}
-          >
-            ×{test.retryCount + 1}
-          </span>
-        ) : null}
-      </div>
-      <span className="w-[60px] shrink-0 px-2 font-mono text-[11px] capitalize text-fg-3">
-        {test.projectName ?? ""}
-      </span>
-      <span className="w-[70px] shrink-0 px-2 text-right font-mono text-[12px] tabular-nums text-fg-3">
-        {formatDuration(test.durationMs)}
-      </span>
-      <span className="w-5 shrink-0 px-1 text-center text-fg-3 opacity-0 group-hover:opacity-100">
+      <Link
+        className="flex min-w-0 flex-1 items-center gap-1 text-left text-foreground"
+        href={href}
+      >
+        <span className="flex w-[18px] shrink-0 items-center justify-center">
+          <StatusGlyph size={12} status={test.status} />
+        </span>
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
+          <span className="min-w-0 truncate text-[12.5px]">{displayTitle}</span>
+          {test.retryCount > 0 ? (
+            <span
+              className="shrink-0 font-mono text-[10.5px]"
+              style={{ color: statusToken("flaky") }}
+            >
+              ×{test.retryCount + 1}
+            </span>
+          ) : null}
+        </div>
+        <span className="w-[60px] shrink-0 px-2 font-mono text-[11px] capitalize text-fg-3">
+          {test.projectName ?? ""}
+        </span>
+        <span className="w-[70px] shrink-0 px-2 text-right font-mono text-[12px] tabular-nums text-fg-3">
+          {formatDuration(test.durationMs)}
+        </span>
+      </Link>
+      {hasTrace ? (
+        <TestReplayButton
+          teamSlug={teamSlug}
+          projectSlug={projectSlug}
+          runId={runId}
+          testResultId={test.id}
+          title={displayTitle}
+        />
+      ) : null}
+      {/*
+       * Decorative hover affordance only — the primary row <Link> above already
+       * navigates to the test. Keep this a non-interactive <span> (not a second
+       * <Link> to the same href): a duplicate anchor adds a redundant
+       * screen-reader link and lets the SPA schedule two competing navigations
+       * (which bounced the test-detail nav back to the run page). aria-hidden so
+       * AT ignores the redundant chevron.
+       */}
+      <span
+        aria-hidden="true"
+        className="flex w-5 shrink-0 items-center justify-center px-1 text-center text-fg-3 opacity-0 group-hover:opacity-100"
+      >
         <ChevronRight className="size-3" strokeWidth={2} />
       </span>
-    </Link>
+    </div>
   );
 }

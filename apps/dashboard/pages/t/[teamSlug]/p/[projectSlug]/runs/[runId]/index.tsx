@@ -63,6 +63,7 @@ export default function RunDetailPage({
   tab,
   pathname,
   tests,
+  tracedTestIds,
 }: Props) {
   const base = `/t/${project.teamSlug}/p/${project.slug}`;
   const shortId = run.id.slice(-7);
@@ -263,6 +264,7 @@ export default function RunDetailPage({
             projectSlug={project.slug}
             runId={runId}
             teamSlug={project.teamSlug}
+            tracedTestIds={tracedTestIds}
           />
         ) : (
           <EnvironmentTab run={run} />

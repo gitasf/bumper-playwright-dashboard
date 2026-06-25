@@ -295,6 +295,14 @@ export async function bootDashboard(
     log("Step 3: Reset local D1 (clean slate + reapply migrations)");
     run("npx void db reset", { cwd: DASHBOARD_DIR });
 
+    // Vendor the Playwright Trace Viewer bundle into public/trace-viewer/. The
+    // dashboard's `predev` npm hook does this, but we spawn `vp dev` directly
+    // (below), which bypasses npm lifecycle hooks — and the bundle is gitignored
+    // — so the Test Replay embed would 404 in a fresh clone without this. The
+    // script is idempotent (version-stamped) so it's a near-no-op on reruns.
+    log("Step 3b: Vendor Playwright Trace Viewer bundle");
+    run("node scripts/vendor-trace-viewer.mjs", { cwd: DASHBOARD_DIR });
+
     log(`Step 4: Start dashboard dev server on :${port}`);
     // Boot the Void dashboard via the vite-plus toolchain (`vp dev`). There is
     // no bare `vite` bin — the workspace aliases `vite` to vite-plus-core, whose
