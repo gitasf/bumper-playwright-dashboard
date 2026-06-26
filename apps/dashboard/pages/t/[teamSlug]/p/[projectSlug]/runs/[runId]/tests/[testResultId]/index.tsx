@@ -1,23 +1,21 @@
 import { Link } from "@void/react";
 import { ArtifactsRail } from "@/components/artifacts-rail";
-import { HeaderCrumbs } from "@/components/page-header";
+import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
 import {
   AttemptPanel,
   AttemptTabsBar,
   type AttemptTabItem,
 } from "@/components/attempt-tabs";
 import { QuarantineControl } from "@/components/quarantine-control";
-import {
-  RunHistoryChart,
-  type RunHistoryPoint,
-} from "@/components/run-history-chart";
+import { RunHistoryChart } from "@/components/run-history-chart";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { TestErrorAlert } from "@/components/test-error-alert";
 import { parseTitleSegments } from "@/lib/group-tests-by-file";
 import type { AttemptArtifactGroup } from "@/lib/test-artifact-actions";
-import { formatDuration, formatRelativeTime } from "@/lib/time-format";
+import { buildTestHistoryView } from "@/lib/test-history-view";
+import { formatDuration } from "@/lib/time-format";
 import type { Props } from "./index.server";
 
 function attemptLabel(attempt: number, totalAttempts: number): string {
@@ -127,50 +125,15 @@ export default function TestDetailPage(props: Props) {
     result.file,
   )} --grep ${JSON.stringify(testTitle)}`;
 
-  const chronologicalHistory = [...historyRows].reverse();
-  const historyPoints: RunHistoryPoint[] = chronologicalHistory.map((h) => ({
-    id: h.testResultId,
-    durationMs: h.durationMs,
-    status: h.status,
-    current: h.testResultId === testResultId,
-    href:
-      h.testResultId === testResultId
-        ? undefined
-        : `${base}/runs/${h.runId}/tests/${h.testResultId}`,
-    hover:
-      h.testResultId === testResultId
-        ? undefined
-        : {
-            kind: "testResult" as const,
-            teamSlug: project.teamSlug,
-            projectSlug: project.projectSlug,
-            runId: h.runId,
-            testResultId: h.testResultId,
-          },
-    label: [
-      h.status,
-      formatDuration(h.durationMs),
-      formatRelativeTime(h.createdAt),
-      h.branch,
-      h.commitSha ? h.commitSha.slice(0, 7) : null,
-    ]
-      .filter(Boolean)
-      .join(" · "),
-  }));
-  const historyStats = (() => {
-    const ran = chronologicalHistory.filter(
-      (h) => h.status !== "skipped",
-    ).length;
-    const failed = chronologicalHistory.filter(
-      (h) => h.status === "failed" || h.status === "timedout",
-    ).length;
-    const flakyCount = chronologicalHistory.filter(
-      (h) => h.status === "flaky",
-    ).length;
-    const passPct =
-      ran === 0 ? 100 : Math.round(((ran - failed - flakyCount) / ran) * 100);
-    return { ran, failed, flakyCount, passPct };
-  })();
+  const { points: historyPoints, stats: historyStats } = buildTestHistoryView(
+    historyRows,
+    {
+      base,
+      teamSlug: project.teamSlug,
+      projectSlug: project.projectSlug,
+      currentTestResultId: testResultId,
+    },
+  );
 
   const tabValues = allAttempts.map((a) => String(a));
   const resolveAttemptView = (attempt: number) => {
@@ -210,32 +173,34 @@ export default function TestDetailPage(props: Props) {
 
   return (
     <div className="flex flex-col">
-      <div className="border-b border-border px-6 py-4 shrink-0">
-        <div className="mb-1 flex items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <HeaderCrumbs
-              items={[
-                { label: "Runs", href: base },
-                {
-                  label: `#${runId.slice(-7)}`,
-                  href: `${base}/runs/${runId}`,
-                },
-              ]}
-            />
-            <StatusBadge status={result.status} />
-            <h1 className="text-[17px] font-semibold tracking-[-0.2px]">
-              {testTitle}
-            </h1>
-          </div>
-          <QuarantineControl
-            actionPath={quarantineActionPath}
-            canManage={project.canManageQuarantine}
-            quarantine={quarantine}
-            redirectTo={quarantineRedirectTo}
-            testId={result.testId}
-            title={testTitle}
+      <DetailHeaderBar className="justify-between gap-4 border-b border-border">
+        <div className="flex min-w-0 items-center gap-3">
+          <HeaderCrumbs
+            items={[
+              { label: "Runs", href: base },
+              {
+                label: `#${runId.slice(-7)}`,
+                href: `${base}/runs/${runId}`,
+              },
+            ]}
           />
+          <StatusBadge status={result.status} />
+          <h1 className="min-w-0 truncate text-[17px] font-semibold tracking-[-0.2px]">
+            {testTitle}
+          </h1>
         </div>
+        <QuarantineControl
+          actionPath={quarantineActionPath}
+          canManage={project.canManageQuarantine}
+          quarantine={quarantine}
+          redirectTo={quarantineRedirectTo}
+          testId={result.testId}
+          title={testTitle}
+        />
+      </DetailHeaderBar>
+
+      {/* Metadata + tags/annotations, below the title bar. */}
+      <div className="shrink-0 border-b border-border px-6 pt-3 pb-3">
         <div className="font-mono text-muted-foreground text-xs">
           {result.file}
           {result.projectName ? ` · ${result.projectName}` : ""} ·{" "}
@@ -248,7 +213,7 @@ export default function TestDetailPage(props: Props) {
           </Alert>
         )}
         {(tagRows.length > 0 || annotationRows.length > 0) && (
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-2.5 flex flex-wrap gap-2">
             {tagRows.map((t, i) => (
               <Badge key={`tag-${i}`} variant="info" size="sm">
                 {t.tag}
@@ -282,7 +247,7 @@ export default function TestDetailPage(props: Props) {
                   × {historyStats.failed}
                 </span>
                 <span style={{ color: "var(--color-warning)" }}>
-                  ⚠ {historyStats.flakyCount}
+                  ⚠ {historyStats.flaky}
                 </span>
               </>
             ) : null

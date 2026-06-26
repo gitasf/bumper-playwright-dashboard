@@ -1,6 +1,6 @@
 import { Link } from "@void/react";
 import type React from "react";
-import { HeaderCrumbs } from "@/components/page-header";
+import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
 import { StatusGlyph } from "@/components/status-glyph";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -51,19 +51,20 @@ export default function RunDiffPage({
   return (
     <>
       <div className="flex-1 overflow-y-auto min-h-0">
-        <div className="border-b border-border px-6 pt-[18px] pb-3">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <HeaderCrumbs
-              items={[
-                { label: "Runs", href: runsBase },
-                { label: `#${headShort}`, href: `${runsBase}/${head.id}` },
-              ]}
-            />
-            <h1 className="text-[17px] font-semibold tracking-[-0.2px]">
-              Compare runs
-            </h1>
-          </div>
-          <div className="mt-[3px] text-[12.5px] text-muted-foreground">
+        <DetailHeaderBar className="gap-1.5 border-b border-border">
+          <HeaderCrumbs
+            items={[
+              { label: "Runs", href: runsBase },
+              { label: `#${headShort}`, href: `${runsBase}/${head.id}` },
+            ]}
+          />
+          <h1 className="text-[17px] font-semibold tracking-[-0.2px]">
+            Compare runs
+          </h1>
+        </DetailHeaderBar>
+
+        <div className="border-b border-border px-6 pt-3 pb-3">
+          <div className="text-[12.5px] text-muted-foreground">
             Diffing test results against a baseline run on{" "}
             {head.branch ? (
               <span className="font-mono">{head.branch}</span>

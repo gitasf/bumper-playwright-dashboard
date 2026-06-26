@@ -2,7 +2,7 @@ import { Link } from "@void/react";
 import type React from "react";
 import { useMemo } from "react";
 import { ActorAvatar } from "@/components/actor-avatar";
-import { HeaderCrumbs } from "@/components/page-header";
+import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import {
@@ -132,7 +132,7 @@ export default function RunDetailPage({
         {/* Sticky H1 row — fixed 52px height so the tab bar below can pin to a
          * matching `top-[52px]` with zero gap. Padding-based heights aren't
          * deterministic enough (text metrics + border can drift a couple px). */}
-        <div className="sticky top-0 z-30 flex h-[52px] items-center border-b border-border bg-background px-6">
+        <DetailHeaderBar className="sticky top-0 z-30 border-b border-border bg-background">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <HeaderCrumbs items={[{ label: "Runs", href: base }]} />
             <h1
@@ -165,7 +165,7 @@ export default function RunDetailPage({
               <span>{formatRelativeTime(run.createdAt)}</span>
             </div>
           </div>
-        </div>
+        </DetailHeaderBar>
 
         {/* Scrolling header — chips + summary, OutcomeBar, duration trend */}
         <div className="border-b border-border px-6 pt-3 pb-[18px]">

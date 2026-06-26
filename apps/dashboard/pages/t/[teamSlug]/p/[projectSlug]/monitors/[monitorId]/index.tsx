@@ -22,7 +22,7 @@ import {
   monitorDisplayStatus,
   MonTypeGlyph,
 } from "@/components/monitors/monitor-status";
-import { HeaderCrumbs } from "@/components/page-header";
+import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardPanel } from "@/components/ui/card";
@@ -70,14 +70,14 @@ function MonitorCreateView({ project, type, formError }: CreateProps) {
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-line-1 px-6 pt-4 pb-4">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <HeaderCrumbs items={[{ label: "Monitors", href: monitorsBase }]} />
-          <h1 className="text-[17px] font-semibold tracking-[-0.2px]">
-            New monitor
-          </h1>
-        </div>
-        <p className="mt-1 text-[12.5px] text-fg-3">
+      <DetailHeaderBar className="gap-1.5 border-b border-line-1">
+        <HeaderCrumbs items={[{ label: "Monitors", href: monitorsBase }]} />
+        <h1 className="text-[17px] font-semibold tracking-[-0.2px]">
+          New monitor
+        </h1>
+      </DetailHeaderBar>
+      <div className="shrink-0 border-b border-line-1 px-6 py-3">
+        <p className="text-[12.5px] text-fg-3">
           {isHttp
             ? "Check a URL on a schedule — status, response time, headers, and body."
             : isTcp
@@ -86,7 +86,7 @@ function MonitorCreateView({ project, type, formError }: CreateProps) {
                 ? "Author a Playwright test and pick how often it should run against production."
                 : "Choose what to monitor."}
         </p>
-      </header>
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[860px] px-6 pt-6 pb-16">
           {isHttp ? (
@@ -221,123 +221,121 @@ function MonitorDetailView({
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-y-auto">
         {/* Header */}
-        <header className="border-b border-line-1 px-6 pt-4 pb-4">
-          <div className="flex items-center gap-3">
-            <HeaderCrumbs items={[{ label: "Monitors", href: monitorsBase }]} />
-            <h1
-              className="flex min-w-0 items-center gap-2 text-[17px] font-semibold tracking-[-0.2px]"
-              title={monitor.name}
-            >
-              <span className="min-w-0 max-w-[520px] truncate">
-                {monitor.name}
-              </span>
-              <MonGlyph size={18} state={status} />
-            </h1>
-            <MonBadge state={status} />
-            <div className="flex-1" />
+        <DetailHeaderBar className="gap-3 border-b border-line-1">
+          <HeaderCrumbs items={[{ label: "Monitors", href: monitorsBase }]} />
+          <h1
+            className="flex min-w-0 items-center gap-2 text-[17px] font-semibold tracking-[-0.2px]"
+            title={monitor.name}
+          >
+            <span className="min-w-0 max-w-[520px] truncate">
+              {monitor.name}
+            </span>
+            <MonGlyph size={18} state={status} />
+          </h1>
+          <MonBadge state={status} />
+          <div className="flex-1" />
 
-            {isOwner && (
-              <>
-                {/* Pause / resume — POSTs the desired next state. */}
-                <form
-                  action={`${here}?toggleEnabled`}
-                  className="m-0"
-                  method="post"
-                >
-                  <input
-                    name="enabled"
-                    type="hidden"
-                    value={enabled ? "false" : "true"}
-                  />
-                  <Button size="sm" type="submit" variant="outline">
-                    {enabled ? (
-                      <Pause className="size-3.5" />
-                    ) : (
-                      <Play className="size-3.5" />
-                    )}
-                    {enabled ? "Pause" : "Resume"}
-                  </Button>
-                </form>
-
-                {/* Silence / unsilence alerts — POSTs the desired next state. */}
-                <form
-                  action={`${here}?toggleAlerts`}
-                  className="m-0"
-                  method="post"
-                >
-                  <input
-                    name="alertsEnabled"
-                    type="hidden"
-                    value={alertsOn ? "false" : "true"}
-                  />
-                  <Button size="sm" type="submit" variant="outline">
-                    {alertsOn ? (
-                      <BellOff className="size-3.5" />
-                    ) : (
-                      <Bell className="size-3.5" />
-                    )}
-                    {alertsOn ? "Mute alerts" : "Unmute alerts"}
-                  </Button>
-                </form>
-
-                {/* Edit toggle — flips `?edit=1` (server-rendered, no island). */}
-                <Button
-                  render={<Link href={editing ? here : `${here}?edit=1`} />}
-                  size="sm"
-                  variant="outline"
-                >
-                  <Settings className="size-3.5" />
-                  {editing ? "Close editor" : "Edit"}
+          {isOwner && (
+            <>
+              {/* Pause / resume — POSTs the desired next state. */}
+              <form
+                action={`${here}?toggleEnabled`}
+                className="m-0"
+                method="post"
+              >
+                <input
+                  name="enabled"
+                  type="hidden"
+                  value={enabled ? "false" : "true"}
+                />
+                <Button size="sm" type="submit" variant="outline">
+                  {enabled ? (
+                    <Pause className="size-3.5" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  {enabled ? "Pause" : "Resume"}
                 </Button>
-              </>
-            )}
-          </div>
+              </form>
 
-          {/* Meta row */}
-          <div className="mt-3.5 flex flex-wrap items-stretch gap-y-2.5">
-            <MetaItem
-              first
-              label="Type"
-              value={
-                <span className="inline-flex items-center gap-1">
-                  <MonTypeGlyph size={11} type={monitor.type} />
-                  {monitorTypeLabel(monitor.type)}
-                </span>
-              }
-            />
-            <MetaItem
-              label="Interval"
-              value={
-                <span className="font-mono">
-                  {humanizeInterval(monitor.intervalSeconds)}
-                </span>
-              }
-            />
-            <MetaItem label="State" value={enabled ? "Enabled" : "Paused"} />
-            <MetaItem label="Alerts" value={alertsOn ? "On" : "Muted"} />
-            <MetaItem
-              label="Last run"
-              value={
-                monitor.lastRunAt ? formatRelativeTime(monitor.lastRunAt) : "—"
-              }
-            />
-            <MetaItem
-              label="Next run"
-              value={
-                enabled
-                  ? nextRunAt
-                    ? formatRelativeTime(nextRunAt)
-                    : "queued"
-                  : "paused"
-              }
-            />
-            <MetaItem
-              label="Uptime 24h"
-              last
-              value={<UptimePct value={headerUptime} />}
-            />
-          </div>
-        </header>
+              {/* Silence / unsilence alerts — POSTs the desired next state. */}
+              <form
+                action={`${here}?toggleAlerts`}
+                className="m-0"
+                method="post"
+              >
+                <input
+                  name="alertsEnabled"
+                  type="hidden"
+                  value={alertsOn ? "false" : "true"}
+                />
+                <Button size="sm" type="submit" variant="outline">
+                  {alertsOn ? (
+                    <BellOff className="size-3.5" />
+                  ) : (
+                    <Bell className="size-3.5" />
+                  )}
+                  {alertsOn ? "Mute alerts" : "Unmute alerts"}
+                </Button>
+              </form>
+
+              {/* Edit toggle — flips `?edit=1` (server-rendered, no island). */}
+              <Button
+                render={<Link href={editing ? here : `${here}?edit=1`} />}
+                size="sm"
+                variant="outline"
+              >
+                <Settings className="size-3.5" />
+                {editing ? "Close editor" : "Edit"}
+              </Button>
+            </>
+          )}
+        </DetailHeaderBar>
+
+        {/* Meta row */}
+        <div className="flex flex-wrap items-stretch gap-y-2.5 border-b border-line-1 px-6 py-3">
+          <MetaItem
+            first
+            label="Type"
+            value={
+              <span className="inline-flex items-center gap-1">
+                <MonTypeGlyph size={11} type={monitor.type} />
+                {monitorTypeLabel(monitor.type)}
+              </span>
+            }
+          />
+          <MetaItem
+            label="Interval"
+            value={
+              <span className="font-mono">
+                {humanizeInterval(monitor.intervalSeconds)}
+              </span>
+            }
+          />
+          <MetaItem label="State" value={enabled ? "Enabled" : "Paused"} />
+          <MetaItem label="Alerts" value={alertsOn ? "On" : "Muted"} />
+          <MetaItem
+            label="Last run"
+            value={
+              monitor.lastRunAt ? formatRelativeTime(monitor.lastRunAt) : "—"
+            }
+          />
+          <MetaItem
+            label="Next run"
+            value={
+              enabled
+                ? nextRunAt
+                  ? formatRelativeTime(nextRunAt)
+                  : "queued"
+                : "paused"
+            }
+          />
+          <MetaItem
+            label="Uptime 24h"
+            last
+            value={<UptimePct value={headerUptime} />}
+          />
+        </div>
 
         <div className="mx-auto flex max-w-[980px] flex-col gap-[18px] px-6 pt-5 pb-16">
           {/* Edit section. */}

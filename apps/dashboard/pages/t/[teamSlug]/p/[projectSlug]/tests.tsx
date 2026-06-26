@@ -253,10 +253,9 @@ export default function TestsPage({
 function TestRow({ row, base }: { row: TestsPageRow; base: string }) {
   const dotColor = mixToneColor(row);
   const title = row.title || row.testId;
-  const href =
-    row.latestRunId && row.latestTestResultId
-      ? `${base}/runs/${row.latestRunId}/tests/${row.latestTestResultId}?attempt=0`
-      : base;
+  // Link to the test-level history page (keyed by the stable testId), not the
+  // latest run's result — a test's history is independent of any one run.
+  const href = `${base}/tests/${row.testId}`;
   return (
     <TableRow>
       <TableCell className="w-10 px-4 py-3 align-middle">

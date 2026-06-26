@@ -45,8 +45,6 @@ export interface BottleneckRow {
   p95: number | null;
   title: string | null;
   file: string | null;
-  latestRunId: string | null;
-  latestTestResultId: string | null;
   failCount: number;
   flakyCount: number;
 }
@@ -196,8 +194,6 @@ export const loader = defineHandler(async (c) => {
         ${percentilePick(0.95, { rn: `"rnDur"`, cnt: "cnt", value: `"durationMs"` })} as p95,
         ${latestPerTestValue("title", { alias: "title" })},
         ${latestPerTestValue("file", { alias: "file" })},
-        ${latestPerTestValue(`"runId"`, { alias: `"latestRunId"` })},
-        ${latestPerTestValue(`"testResultId"`, { alias: `"latestTestResultId"` })},
         ${statusCounter("fail", { alias: `"failCount"` })},
         ${statusCounter("flaky", { alias: `"flakyCount"` })}
       from ranked

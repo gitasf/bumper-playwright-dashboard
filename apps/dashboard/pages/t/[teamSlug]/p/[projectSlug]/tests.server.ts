@@ -40,8 +40,6 @@ export interface TestsPageRow {
   title: string;
   file: string;
   latestStatus: string;
-  latestRunId: string | null;
-  latestTestResultId: string | null;
   lastSeen: number;
   n: number;
   avgDurationMs: number | null;
@@ -64,8 +62,6 @@ interface AggregateRow {
   title: string | null;
   file: string | null;
   latestStatus: string | null;
-  latestRunId: string | null;
-  latestTestResultId: string | null;
   passedCount: number;
   flakyCount: number;
   failCount: number;
@@ -180,8 +176,6 @@ export const loader = defineHandler.withValidator({
           title: a.title ?? "",
           file: a.file ?? "",
           latestStatus: a.latestStatus ?? "",
-          latestRunId: a.latestRunId,
-          latestTestResultId: a.latestTestResultId,
           lastSeen,
           n: a.n,
           avgDurationMs: a.avgDurationMs,
@@ -302,8 +296,6 @@ async function runAggregateQuery(
       ${latestPerTestValue("title", { alias: "title" })},
       ${latestPerTestValue("file", { alias: "file" })},
       ${latestPerTestValue("status", { alias: `"latestStatus"` })},
-      ${latestPerTestValue(`"runId"`, { alias: `"latestRunId"` })},
-      ${latestPerTestValue(`"testResultId"`, { alias: `"latestTestResultId"` })},
       ${statusCounter("passed", { alias: `"passedCount"` })},
       ${statusCounter("flaky", { alias: `"flakyCount"` })},
       ${statusCounter("fail", { alias: `"failCount"` })},

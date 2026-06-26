@@ -1,6 +1,7 @@
 import { Link } from "@void/react";
 import { Fragment } from "react";
 import type React from "react";
+import { cn } from "@/lib/cn";
 
 export interface Crumb {
   label: string;
@@ -29,7 +30,7 @@ interface PageHeaderProps {
  */
 export function PageHeader({ title, crumbs = [], right }: PageHeaderProps) {
   return (
-    <div className="flex h-[52px] shrink-0 items-center justify-between gap-4 border-b border-border px-6">
+    <DetailHeaderBar className="justify-between gap-4 border-b border-border">
       <div className="flex min-w-0 items-center gap-1.5">
         <HeaderCrumbs items={crumbs} />
         <h1 className="min-w-0 truncate text-[17px] font-semibold tracking-[-0.2px]">
@@ -37,6 +38,33 @@ export function PageHeader({ title, crumbs = [], right }: PageHeaderProps) {
         </h1>
       </div>
       {right && <div className="flex shrink-0 items-center gap-2">{right}</div>}
+    </DetailHeaderBar>
+  );
+}
+
+/**
+ * The fixed-height chrome for the app's title bar: `h-[52px] items-center px-6`.
+ * The single owner of that 52px height — locking it (rather than deriving it
+ * from `py-*` padding) is what keeps the heading baseline from drifting a couple
+ * px when navigating between pages, since text metrics + borders make
+ * padding-based heights non-deterministic.
+ *
+ * `PageHeader` uses it for the simple list pages (crumbs + title + right slot).
+ * Detail pages with a bespoke title row — an inline status glyph/badge, action
+ * buttons, or a metadata row below — compose their own children and add
+ * border / justify / gap / sticky / bg via `className`. Pair it with a separate
+ * sibling block for any metadata row (see the runs/[runId] header).
+ */
+export function DetailHeaderBar({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <div className={cn("flex h-[52px] shrink-0 items-center px-6", className)}>
+      {children}
     </div>
   );
 }
