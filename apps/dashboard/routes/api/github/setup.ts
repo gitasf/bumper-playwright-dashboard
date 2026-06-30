@@ -1,6 +1,6 @@
 import { defineHandler } from "void";
 import { requireAuth } from "void/auth";
-import { db } from "void/db";
+import { db, eq } from "void/db";
 import { env } from "void/env";
 import { ulid } from "ulid";
 import { githubInstallations } from "@schema";
@@ -55,32 +55,56 @@ export const GET = defineHandler(async (c) => {
     );
   }
 
-  try {
+  // A GitHub installation links to exactly ONE team. `installation_id` is an
+  // enumerable, attacker-suppliable integer, so a blind upsert keyed on it would
+  // let any signed-in team owner REPOINT another team's connected installation
+  // to themselves — and then abuse its token (via `maybePostGithubCheck`) to
+  // post merge-gating check runs on that org's repos. Look up the current link
+  // first and refuse to steal one that belongs to a different team; re-running
+  // setup for the SAME team stays idempotent.
+  const existing = await db
+    .select({ teamId: githubInstallations.teamId })
+    .from(githubInstallations)
+    .where(eq(githubInstallations.installationId, installationId))
+    .limit(1);
+  if (existing[0] && existing[0].teamId !== team.id) {
+    return redirectWithParam(
+      c,
+      here,
+      "githubError",
+      "This GitHub installation is already connected to another team. Disconnect it there first.",
+    );
+  }
+
+  if (existing[0]) {
+    // Same team re-running setup — refresh the resolved account login + clock.
     await db
-      .insert(githubInstallations)
-      .values({
+      .update(githubInstallations)
+      .set({ accountLogin, updatedAt: nowSeconds })
+      .where(eq(githubInstallations.installationId, installationId));
+  } else {
+    try {
+      await db.insert(githubInstallations).values({
         id: ulid(),
         teamId: team.id,
         installationId,
         accountLogin,
         createdAt: nowSeconds,
         updatedAt: nowSeconds,
-      })
-      .onConflictDoUpdate({
-        target: githubInstallations.installationId,
-        set: { teamId: team.id, accountLogin, updatedAt: nowSeconds },
       });
-  } catch (err) {
-    if (isUniqueViolation(err)) {
-      // The accountLogin unique index: another team already linked this org.
-      return redirectWithParam(
-        c,
-        here,
-        "githubError",
-        `The GitHub organization "${accountLogin}" is already connected to another team.`,
-      );
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        // The accountLogin unique index: a different installation already linked
+        // this org to another team (or a concurrent setup raced this insert).
+        return redirectWithParam(
+          c,
+          here,
+          "githubError",
+          `The GitHub organization "${accountLogin}" is already connected to another team.`,
+        );
+      }
+      throw err;
     }
-    throw err;
   }
 
   return c.redirect(here);

@@ -1,4 +1,4 @@
-import { db, eq } from "void/db";
+import { and, db, eq } from "void/db";
 import { env } from "void/env";
 import { logger } from "void/log";
 import { githubInstallations, projects, runs, teams } from "@schema";
@@ -125,13 +125,23 @@ async function postCheckRun(
  * everything it needs by `runId` (so both `completeRun` and `finalizeStaleRun`
  * call it the same way), and NEVER throws — a GitHub outage must not fail
  * ingest. No-ops cheaply (no DB read) when the App isn't configured, the run
- * has no repo/commit, or no installation matches the repo owner.
+ * has no repo/commit, or no installation OWNED BY THE RUN'S TEAM matches the
+ * repo owner.
+ *
+ * The installation lookup is scoped to `run.teamId` (not the repo-owner string
+ * alone) on purpose: `run.repo` is attacker-controlled ingest input, so a
+ * by-owner-only lookup would be a cross-tenant confused deputy — any tenant
+ * could name another org's repo and make us mint THAT org's installation token
+ * to post a (merge-gating) check run on their repositories. Requiring the
+ * installation to belong to the run's own team means a team can only post checks
+ * for an org IT has connected.
  */
 export async function maybePostGithubCheck(runId: string): Promise<void> {
   if (!githubAppEnabled(env)) return;
   try {
     const rows = await db
       .select({
+        teamId: runs.teamId,
         repo: runs.repo,
         commitSha: runs.commitSha,
         teamSlug: teams.slug,
@@ -159,7 +169,16 @@ export async function maybePostGithubCheck(runId: string): Promise<void> {
     const installRows = await db
       .select({ installationId: githubInstallations.installationId })
       .from(githubInstallations)
-      .where(eq(githubInstallations.accountLogin, owner))
+      // Scope to the run's own team: a run may only drive the installation its
+      // team connected, never one resolved purely from the attacker-supplied
+      // `repo` owner. (accountLogin is globally unique, so this is still a point
+      // seek; the team predicate is the authorization boundary.)
+      .where(
+        and(
+          eq(githubInstallations.teamId, run.teamId),
+          eq(githubInstallations.accountLogin, owner),
+        ),
+      )
       .limit(1);
     const installationId = installRows[0]?.installationId;
     if (!installationId) return;
