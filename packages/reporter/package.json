@@ -1,6 +1,6 @@
 {
   "name": "@wrightful/reporter",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Playwright reporter that streams test results to your Wrightful dashboard as each test completes.",
   "keywords": [
     "playwright",
