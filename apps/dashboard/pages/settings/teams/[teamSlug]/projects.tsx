@@ -49,7 +49,7 @@ export default function SettingsTeamProjectsPage({ team, projects }: Props) {
                   className="font-mono text-[11px] text-fg-3 uppercase tracking-wider transition-colors hover:text-fg-1"
                   href={`/settings/teams/${team.slug}/p/${p.slug}/keys`}
                 >
-                  API keys
+                  Project settings
                 </Link>
                 {isOwner && (
                   <Link

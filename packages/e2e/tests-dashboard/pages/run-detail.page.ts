@@ -40,7 +40,14 @@ export class RunDetailPage {
   }
 
   async goto(runId: string): Promise<void> {
-    await this.page.goto(this.pathFor(runId));
+    const target = this.pathFor(runId);
+    try {
+      await this.page.goto(target);
+    } catch (err) {
+      // Retry once past the transient net::ERR_ABORTED seen under dev-server load.
+      if (!/ERR_ABORTED/i.test(String(err))) throw err;
+      await this.page.goto(target);
+    }
   }
 
   /** Project-page back-link — the generic chrome anchor on every detail page. */
@@ -54,11 +61,14 @@ export class RunDetailPage {
     const link = this.testRowLinks.first();
     await expect(link).toBeVisible({ timeout: 10_000 });
     await link.click();
-    // Wait for the navigation to SETTLE on a test-detail URL. We don't re-click
-    // on a slow nav (a second click can land on a stale element on the
-    // already-changed page); a generous wait + load-state ride out the
-    // hydration/SPA transition without racing a transient URL.
-    await this.page.waitForURL(/\/tests\//, { timeout: 15_000 });
+    try {
+      await this.page.waitForURL(/\/tests\//, { timeout: 10_000 });
+    } catch (err) {
+      // Re-click once if a pre-hydration click was dropped; bail if we did navigate.
+      if (/\/tests\//.test(this.page.url())) throw err;
+      await link.click();
+      await this.page.waitForURL(/\/tests\//, { timeout: 10_000 });
+    }
     await this.page.waitForLoadState("load");
   }
 }

@@ -5,6 +5,13 @@ import { useRouter } from "@void/react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { RevealOnceDialog } from "@/components/settings/reveal-once-dialog";
 import {
   SettingsCard,
@@ -35,14 +42,91 @@ interface CreateInviteResponse {
 }
 
 /**
- * Native `<select>` styled to match the `Input` wrapper. The members page is a
- * no-JS-friendly form surface (member-remove / leave / revoke all POST plain
- * `<form>`s), so the role pickers use a real native select that submits its
- * value rather than the JS-only Base UI `ui/select` — it works without
- * hydration and the per-row form posts the selected value directly.
+ * A member's role picker. Autosaves on change (no Save button): the picked role
+ * is shown optimistically, PATCHed to `/api/teams/:slug/members`, then the page
+ * is refreshed to re-sync server truth. On failure (last-owner guard, or the
+ * member vanishing) it reverts to the prior role and bubbles the message up via
+ * `onError` so the page can surface it in the shared error Alert.
+ *
+ * The remaining per-row controls (remove / leave / revoke) stay no-JS `<form>`s;
+ * only the role change is JS-driven now, which the Base UI `ui/select` requires.
  */
-const roleSelectClassName =
-  "min-h-8 rounded-lg border border-input bg-background px-2 text-sm text-foreground outline-none ring-ring/24 focus-visible:border-ring focus-visible:ring-[3px]";
+function MemberRoleSelect({
+  member,
+  teamSlug,
+  roles,
+  onError,
+}: {
+  member: { userId: string; name: string; role: MembershipRole };
+  teamSlug: string;
+  roles: readonly MembershipRole[];
+  onError: (message: string | null) => void;
+}) {
+  const router = useRouter();
+  // Optimistic value: reflect the pick immediately, revert it if the save fails.
+  // Re-seeded per member via the row `key`, and equal to `member.role` again
+  // after a successful `router.refresh()`, so it never drifts from server truth.
+  const [value, setValue] = useState<MembershipRole>(member.role);
+
+  const save = useMutation<{ role: MembershipRole }, Error, MembershipRole>({
+    mutationFn: async (role) => {
+      const res = await fetch(`/api/teams/${teamSlug}/members`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ userId: member.userId, role }),
+      });
+      if (!res.ok) {
+        const body: unknown = await res.json().catch(() => null);
+        const message =
+          typeof body === "object" &&
+          body !== null &&
+          "error" in body &&
+          typeof body.error === "string"
+            ? body.error
+            : "Could not update role.";
+        throw new Error(message);
+      }
+      return (await res.json()) as { role: MembershipRole };
+    },
+    onSuccess: () => {
+      void router.refresh();
+    },
+    onError: (err) => {
+      setValue(member.role);
+      onError(err.message);
+    },
+  });
+
+  return (
+    <Select
+      disabled={save.isPending}
+      onValueChange={(next) => {
+        const role = roles.find((r) => r === next) ?? member.role;
+        if (role === value) return;
+        onError(null);
+        setValue(role);
+        save.mutate(role);
+      }}
+      value={value}
+    >
+      <SelectTrigger
+        aria-label={`Role for ${member.name}`}
+        className="w-28"
+        size="sm"
+      >
+        <SelectValue>{(v: string) => roleLabel(v)}</SelectValue>
+      </SelectTrigger>
+      <SelectPopup>
+        {roles.map((r) => (
+          <SelectItem key={r} value={r}>
+            {roleLabel(r)}
+          </SelectItem>
+        ))}
+      </SelectPopup>
+    </Select>
+  );
+}
 
 function formatExpiresIn(
   expiresAt: number,
@@ -77,6 +161,9 @@ export default function SettingsTeamMembersPage({
   const [revealedInviteUrl, setRevealedInviteUrl] = useState<string | null>(
     null,
   );
+  // Client-side error from an autosaved role change (last-owner guard, etc.).
+  // Takes precedence over the loader's `membersError` (a no-JS redirect error).
+  const [roleError, setRoleError] = useState<string | null>(null);
 
   const createInvite = useMutation<
     CreateInviteResponse,
@@ -116,9 +203,9 @@ export default function SettingsTeamMembersPage({
         title={`${team.name} · Members`}
       />
 
-      {membersError && (
+      {(roleError ?? membersError) && (
         <Alert variant="error">
-          <AlertDescription>{membersError}</AlertDescription>
+          <AlertDescription>{roleError ?? membersError}</AlertDescription>
         </Alert>
       )}
 
@@ -160,26 +247,26 @@ export default function SettingsTeamMembersPage({
                 value={identifier}
               />
             </div>
-            <select
-              aria-label="Invite role"
-              className={cn(roleSelectClassName, "sm:w-32")}
-              name="role"
+            <Select
               // The options are exactly `assignableRoles`; resolve the emitted
               // value back to that typed list (defaulting to member) rather than
               // casting — keeps `inviteRole` a real MembershipRole.
-              onChange={(e) =>
-                setInviteRole(
-                  assignableRoles.find((r) => r === e.target.value) ?? "member",
-                )
+              onValueChange={(v) =>
+                setInviteRole(assignableRoles.find((r) => r === v) ?? "member")
               }
               value={inviteRole}
             >
-              {assignableRoles.map((r) => (
-                <option key={r} value={r}>
-                  {roleLabel(r)}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger aria-label="Invite role" className="sm:w-32">
+                <SelectValue>{(v: string) => roleLabel(v)}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                {assignableRoles.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {roleLabel(r)}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
             <Button
               disabled={createInvite.isPending}
               loading={createInvite.isPending}
@@ -238,28 +325,12 @@ export default function SettingsTeamMembersPage({
                 </div>
               </div>
               {canManageMembers ? (
-                <form
-                  action={`${here}?updateMemberRole`}
-                  className="m-0 flex items-center gap-1.5"
-                  method="post"
-                >
-                  <input name="userId" type="hidden" value={m.userId} />
-                  <select
-                    aria-label={`Role for ${m.name}`}
-                    className={roleSelectClassName}
-                    defaultValue={m.role}
-                    name="role"
-                  >
-                    {assignableRoles.map((r) => (
-                      <option key={r} value={r}>
-                        {roleLabel(r)}
-                      </option>
-                    ))}
-                  </select>
-                  <Button size="xs" type="submit" variant="outline">
-                    Save
-                  </Button>
-                </form>
+                <MemberRoleSelect
+                  member={m}
+                  onError={setRoleError}
+                  roles={assignableRoles}
+                  teamSlug={team.slug}
+                />
               ) : (
                 <span
                   className={cn(

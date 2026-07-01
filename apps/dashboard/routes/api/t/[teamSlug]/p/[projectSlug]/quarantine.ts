@@ -12,11 +12,10 @@ import { resolveOwnerTenantApiScope } from "@/lib/tenant-api-scope";
 import { safeNextPath } from "@/lib/safe-next-path";
 
 /**
- * Session-authed, owner-gated quarantine mutation — the ONE handler both the
- * flaky page and the tests-catalog page post to (rather than duplicating the
- * logic as page `actions` on each). It's a `/api/t/*` route because those pages
- * are isomorphic list pages with no per-row client island; a plain `<form>`
- * POST + redirect keeps the control working without JS.
+ * Session-authed, owner-gated quarantine mutation — the handler the test detail
+ * page posts to (rather than a page `action`). It's a `/api/t/*` route because
+ * the detail page is isomorphic with no client island; a plain `<form>` POST +
+ * redirect keeps the control working without JS.
  *
  * A single POST discriminates on an `intent` field (HTML forms can only GET /
  * POST): `quarantine` upserts an entry, `unquarantine` removes one. Owner gating

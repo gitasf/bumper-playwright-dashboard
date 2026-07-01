@@ -32,6 +32,14 @@ export interface RunHistoryPoint {
       };
 }
 
+/**
+ * Default x-axis slot count. The chart right-aligns the most recent
+ * `RUN_HISTORY_CHART_MAX_POINTS` points and drops older ones. Callers that
+ * derive a summary "over the window the chart plots" should slice their data
+ * to this same count so the title/summary can't describe more than is drawn.
+ */
+export const RUN_HISTORY_CHART_MAX_POINTS = 30;
+
 export interface RunHistoryChartProps {
   points: RunHistoryPoint[];
   title?: React.ReactNode;
@@ -96,7 +104,7 @@ export function RunHistoryChart({
   subtitle,
   rightSlot,
   height = 120,
-  maxPoints = 30,
+  maxPoints = RUN_HISTORY_CHART_MAX_POINTS,
   emptyState,
   className,
 }: RunHistoryChartProps) {

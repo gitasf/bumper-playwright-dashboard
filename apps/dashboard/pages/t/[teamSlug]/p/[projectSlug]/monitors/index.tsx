@@ -15,7 +15,7 @@ import type { Props } from "./index.server";
  * filter/search + table with per-row pause toggle). Rows deep-link to the
  * monitor detail; the header / empty-state CTAs point at `./monitors/new`.
  */
-export default function MonitorsListPage({ project, monitors, count }: Props) {
+export default function MonitorsListPage({ project, monitors }: Props) {
   const base = `/t/${project.teamSlug}/p/${project.slug}`;
   const monitorsBase = `${base}/monitors`;
   // Authoring monitors is owner-only (see the action gate + `index.server.ts`);
@@ -25,19 +25,11 @@ export default function MonitorsListPage({ project, monitors, count }: Props) {
   if (monitors.length === 0) {
     return (
       <>
-        <PageHeader
-          subtitle={<span className="font-mono">{project.slug}</span>}
-          title="Monitors"
-        />
+        <PageHeader title="Monitors" />
         <MonitorsEmpty isOwner={isOwner} monitorsBase={monitorsBase} />
       </>
     );
   }
-
-  const failing = monitors.filter(
-    (m) =>
-      m.enabled === 1 && (m.lastStatus === "fail" || m.lastStatus === "error"),
-  ).length;
 
   return (
     <>
@@ -49,18 +41,6 @@ export default function MonitorsListPage({ project, monitors, count }: Props) {
               New monitor
             </Button>
           ) : undefined
-        }
-        subtitle={
-          <>
-            <span className="font-mono">{project.slug}</span> · {count}{" "}
-            {count === 1 ? "monitor" : "monitors"}
-            {failing > 0 && (
-              <>
-                {" · "}
-                <span className="text-fail">{failing} need attention</span>
-              </>
-            )}
-          </>
         }
         title="Monitors"
       />

@@ -10,16 +10,16 @@ interface KpiInlineProps {
 }
 
 /**
- * Compact inline KPI cell — used in a horizontal strip above lists (flaky
- * tests, tests catalog). Mirrors the design bundle's `KPIInline` from
- * `screen-flaky-tests.jsx`: small uppercase tracked label, large mono
- * tabular-num value with -0.2 letter-spacing, vertical divider on the right.
+ * Compact inline KPI cell — used in the flaky-tests `PageToolbar` strip. A
+ * small uppercase label followed inline by a mono tabular-num value, with a
+ * vertical divider on the right. Single-line by design so it sits flush in the
+ * shared 52px toolbar height alongside filters and view-toggles.
  */
 export function KpiInline({ label, value, accent, className }: KpiInlineProps) {
   return (
     <div
       className={cn(
-        "flex flex-col gap-0.5 border-r border-border pr-3 mr-1 py-1",
+        "flex items-baseline gap-1.5 border-r border-border pr-3 mr-1",
         className,
       )}
     >
@@ -27,7 +27,7 @@ export function KpiInline({ label, value, accent, className }: KpiInlineProps) {
         {label}
       </span>
       <span
-        className="font-mono text-[16px] font-semibold tracking-[-0.2px] tabular-nums text-foreground"
+        className="font-mono text-[13px] font-semibold tracking-[-0.2px] tabular-nums text-foreground"
         style={accent ? { color: accent } : undefined}
       >
         {value}

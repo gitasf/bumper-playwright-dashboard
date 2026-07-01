@@ -20,11 +20,12 @@ export class ApiKeysPage {
     this.teamSlug = teamSlug;
     this.projectSlug = projectSlug;
 
-    // The keys page <h1> renders `${project.name} · API keys`; the only
-    // project-independent text is "API keys". ("Settings" above it is a
-    // styled <div> kicker, not a heading role.)
+    // The project settings page (API keys live in a "Keys · N" card on it)
+    // renders a single <h1> reading `${project.name} · Settings`. The card
+    // titles ("Keys · N", etc.) are styled <div>s, not heading roles, so the
+    // only project-independent heading text is "Settings".
     this.settingsHeading = page.getByRole("heading", {
-      name: /api keys/i,
+      name: /settings/i,
     });
     this.labelInput = page.locator('input[name="label"]');
     this.mintButton = page.getByRole("button", { name: /mint key/i });

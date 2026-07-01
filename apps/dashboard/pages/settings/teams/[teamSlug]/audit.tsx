@@ -143,17 +143,15 @@ export default function SettingsTeamAuditPage({
                 ))}
               </TableBody>
             </Table>
-            {totalPages > 1 && (
-              <TablePaginationFooter
-                currentPage={currentPage}
-                fromRow={fromRow}
-                itemNoun="event"
-                pageHref={pageHref}
-                toRow={toRow}
-                totalCount={totalCount}
-                totalPages={totalPages}
-              />
-            )}
+            <TablePaginationFooter
+              currentPage={currentPage}
+              fromRow={fromRow}
+              itemNoun="event"
+              pageHref={pageHref}
+              toRow={toRow}
+              totalCount={totalCount}
+              totalPages={totalPages}
+            />
           </div>
         )}
       </SettingsCard>

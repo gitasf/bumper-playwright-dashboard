@@ -7,6 +7,7 @@ import {
   testResults,
   testTags,
 } from "@schema";
+import { loadQuarantineByTestId } from "@/lib/quarantine-repo";
 import {
   childByTestIdWhere,
   childByTestResultWhere,
@@ -76,49 +77,58 @@ export const loader = defineHandler(async (c) => {
   // ownership-verified above: the project invariant is that EVERY query
   // against these tables is project-scoped, so a future refactor that loosens
   // the parent probe can't silently turn these into cross-tenant reads.
-  const [tagRows, annotationRows, artifactGroupMap, attemptRows, historyRows] =
-    await Promise.all([
-      db
-        .select({ tag: testTags.tag })
-        .from(testTags)
-        .where(childByTestResultWhere(testTags, scope, testResultId)),
-      db
-        .select({
-          type: testAnnotations.type,
-          description: testAnnotations.description,
-        })
-        .from(testAnnotations)
-        .where(childByTestResultWhere(testAnnotations, scope, testResultId)),
-      // Server-owned artifact presentation: signed URLs + visual grouping +
-      // per-attempt ordering. Raw r2Key / tokens stay inside this call.
-      loadAttemptArtifactGroups(scope, testResultId, origin),
-      db
-        .select({
-          attempt: testResultAttempts.attempt,
-          status: testResultAttempts.status,
-          durationMs: testResultAttempts.durationMs,
-          errorMessage: testResultAttempts.errorMessage,
-          errorStack: testResultAttempts.errorStack,
-        })
-        .from(testResultAttempts)
-        .where(childByTestResultWhere(testResultAttempts, scope, testResultId))
-        .orderBy(asc(testResultAttempts.attempt)),
-      db
-        .select({
-          testResultId: testResults.id,
-          runId: testResults.runId,
-          status: testResults.status,
-          durationMs: testResults.durationMs,
-          createdAt: testResults.createdAt,
-          branch: runs.branch,
-          commitSha: runs.commitSha,
-        })
-        .from(testResults)
-        .innerJoin(runs, eq(runs.id, testResults.runId))
-        .where(childByTestIdWhere(testResults, scope, result.testId))
-        .orderBy(desc(testResults.createdAt))
-        .limit(HISTORY_LIMIT),
-    ]);
+  const [
+    tagRows,
+    annotationRows,
+    artifactGroupMap,
+    attemptRows,
+    historyRows,
+    quarantineRows,
+  ] = await Promise.all([
+    db
+      .select({ tag: testTags.tag })
+      .from(testTags)
+      .where(childByTestResultWhere(testTags, scope, testResultId)),
+    db
+      .select({
+        type: testAnnotations.type,
+        description: testAnnotations.description,
+      })
+      .from(testAnnotations)
+      .where(childByTestResultWhere(testAnnotations, scope, testResultId)),
+    // Server-owned artifact presentation: signed URLs + visual grouping +
+    // per-attempt ordering. Raw r2Key / tokens stay inside this call.
+    loadAttemptArtifactGroups(scope, testResultId, origin),
+    db
+      .select({
+        attempt: testResultAttempts.attempt,
+        status: testResultAttempts.status,
+        durationMs: testResultAttempts.durationMs,
+        errorMessage: testResultAttempts.errorMessage,
+        errorStack: testResultAttempts.errorStack,
+      })
+      .from(testResultAttempts)
+      .where(childByTestResultWhere(testResultAttempts, scope, testResultId))
+      .orderBy(asc(testResultAttempts.attempt)),
+    db
+      .select({
+        testResultId: testResults.id,
+        runId: testResults.runId,
+        status: testResults.status,
+        durationMs: testResults.durationMs,
+        createdAt: testResults.createdAt,
+        branch: runs.branch,
+        commitSha: runs.commitSha,
+      })
+      .from(testResults)
+      .innerJoin(runs, eq(runs.id, testResults.runId))
+      .where(childByTestIdWhere(testResults, scope, result.testId))
+      .orderBy(desc(testResults.createdAt))
+      .limit(HISTORY_LIMIT),
+    // Quarantine state for this test — drives the badge + owner-gated control
+    // in the page header. One testId, so at most one row.
+    loadQuarantineByTestId(project.id, [result.testId]),
+  ]);
 
   return {
     kind: "ok" as const,
@@ -126,11 +136,21 @@ export const loader = defineHandler(async (c) => {
       id: project.id,
       teamSlug: project.teamSlug,
       projectSlug: project.slug,
+      // Owner-only quarantine control; non-owners see only the badge.
+      canManageQuarantine: project.role === "owner",
     },
     runId,
     testResultId,
     result,
     run,
+    // Quarantine state for this test (null = not quarantined) + where to land
+    // after the mutation (back on this page). `quarantineError` surfaces a
+    // banner when the mutation route bounces back with ?quarantineError=.
+    quarantine: quarantineRows[0]
+      ? { mode: quarantineRows[0].mode, reason: quarantineRows[0].reason }
+      : null,
+    quarantineRedirectTo: url.pathname + url.search,
+    quarantineError: url.searchParams.get("quarantineError"),
     tags: tagRows,
     annotations: annotationRows,
     // Serialize the Map<attempt, group> as an array for the wire; the page

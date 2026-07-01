@@ -11,8 +11,17 @@ import {
   MonTypeGlyph,
   SummaryPill,
 } from "@/components/monitors/monitor-status";
+import { PageToolbar } from "@/components/page-toolbar";
 import { SearchFilterInput } from "@/components/search-filter-input";
 import { SegmentedControl } from "@/components/segmented-control";
+import { TablePaginationFooter } from "@/components/table-pagination-footer";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -116,7 +125,7 @@ export function MonitorsList({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Status summary strip */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-line-1 px-6 py-3.5">
+      <PageToolbar>
         <SummaryPill count={counts.pass} label="Passing" state="pass" />
         <SummaryPill
           count={counts.degraded}
@@ -144,11 +153,11 @@ export function MonitorsList({
           placeholder="Search monitors…"
           value={search}
         />
-      </div>
+      </PageToolbar>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <Table className="min-w-[980px] table-fixed">
-          <TableHeader className="sticky top-0 z-10 bg-bg-0">
+          <TableHeader className="sticky top-0 z-10 bg-bg-0/95 backdrop-blur-sm">
             <TableRow className="hover:bg-transparent">
               <Th className="w-[44px]" />
               <Th>Monitor</Th>
@@ -176,19 +185,31 @@ export function MonitorsList({
         </Table>
 
         {filtered.length === 0 && (
-          <div className="flex flex-col items-center gap-2 px-6 py-16 text-center">
-            <span className="flex size-9 items-center justify-center rounded-md border border-line-1 bg-bg-2 text-fg-3">
-              <Search className="size-4" />
-            </span>
-            <div className="text-sm font-medium text-foreground">
-              No monitors match
-            </div>
-            <div className="text-[12.5px] text-muted-foreground">
-              Try a different search or clear the status filter.
-            </div>
-          </div>
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Search />
+              </EmptyMedia>
+              <EmptyTitle>No monitors match</EmptyTitle>
+              <EmptyDescription>
+                Try a different search or clear the status filter.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         )}
       </div>
+
+      {filtered.length > 0 && (
+        <TablePaginationFooter
+          currentPage={1}
+          fromRow={1}
+          itemNoun="monitor"
+          pageHref={() => ""}
+          toRow={filtered.length}
+          totalCount={monitors.length}
+          totalPages={1}
+        />
+      )}
     </div>
   );
 }

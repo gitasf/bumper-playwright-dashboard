@@ -19,14 +19,20 @@ export class LoginPage {
     this.page = page;
     this.nameInput = page.getByLabel(/^name$/i);
     this.emailInput = page.getByLabel(/email/i);
-    this.passwordInput = page.getByLabel(/password/i);
-    // Scope to the <form>: the email submit button reads "Continue" / "Signing
-    // in…", but when GitHub OAuth is enabled the page also renders a sibling
-    // "Continue with GitHub" button *outside* the form, which an unscoped
-    // /continue/ match would also hit (strict-mode violation). The e2e fixture
-    // sets dummy AUTH_GITHUB_* creds, so githubEnabled is true under test.
+    // Exact match: the login form renders a "Show password" / "Hide password"
+    // visibility-toggle button whose accessible name also contains "password",
+    // so a loose /password/i would resolve to two elements (strict-mode
+    // violation). The input's accessible name is exactly "Password".
+    this.passwordInput = page.getByLabel("Password", { exact: true });
+    // The email submit button reads "Sign in". When GitHub OAuth is enabled
+    // the form *also* renders a "Continue with GitHub" button, so we match on
+    // the submit button's exact "Sign in" text rather than /continue/ (which
+    // would hit the GitHub button and kick off the OAuth redirect). The e2e
+    // fixture sets dummy AUTH_GITHUB_* creds, so githubEnabled is true under
+    // test. Scoped to the <form> so the "Sign in to Wrightful" heading can't
+    // interfere.
     this.signInButton = page.locator("form").getByRole("button", {
-      name: /continue|signing in/i,
+      name: /^sign in$/i,
     });
     this.createAccountButton = page.getByRole("button", {
       name: /create account/i,

@@ -168,6 +168,150 @@ describe("detectCI", () => {
       expect(detectCI()?.prNumber).toBe(12);
     });
 
+    it("prefers the PR head sha over the merge-commit GITHUB_SHA (pull_request event)", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(
+        eventPath,
+        JSON.stringify({
+          pull_request: {
+            number: 7,
+            head: { sha: "abc123def4567890abc123def4567890abc12345" },
+          },
+        }),
+      );
+      process.env.GITHUB_ACTIONS = "true";
+      // GITHUB_SHA is the ephemeral merge commit on pull_request events.
+      process.env.GITHUB_SHA = "0000000000000000000000000000000000000000";
+      process.env.GITHUB_REF = "refs/pull/7/merge";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+
+      const info = detectCI();
+      expect(info?.commitSha).toBe("abc123def4567890abc123def4567890abc12345");
+      expect(info?.prNumber).toBe(7);
+    });
+
+    it("ignores a non-hex head sha (argument-injection guard) and falls back to GITHUB_SHA", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(
+        eventPath,
+        JSON.stringify({
+          // A crafted head.sha from a hostile fork PR. Must never reach `git log`.
+          pull_request: { number: 7, head: { sha: "--output=/tmp/pwn" } },
+        }),
+      );
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_SHA = "0000000000000000000000000000000000000000";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+
+      const info = detectCI();
+      expect(info?.commitSha).toBe("0000000000000000000000000000000000000000");
+    });
+
+    it("uses the PR title as the commit message when the head commit isn't readable", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(
+        eventPath,
+        // No head sha → can't read the head commit's real message, so the
+        // human-readable PR title stands in (ahead of the merge-commit message).
+        JSON.stringify({
+          pull_request: { number: 7, title: "Add login form" },
+        }),
+      );
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_SHA = "mergesha456";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+
+      const info = detectCI();
+      expect(info?.commitMessage).toBe("Add login form");
+      expect(info?.prNumber).toBe(7);
+    });
+
+    it("prefers the real head commit message over the PR title when both are available", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(
+        eventPath,
+        JSON.stringify({
+          pull_request: {
+            number: 7,
+            title: "Add login form",
+            head: { sha: "abc123def4567890abc123def4567890abc12345" },
+          },
+        }),
+      );
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+
+      // execFileSync is stubbed to return a real message for the head sha, so it
+      // wins over the PR title.
+      expect(detectCI()?.commitMessage).toBe("stubbed commit message");
+    });
+
+    it("uses the PR title (not a whitespace-only title) as the message fallback", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(
+        eventPath,
+        JSON.stringify({ pull_request: { number: 7, title: "   " } }),
+      );
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+
+      // Whitespace-only title is normalized to null, so it falls through to git.
+      expect(detectCI()?.commitMessage).toBe("stubbed commit message");
+    });
+
+    it("rejects a negative or non-integer PR number from the payload", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(
+        eventPath,
+        JSON.stringify({ pull_request: { number: -1, title: "x" } }),
+      );
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+      expect(detectCI()?.prNumber).toBeNull();
+
+      writeFileSync(
+        eventPath,
+        JSON.stringify({ pull_request: { number: 1.5, title: "x" } }),
+      );
+      expect(detectCI()?.prNumber).toBeNull();
+    });
+
+    it("clamps an oversized head sha / branch / repo to the dashboard caps", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(eventPath, JSON.stringify({ pull_request: { number: 7 } }));
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+      // No head sha in payload, so commitSha comes from GITHUB_SHA — make it huge.
+      process.env.GITHUB_SHA = "a".repeat(5000);
+      process.env.GITHUB_HEAD_REF = "b".repeat(5000);
+      process.env.GITHUB_REPOSITORY = "c".repeat(5000);
+
+      const info = detectCI();
+      expect(info?.commitSha?.length).toBe(256); // MAX.SHORT
+      expect(info?.branch?.length).toBe(1024); // MAX.NAME
+      expect(info?.repo?.length).toBe(1024); // MAX.NAME
+    });
+
+    it("falls back to GITHUB_SHA when the event payload has no head sha", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(eventPath, JSON.stringify({ pull_request: { number: 7 } }));
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_SHA = "mergesha456";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+
+      expect(detectCI()?.commitSha).toBe("mergesha456");
+    });
+
+    it("uses GITHUB_SHA on push events (no event payload pull_request)", () => {
+      const eventPath = join(eventDir, "event.json");
+      writeFileSync(eventPath, JSON.stringify({ ref: "refs/heads/main" }));
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_SHA = "pushsha789";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+
+      expect(detectCI()?.commitSha).toBe("pushsha789");
+    });
+
     it("returns null when the event payload has no pull_request (push event)", () => {
       const eventPath = join(eventDir, "event.json");
       writeFileSync(eventPath, JSON.stringify({ ref: "refs/heads/main" }));
@@ -175,6 +319,29 @@ describe("detectCI", () => {
       process.env.GITHUB_EVENT_PATH = eventPath;
 
       expect(detectCI()?.prNumber).toBeNull();
+    });
+
+    it("skips an oversized event file before parsing it (size guard)", () => {
+      const eventPath = join(eventDir, "event.json");
+      // Valid, parseable JSON padded past the 25 MiB cap. Without the guard the
+      // head sha would be picked up; with it the file is skipped, so commitSha
+      // falls back to GITHUB_SHA.
+      const big = JSON.stringify({
+        pull_request: {
+          number: 7,
+          title: "x",
+          head: { sha: "a".repeat(40) },
+        },
+        padding: "z".repeat(25 * 1024 * 1024),
+      });
+      writeFileSync(eventPath, big);
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_SHA = "0000000000000000000000000000000000000000";
+      process.env.GITHUB_EVENT_PATH = eventPath;
+
+      const info = detectCI();
+      expect(info?.commitSha).toBe("0000000000000000000000000000000000000000");
+      expect(info?.prNumber).toBeNull();
     });
 
     it("returns null (no throw) for a malformed or missing event file", () => {
@@ -219,6 +386,12 @@ describe("detectCI", () => {
     expect(detectCI()?.ciJobName).toBe("playwright 1/4");
   });
 
+  it("returns null prNumber for a non-numeric CI_MERGE_REQUEST_IID (no NaN on the wire)", () => {
+    process.env.GITLAB_CI = "true";
+    process.env.CI_MERGE_REQUEST_IID = "abc";
+    expect(detectCI()?.prNumber).toBeNull();
+  });
+
   it("detects GitLab CI on a plain branch pipeline (no MR)", () => {
     process.env.GITLAB_CI = "true";
     process.env.CI_COMMIT_BRANCH = "main";
@@ -243,6 +416,13 @@ describe("detectCI", () => {
       prNumber: 5,
       repo: "acme/app",
     });
+  });
+
+  it("ignores a negative CIRCLE_PR_NUMBER and falls back to the PR URL", () => {
+    process.env.CIRCLECI = "true";
+    process.env.CIRCLE_PR_NUMBER = "-5";
+    process.env.CIRCLE_PULL_REQUEST = "https://github.com/acme/app/pull/42";
+    expect(detectCI()?.prNumber).toBe(42);
   });
 
   it("parses CircleCI pull-request URL when CIRCLE_PR_NUMBER is absent", () => {

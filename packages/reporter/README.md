@@ -130,6 +130,31 @@ environment variables (GitHub Actions, GitLab CI, CircleCI, or generic
 repo slug, and triggering actor. When no CI env is present these fields are
 sent as `null`.
 
+### GitHub Actions `pull_request` builds
+
+On `pull_request` / `pull_request_target` events GitHub checks out an
+**ephemeral merge commit** ("Merge `<head>` into `<base>`") and points
+`GITHUB_SHA` at it — not the commit you authored. The reporter reads the PR's
+head SHA, title, and number from the event payload (`GITHUB_EVENT_PATH`) and:
+
+- reports the **head commit's SHA** (not the merge commit's), and
+- resolves the **commit message** in descending order of fidelity:
+  1. the head commit's real message, read with `git log` — only available when
+     that commit object is present locally;
+  2. the **PR title** (always available from the event payload);
+  3. the merge commit's message (last resort).
+
+This needs **no workflow changes** — you'll get the right SHA and a readable
+title out of the box. The default `actions/checkout` only fetches the merge
+commit, so the head commit's _real_ message isn't reachable; to record it
+instead of the PR title, deepen the checkout so the head commit is present:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0 # (or 2) — makes the PR head commit available to `git log`
+```
+
 If a **CODEOWNERS** file is present (`.github/CODEOWNERS`, then `CODEOWNERS`,
 then `docs/CODEOWNERS` — GitHub's resolution order, first found wins), its
 contents are attached to the open-run payload so the dashboard can derive

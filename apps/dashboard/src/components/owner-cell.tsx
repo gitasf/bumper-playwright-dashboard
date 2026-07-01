@@ -120,7 +120,7 @@ export function OwnerCell({
             required
             size="sm"
           />
-          <Button size="xs" type="submit" variant="outline">
+          <Button size="sm" type="submit" variant="outline">
             Assign
           </Button>
         </form>

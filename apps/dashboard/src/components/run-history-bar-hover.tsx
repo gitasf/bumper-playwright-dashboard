@@ -8,6 +8,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
 import type { RunSummaryResponse } from "@/lib/api-response-types";
 import type { TestResultSummaryResponse } from "@/lib/api-response-types";
 import { cn } from "@/lib/cn";
+import { firstLine } from "@/lib/text";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
 
 type HoverTarget =
@@ -59,12 +60,6 @@ async function fetchSummary(target: HoverTarget): Promise<SummaryResult> {
     },
   );
   return { kind: "testResult", data };
-}
-
-function firstLine(s: string | null): string | null {
-  if (!s) return null;
-  const line = s.split(/\r?\n/)[0]?.trim();
-  return line && line.length > 0 ? line : null;
 }
 
 /**

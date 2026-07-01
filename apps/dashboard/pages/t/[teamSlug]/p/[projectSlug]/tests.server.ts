@@ -3,8 +3,6 @@ import { sql } from "void/db";
 import { z } from "zod";
 import { loadProjectBranches } from "@/lib/branches-query";
 import { loadProjectTags } from "@/lib/tags-query";
-import { loadQuarantineByTestId } from "@/lib/quarantine-repo";
-import type { QuarantineMode } from "@/lib/quarantine-schemas";
 import { runRows } from "@/lib/db-run";
 import { intAggExpr, numAggExpr } from "@/lib/db/sql-ops";
 import {
@@ -42,8 +40,6 @@ export interface TestsPageRow {
   title: string;
   file: string;
   latestStatus: string;
-  latestRunId: string | null;
-  latestTestResultId: string | null;
   lastSeen: number;
   n: number;
   avgDurationMs: number | null;
@@ -66,8 +62,6 @@ interface AggregateRow {
   title: string | null;
   file: string | null;
   latestStatus: string | null;
-  latestRunId: string | null;
-  latestTestResultId: string | null;
   passedCount: number;
   flakyCount: number;
   failCount: number;
@@ -162,23 +156,16 @@ export const loader = defineHandler.withValidator({
   }
 
   let rows: TestsPageRow[] = [];
-  const quarantinedByTestId: Record<
-    string,
-    { mode: QuarantineMode; reason: string | null }
-  > = {};
   if (pageRows.length > 0) {
     const lastSeenById = new Map(pageRows.map((r) => [r.testId, r.lastSeen]));
     const testIds = pageRows.map((r) => r.testId);
-    const [aggById, quarantineRows] = await Promise.all([
-      runAggregateQuery(scope, windowStartSec, branchSql, tagSql, testIds),
-      loadQuarantineByTestId(scope.projectId, testIds),
-    ]);
-    for (const quarantine of quarantineRows) {
-      quarantinedByTestId[quarantine.testId] = {
-        mode: quarantine.mode,
-        reason: quarantine.reason,
-      };
-    }
+    const aggById = await runAggregateQuery(
+      scope,
+      windowStartSec,
+      branchSql,
+      tagSql,
+      testIds,
+    );
     rows = testIds.flatMap((id) => {
       const a = aggById.get(id);
       const lastSeen = lastSeenById.get(id) ?? 0;
@@ -189,8 +176,6 @@ export const loader = defineHandler.withValidator({
           title: a.title ?? "",
           file: a.file ?? "",
           latestStatus: a.latestStatus ?? "",
-          latestRunId: a.latestRunId,
-          latestTestResultId: a.latestTestResultId,
           lastSeen,
           n: a.n,
           avgDurationMs: a.avgDurationMs,
@@ -221,8 +206,6 @@ export const loader = defineHandler.withValidator({
       slug: project.slug,
       name: project.name,
       teamSlug: project.teamSlug,
-      // Owner-only quarantine control; non-owners see only the badge.
-      canManageQuarantine: project.role === "owner",
     },
     range,
     branchParam,
@@ -234,18 +217,12 @@ export const loader = defineHandler.withValidator({
     availableTags,
     group,
     rows,
-    // testId → quarantine state for the per-row badge + control.
-    quarantinedByTestId,
-    // Set by the quarantine mutation route on a validation / conflict failure
-    // (it redirects back here with ?quarantineError=…). Surfaced as a banner.
-    quarantineError: url.searchParams.get("quarantineError"),
     totalUniqueTests,
     currentPage,
     totalPages,
     fromRow,
     toRow,
     pathname: url.pathname,
-    fullPath: url.pathname + url.search,
     ranges: RANGES,
   };
 });
@@ -319,8 +296,6 @@ async function runAggregateQuery(
       ${latestPerTestValue("title", { alias: "title" })},
       ${latestPerTestValue("file", { alias: "file" })},
       ${latestPerTestValue("status", { alias: `"latestStatus"` })},
-      ${latestPerTestValue(`"runId"`, { alias: `"latestRunId"` })},
-      ${latestPerTestValue(`"testResultId"`, { alias: `"latestTestResultId"` })},
       ${statusCounter("passed", { alias: `"passedCount"` })},
       ${statusCounter("flaky", { alias: `"flakyCount"` })},
       ${statusCounter("fail", { alias: `"failCount"` })},

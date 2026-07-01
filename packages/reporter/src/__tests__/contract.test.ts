@@ -17,7 +17,11 @@ import {
   TestAttemptSchema,
   WRIGHTFUL_VERSION_HEADER as DASHBOARD_VERSION_HEADER,
 } from "../../../../apps/dashboard/src/lib/schemas.js";
-import { MAX_IDEMPOTENCY_KEY_LENGTH } from "../ci.js";
+import {
+  MAX_IDEMPOTENCY_KEY_LENGTH,
+  MAX_NAME_FIELD_LENGTH,
+  MAX_SHORT_FIELD_LENGTH,
+} from "../ci.js";
 import { MAX_CODEOWNERS_BYTES } from "../codeowners-file.js";
 import {
   normalizeContentType,
@@ -776,5 +780,12 @@ describe("reporter ↔ dashboard preflight caps", () => {
 
   it("the reporter's CODEOWNERS byte cap equals the dashboard's MAX.CODEOWNERS", () => {
     expect(MAX_CODEOWNERS_BYTES).toBe(DASHBOARD_MAX.CODEOWNERS);
+  });
+
+  it("the reporter's CI string-field clamps equal the dashboard's MAX.SHORT / MAX.NAME", () => {
+    // ci.ts clamps commitSha/branch/repo/actor before emitting so an oversized
+    // env/payload value can't 400 the (reject-on-oversize) open-run call.
+    expect(MAX_SHORT_FIELD_LENGTH).toBe(DASHBOARD_MAX.SHORT);
+    expect(MAX_NAME_FIELD_LENGTH).toBe(DASHBOARD_MAX.NAME);
   });
 });

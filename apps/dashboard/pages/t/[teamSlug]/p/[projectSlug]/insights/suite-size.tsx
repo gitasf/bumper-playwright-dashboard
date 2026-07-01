@@ -105,12 +105,6 @@ export default function SuiteSizePage({
             />
           </>
         }
-        subtitle={
-          <>
-            <span className="font-mono">{project.slug}</span> · test volume and
-            distribution over the last {parseInt(range, 10)} days
-          </>
-        }
         title="Insights"
       />
 

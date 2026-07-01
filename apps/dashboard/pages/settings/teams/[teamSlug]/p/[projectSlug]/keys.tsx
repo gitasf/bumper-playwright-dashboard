@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { ArrowLeft, KeyRound, Plus } from "lucide-react";
+import { ArrowLeft, Download, KeyRound, Plus } from "lucide-react";
 import { useState } from "react";
 import { Link, useRouter } from "@void/react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -47,6 +47,11 @@ export default function SettingsProjectKeysPage({
 }: Props) {
   const router = useRouter();
   const here = `/settings/teams/${project.teamSlug}/p/${project.slug}/keys`;
+  // One-click CSV of this project's run history. Plain <a download>, not <Link>:
+  // the server returns a text/csv attachment, so the SPA router must NOT
+  // intercept it. No filters here — settings has no filter-bar context, so this
+  // exports the project's runs at the export route's defaults.
+  const exportHref = `/api/t/${project.teamSlug}/p/${project.slug}/export/runs`;
 
   const [label, setLabel] = useState("");
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
@@ -91,8 +96,8 @@ export default function SettingsProjectKeysPage({
         Projects
       </Link>
       <SettingsHeader
-        subtitle="Keys are used by the Wrightful reporter to stream runs from CI into this project."
-        title={`${project.name} · API keys`}
+        subtitle="Manage this project's identity, API keys, query API, code owners, and deletion."
+        title={`${project.name} · Settings`}
       />
 
       <RevealOnceDialog
@@ -267,6 +272,21 @@ export default function SettingsProjectKeysPage({
         title="Query & export API"
       >
         <div className="flex flex-col gap-3 text-[length:var(--text-fs-13)] text-fg-2 leading-relaxed">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              render={
+                <a download href={exportHref}>
+                  <Download className="size-4" />
+                  Export CSV
+                </a>
+              }
+              size="sm"
+              variant="outline"
+            />
+            <span className="text-fg-3">
+              Download this project&apos;s run history as a CSV.
+            </span>
+          </div>
           <p>
             Authenticate with{" "}
             <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
@@ -293,14 +313,8 @@ export default function SettingsProjectKeysPage({
             <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
               ?format=csv
             </code>{" "}
-            to download a CSV. See the{" "}
-            <Link
-              className="text-fg-1 underline underline-offset-2 hover:text-accent"
-              href={`/t/${project.teamSlug}/p/${project.slug}`}
-            >
-              runs list
-            </Link>{" "}
-            for an in-dashboard Export button, or the full{" "}
+            to download a CSV — the same data the Export CSV button above
+            produces. See the full{" "}
             <a
               className="text-fg-1 underline underline-offset-2 hover:text-accent"
               href="https://github.com/joefairburn/wrightful/blob/main/docs/api/query-export.md"

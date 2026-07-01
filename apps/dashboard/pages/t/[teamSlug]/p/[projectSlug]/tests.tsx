@@ -2,16 +2,12 @@ import { Link } from "@void/react";
 import { Fragment } from "react";
 import { AnalyticsButtonGroup } from "@/components/analytics/button-group";
 import { OutcomeBar } from "@/components/outcome-bar";
-import {
-  QuarantineCell,
-  type QuarantineState,
-} from "@/components/quarantine-cell";
 import { PageHeader } from "@/components/page-header";
+import { PageToolbar } from "@/components/page-toolbar";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import { SearchFilterInput } from "@/components/search-filter-input";
 import { TablePaginationFooter } from "@/components/table-pagination-footer";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Empty,
   EmptyDescription,
@@ -59,19 +55,15 @@ export default function TestsPage({
   availableTags,
   group,
   rows,
-  quarantinedByTestId,
-  quarantineError,
   totalUniqueTests,
   currentPage,
   totalPages,
   fromRow,
   toRow,
   pathname,
-  fullPath,
   ranges,
 }: Props) {
   const base = `/t/${project.teamSlug}/p/${project.slug}`;
-  const quarantineActionPath = `/api/t/${project.teamSlug}/p/${project.slug}/quarantine`;
 
   const { with: hrefWith, pageHref } = makeHrefBuilder(pathname, {
     range,
@@ -97,19 +89,9 @@ export default function TestsPage({
 
   return (
     <>
-      <PageHeader
-        title="Tests catalog"
-        subtitle={
-          <>
-            <span className="font-mono">{project.slug}</span> ·{" "}
-            {totalUniqueTests.toLocaleString()} unique test
-            {totalUniqueTests === 1 ? "" : "s"} across{" "}
-            {branchParam ? branchFilter : "all branches"}
-          </>
-        }
-      />
+      <PageHeader title="Tests catalog" />
 
-      <div className="sticky top-0 z-[4] flex shrink-0 flex-wrap items-center gap-2.5 border-b border-border bg-background px-6 py-2.5">
+      <PageToolbar sticky>
         <form className="max-w-[360px] flex-1" method="get">
           <input name="range" type="hidden" value={range} />
           {branchParam ? (
@@ -138,7 +120,7 @@ export default function TestsPage({
           options={ranges as readonly ("7d" | "14d" | "30d")[]}
           value={range}
         />
-      </div>
+      </PageToolbar>
 
       {availableTags.length > 0 && (
         <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border bg-background px-6 py-2">
@@ -167,14 +149,6 @@ export default function TestsPage({
         </div>
       )}
 
-      {quarantineError && (
-        <div className="shrink-0 px-6 pt-3">
-          <Alert variant="error">
-            <AlertDescription>{quarantineError}</AlertDescription>
-          </Alert>
-        </div>
-      )}
-
       {rows.length === 0 ? (
         <div className="flex-1 overflow-y-auto min-h-0">
           <div className="flex items-center justify-center h-full p-10">
@@ -196,7 +170,7 @@ export default function TestsPage({
         <>
           <div className="flex-1 overflow-y-auto min-h-0">
             <Table className="table-fixed">
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10 bg-bg-0/95 backdrop-blur-sm">
                 <TableRow>
                   <TableHead className="w-10 px-4" />
                   <TableHead className="px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
@@ -213,9 +187,6 @@ export default function TestsPage({
                   </TableHead>
                   <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
                     Last seen
-                  </TableHead>
-                  <TableHead className="w-[170px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-                    Quarantine
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -251,46 +222,27 @@ export default function TestsPage({
                           </TableCell>
                           <TableCell className="w-[110px]" />
                           <TableCell className="w-[100px]" />
-                          <TableCell className="w-[170px]" />
                         </TableRow>
                         {g.rows.map((row) => (
-                          <TestRow
-                            base={base}
-                            canManageQuarantine={project.canManageQuarantine}
-                            key={row.testId}
-                            quarantine={quarantinedByTestId[row.testId] ?? null}
-                            quarantineActionPath={quarantineActionPath}
-                            quarantineRedirectTo={fullPath}
-                            row={row}
-                          />
+                          <TestRow base={base} key={row.testId} row={row} />
                         ))}
                       </Fragment>
                     ))
                   : rows.map((row) => (
-                      <TestRow
-                        base={base}
-                        canManageQuarantine={project.canManageQuarantine}
-                        key={row.testId}
-                        quarantine={quarantinedByTestId[row.testId] ?? null}
-                        quarantineActionPath={quarantineActionPath}
-                        quarantineRedirectTo={fullPath}
-                        row={row}
-                      />
+                      <TestRow base={base} key={row.testId} row={row} />
                     ))}
               </TableBody>
             </Table>
           </div>
-          {totalPages > 1 && (
-            <TablePaginationFooter
-              currentPage={currentPage}
-              fromRow={fromRow}
-              itemNoun="test"
-              pageHref={pageHref}
-              toRow={toRow}
-              totalCount={totalUniqueTests}
-              totalPages={totalPages}
-            />
-          )}
+          <TablePaginationFooter
+            currentPage={currentPage}
+            fromRow={fromRow}
+            itemNoun="test"
+            pageHref={pageHref}
+            toRow={toRow}
+            totalCount={totalUniqueTests}
+            totalPages={totalPages}
+          />
         </>
       )}
     </>
@@ -298,27 +250,12 @@ export default function TestsPage({
 }
 
 /** One catalog row — shared by the flat list and the grouped sections. */
-function TestRow({
-  row,
-  base,
-  quarantine,
-  quarantineActionPath,
-  quarantineRedirectTo,
-  canManageQuarantine,
-}: {
-  row: TestsPageRow;
-  base: string;
-  quarantine: QuarantineState | null;
-  quarantineActionPath: string;
-  quarantineRedirectTo: string;
-  canManageQuarantine: boolean;
-}) {
+function TestRow({ row, base }: { row: TestsPageRow; base: string }) {
   const dotColor = mixToneColor(row);
   const title = row.title || row.testId;
-  const href =
-    row.latestRunId && row.latestTestResultId
-      ? `${base}/runs/${row.latestRunId}/tests/${row.latestTestResultId}?attempt=0`
-      : base;
+  // Link to the test-level history page (keyed by the stable testId), not the
+  // latest run's result — a test's history is independent of any one run.
+  const href = `${base}/tests/${row.testId}`;
   return (
     <TableRow>
       <TableCell className="w-10 px-4 py-3 align-middle">
@@ -372,16 +309,6 @@ function TestRow({
       </TableCell>
       <TableCell className="w-[100px] px-4 py-3 text-right align-middle text-[12px] text-muted-foreground">
         {formatRelativeTime(row.lastSeen)}
-      </TableCell>
-      <TableCell className="w-[170px] px-4 py-3 align-middle">
-        <QuarantineCell
-          actionPath={quarantineActionPath}
-          canManage={canManageQuarantine}
-          quarantine={quarantine}
-          redirectTo={quarantineRedirectTo}
-          testId={row.testId}
-          title={title}
-        />
       </TableCell>
     </TableRow>
   );

@@ -125,12 +125,6 @@ export default function SlowestTestsPage({
             />
           </>
         }
-        subtitle={
-          <>
-            <span className="font-mono">{project.slug}</span> · tests ranked by
-            p95 duration
-          </>
-        }
         title="Insights"
       />
 
@@ -255,7 +249,9 @@ export default function SlowestTestsPage({
                 <TableBody>
                   {bottlenecks.map((row) => {
                     const tone = rowTone(row);
-                    const href = `${base}/runs/${row.latestRunId}/tests/${row.latestTestResultId}?attempt=0`;
+                    // Link to the test-level history page (stable testId), not
+                    // the latest run's result — mirrors the tests catalog.
+                    const href = `${base}/tests/${row.testId}`;
                     const spark = sparklines[row.testId] ?? [];
                     return (
                       <TableRow key={row.testId}>
@@ -332,7 +328,7 @@ export default function SlowestTestsPage({
               </Table>
             )}
           </CardPanel>
-          {totalPages > 1 && (
+          {bottlenecks.length > 0 && (
             <TablePaginationFooter
               fromRow={fromRow}
               toRow={toRow}

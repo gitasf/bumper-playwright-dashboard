@@ -2,7 +2,7 @@ import { Link } from "@void/react";
 import type React from "react";
 import { useMemo } from "react";
 import { ActorAvatar } from "@/components/actor-avatar";
-import { Breadcrumbs } from "@/components/breadcrumbs";
+import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
 import {
@@ -125,9 +125,6 @@ export default function RunDetailPage({
 
   return (
     <>
-      <Breadcrumbs
-        items={[{ label: "Runs", href: base }, { label: `#${shortId}` }]}
-      />
       {/* Single page-level scroller. The H1 row + tab bar are sticky inside this
        * container; everything else (chips, OutcomeBar, RunHistoryChart, tab
        * content) participates in the same scroll, so users can drag the whole
@@ -136,25 +133,30 @@ export default function RunDetailPage({
         {/* Sticky H1 row — fixed 52px height so the tab bar below can pin to a
          * matching `top-[52px]` with zero gap. Padding-based heights aren't
          * deterministic enough (text metrics + border can drift a couple px). */}
-        <div className="sticky top-0 z-30 flex h-[52px] items-center border-b border-border bg-background px-6">
+        <DetailHeaderBar className="sticky top-0 z-30 border-b border-border bg-background">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <RunStatusGlyphLive
-              initialSummary={initialSummary}
-              runId={runId}
-              size={18}
-            />
-            <span className="shrink-0 font-mono text-[13px] tabular-nums text-muted-foreground">
-              #{shortId}
-            </span>
+            <HeaderCrumbs items={[{ label: "Runs", href: base }]} />
             <h1
-              className="min-w-0 flex-1 truncate text-[17px] font-semibold tracking-[-0.2px]"
+              className="flex min-w-0 flex-1 items-center gap-2 text-[17px] font-semibold tracking-[-0.2px]"
               title={run.commitMessage ?? run.id}
             >
-              {run.commitMessage ?? (
-                <span className="italic text-muted-foreground">No message</span>
-              )}
+              <span className="min-w-0 truncate">
+                {run.commitMessage ?? (
+                  <span className="italic text-muted-foreground">
+                    No message
+                  </span>
+                )}
+              </span>
+              <RunStatusGlyphLive
+                initialSummary={initialSummary}
+                runId={runId}
+                size={18}
+              />
             </h1>
             <div className="flex shrink-0 items-center gap-3 text-[12px] text-muted-foreground">
+              <span className="font-mono text-[13px] tabular-nums">
+                #{shortId}
+              </span>
               <RunDurationLive
                 createdAt={run.createdAt}
                 initialSummary={initialSummary}
@@ -164,7 +166,7 @@ export default function RunDetailPage({
               <span>{formatRelativeTime(run.createdAt)}</span>
             </div>
           </div>
-        </div>
+        </DetailHeaderBar>
 
         {/* Scrolling header — chips + summary, OutcomeBar, duration trend */}
         <div className="border-b border-border px-6 pt-3 pb-[18px]">

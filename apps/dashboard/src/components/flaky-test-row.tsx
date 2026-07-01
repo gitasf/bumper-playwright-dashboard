@@ -1,10 +1,6 @@
 import { Link } from "@void/react";
 import type React from "react";
 import { OwnerCell, type OwnerChip } from "@/components/owner-cell";
-import {
-  QuarantineCell,
-  type QuarantineState,
-} from "@/components/quarantine-cell";
 import { Sparkline, type SparklinePoint } from "@/components/sparkline";
 import { StatusGlyph } from "@/components/status-glyph";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -34,11 +30,6 @@ export interface FlakyTestRowProps {
   /** Where the row click lands — typically the most recent failure's
    * test-detail page, falling back to the project base. */
   rowHref: string;
-  /** Quarantine state for this test (null = not quarantined) + the controls. */
-  quarantine: QuarantineState | null;
-  quarantineActionPath: string;
-  quarantineRedirectTo: string;
-  canManageQuarantine: boolean;
   /** Resolved owners for this test (manual + CODEOWNERS, manual-wins). */
   owners: OwnerChip[];
   ownerActionPath: string;
@@ -69,7 +60,7 @@ function displayTitle(title: string, file: string): string {
  * (`wrightful/project/screen-flaky-tests.jsx:84-122`), with the Owner column
  * widened to host the ownership chips + owner-gated assign/remove control
  * (roadmap 2.3):
- *   [glyph 40] [Test flex] [Flake rate 110 r] [Nd trend 180] [Last failure 280] [Owner 210] [Last seen 90 r] [Quarantine 170]
+ *   [glyph 40] [Test flex] [Flake rate 110 r] [Nd trend 180] [Last failure 280] [Owner 210] [Last seen 90 r]
  *
  * Test cell is two lines:
  *   - Line 1 (sans 13px, weight 450): describe-path + test title.
@@ -89,10 +80,6 @@ export function FlakyTestRow({
   sparklinePoints,
   recentFailures,
   rowHref,
-  quarantine,
-  quarantineActionPath,
-  quarantineRedirectTo,
-  canManageQuarantine,
   owners,
   ownerActionPath,
   ownerRedirectTo,
@@ -173,16 +160,6 @@ export function FlakyTestRow({
       </TableCell>
       <TableCell className="w-[90px] px-4 py-3 text-right align-middle text-[12px] text-muted-foreground">
         {latest ? formatRelativeTime(latest.createdAt) : "—"}
-      </TableCell>
-      <TableCell className="w-[170px] px-4 py-3 align-middle">
-        <QuarantineCell
-          actionPath={quarantineActionPath}
-          canManage={canManageQuarantine}
-          quarantine={quarantine}
-          redirectTo={quarantineRedirectTo}
-          testId={testId}
-          title={cleanTitle}
-        />
       </TableCell>
     </TableRow>
   );

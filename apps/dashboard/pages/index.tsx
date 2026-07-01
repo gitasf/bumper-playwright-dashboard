@@ -129,7 +129,7 @@ function PendingInvitesSection({ invites }: { invites: PendingInvite[] }) {
                   type="submit"
                   aria-label={`Decline invite to ${inv.teamName}`}
                   title="Decline"
-                  className="inline-flex size-7 items-center justify-center rounded-sm border border-transparent text-muted-foreground transition-colors hover:border-border/50 hover:bg-muted hover:text-foreground"
+                  className="inline-flex size-8 items-center justify-center rounded-sm border border-transparent text-muted-foreground transition-colors hover:border-border/50 hover:bg-muted hover:text-foreground"
                 >
                   <X size={14} strokeWidth={2} />
                 </button>

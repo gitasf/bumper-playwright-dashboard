@@ -133,12 +133,6 @@ export default function InsightsPage({
             />
           </>
         }
-        subtitle={
-          <>
-            <span className="font-mono">{project.slug}</span> · trends across
-            the last {days} days
-          </>
-        }
         title="Insights"
       />
 

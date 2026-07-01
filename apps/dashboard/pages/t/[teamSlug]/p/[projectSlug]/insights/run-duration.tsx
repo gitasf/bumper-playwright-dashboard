@@ -32,7 +32,6 @@ export default function RunDurationPage({
   project,
   range,
   segment,
-  days,
   nowSec,
   windowStartSec,
   perBucket,
@@ -131,12 +130,6 @@ export default function RunDurationPage({
               options={ranges}
               value={range}
             />
-          </>
-        }
-        subtitle={
-          <>
-            <span className="font-mono">{project.slug}</span> · trends across
-            the last {days} days
           </>
         }
         title="Insights"

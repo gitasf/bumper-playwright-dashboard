@@ -1,9 +1,8 @@
-import { Download } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { PageToolbar } from "@/components/page-toolbar";
 import { RunListRow } from "@/components/run-list-row";
 import { RunsFilterBar } from "@/components/runs-filter-bar";
 import { TablePaginationFooter } from "@/components/table-pagination-footer";
-import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyContent,
@@ -49,7 +48,6 @@ export default function RunsListPage({
   totalPages,
   offset,
   filters,
-  filtersActive,
   options,
   pathname,
 }: Props) {
@@ -82,45 +80,12 @@ export default function RunsListPage({
     return qs ? `${pathname}?${qs}` : pathname;
   };
 
-  // CSV export carries the active filters (sans pagination — the export streams
-  // the whole filtered set, cursor-paged + capped server-side). Plain <a download>,
-  // not <Link>: the server returns a text/csv attachment, so this must NOT be
-  // intercepted by the SPA router.
-  const exportHref = (() => {
-    const qs = toSearchParams({ ...filters, page: 1 });
-    return `/api/t/${project.teamSlug}/p/${project.slug}/export/runs?${qs.toString()}`;
-  })();
-
   return (
     <>
-      <PageHeader
-        right={
-          totalRuns > 0 ? (
-            <Button
-              render={
-                <a download href={exportHref}>
-                  <Download className="size-4" />
-                  Export CSV
-                </a>
-              }
-              size="sm"
-              variant="outline"
-            />
-          ) : undefined
-        }
-        subtitle={
-          <>
-            <span className="font-mono">{project.slug}</span> ·{" "}
-            {filtersActive
-              ? `${totalRuns} runs matching filters`
-              : `${totalRuns} runs total`}
-          </>
-        }
-        title="Runs"
-      />
-      <div className="shrink-0 border-b border-border px-6 py-2.5">
+      <PageHeader title="Runs" />
+      <PageToolbar>
         <RunsFilterBar filters={filters} options={options} pathname={base} />
-      </div>
+      </PageToolbar>
 
       <div className="flex-1 overflow-y-auto min-h-0">
         {liveRows.length === 0 ? (
@@ -178,16 +143,18 @@ export default function RunsListPage({
         )}
       </div>
 
-      <TablePaginationFooter
-        className="bg-background"
-        currentPage={currentPage}
-        fromRow={fromRow}
-        itemNoun="run"
-        pageHref={pageHref}
-        toRow={toRow}
-        totalCount={totalRuns + newCount}
-        totalPages={totalPages}
-      />
+      {liveRows.length > 0 && (
+        <TablePaginationFooter
+          className="bg-background"
+          currentPage={currentPage}
+          fromRow={fromRow}
+          itemNoun="run"
+          pageHref={pageHref}
+          toRow={toRow}
+          totalCount={totalRuns + newCount}
+          totalPages={totalPages}
+        />
+      )}
     </>
   );
 }

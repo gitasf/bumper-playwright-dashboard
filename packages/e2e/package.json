@@ -11,8 +11,8 @@
     "test:load": "bash scripts/run-load-test.sh"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.11.3",
-    "@playwright/test": "^1.59.1",
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.61.1",
     "@wrightful/reporter": "workspace:*",
     "vite-plus": "catalog:",
     "vitest": "catalog:"

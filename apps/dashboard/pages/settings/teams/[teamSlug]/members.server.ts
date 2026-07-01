@@ -5,12 +5,7 @@ import { memberships, teamInvites } from "@schema";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { getUsersByIds } from "@/lib/auth-users";
 import { type TeamRole } from "@/lib/authz";
-import {
-  leaveTeamGuarded,
-  removeMemberGuarded,
-  roleSchema,
-  setMemberRole,
-} from "@/lib/members-repo";
+import { leaveTeamGuarded, removeMemberGuarded } from "@/lib/members-repo";
 import { ASSIGNABLE_ROLES, ROLE_DESCRIPTIONS } from "@/lib/roles";
 import { readField } from "@/lib/form";
 import {
@@ -35,9 +30,10 @@ interface MemberRow {
 /**
  * Settings → Team → Members. Lists existing members and pending invites.
  *
- * Invite creation happens via `POST /api/teams/:teamSlug/invites` from the
- * client (so the reveal modal can stay open without a full page reload).
- * The remaining server action handles the slow-path revoke (no-JS).
+ * Invite creation (`POST /api/teams/:teamSlug/invites`) and member-role changes
+ * (`PATCH /api/teams/:teamSlug/members`, autosaved from the role `<Select>`)
+ * happen via the client API. The remaining actions below are no-JS `<form>`
+ * posts: revoke-invite, remove-member, and leave-team.
  */
 export const loader = defineHandler(async (c) => {
   const { team } = await requireRoleScope(c, "viewSettings");
@@ -127,60 +123,6 @@ export const actions = {
         targetId:
           inv.email ?? (inv.githubLogin ? `@${inv.githubLogin}` : inviteId),
         metadata: { role: inv.role, inviteId },
-      });
-    }
-    return c.redirect(redirectTo);
-  }),
-
-  /**
-   * Change a member's role (owner / member / viewer). Requires `manageMembers`.
-   * The target role is Zod-validated against the shared role list.
-   *
-   * The last-owner invariant is enforced by `setMemberRole`'s owner-count
-   * subquery in the UPDATE WHERE (not a check-then-write) — demoting the team's
-   * sole owner matches 0 rows and surfaces the inline error, so two concurrent
-   * demotions can never both land and strand the team ownerless.
-   */
-  updateMemberRole: defineHandler(async (c) => {
-    const { team, here } = await requireRoleScope(c, "manageMembers", hereFor);
-    const actor = requireAuth(c);
-    const redirectTo = here ?? hereFor(team);
-
-    const form = await c.req.formData();
-    const userId = readField(form, "userId").trim();
-    const parsed = roleSchema.safeParse(readField(form, "role").trim());
-    if (!userId || !parsed.success) {
-      return redirectWithParam(
-        c,
-        redirectTo,
-        "membersError",
-        "Pick a valid role for that member.",
-      );
-    }
-
-    // No special-casing of self-demotion: an owner demoting themselves is fine
-    // as long as another owner remains — exactly what the last-owner guard
-    // already enforces. If they're the last owner the guard blocks it.
-    const result = await setMemberRole(team.id, userId, parsed.data);
-    if (!result.ok && result.reason === "lastOwner") {
-      return redirectWithParam(
-        c,
-        redirectTo,
-        "membersError",
-        actor.id === userId
-          ? "You're the last owner — promote someone else before changing your role."
-          : "That's the team's last owner — promote someone else first.",
-      );
-    }
-    // Audit only an actual role change (`ok`). A `noop` (vanished member) or a
-    // last-owner block writes no row.
-    if (result.ok) {
-      await recordAudit(c, {
-        teamId: team.id,
-        action: AUDIT_ACTIONS.MEMBER_ROLE_CHANGE,
-        targetType: "member",
-        targetId: userId,
-        metadata: { role: parsed.data },
       });
     }
     return c.redirect(redirectTo);
