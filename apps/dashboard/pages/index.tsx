@@ -120,11 +120,8 @@ function PendingInvitesSection({ invites }: { invites: PendingInvite[] }) {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <form
-                method="post"
-                action={`/api/invites/${inv.id}/decline`}
-                className="m-0"
-              >
+              <form method="post" action="/?decline" className="m-0">
+                <input type="hidden" name="inviteId" value={inv.id} />
                 <button
                   type="submit"
                   aria-label={`Decline invite to ${inv.teamName}`}
@@ -134,11 +131,8 @@ function PendingInvitesSection({ invites }: { invites: PendingInvite[] }) {
                   <X size={14} strokeWidth={2} />
                 </button>
               </form>
-              <form
-                method="post"
-                action={`/api/invites/${inv.id}/accept`}
-                className="m-0"
-              >
+              <form method="post" action="/?accept" className="m-0">
+                <input type="hidden" name="inviteId" value={inv.id} />
                 <button
                   type="submit"
                   className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 font-mono font-medium text-[11px] text-foreground uppercase tracking-wider transition-colors hover:bg-accent"

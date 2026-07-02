@@ -41,6 +41,7 @@ import { computeTestId } from "./test-id.js";
 import type {
   ArtifactMode,
   ReporterOptions,
+  ShardInfo,
   TestAttemptPayload,
   TestResultPayload,
 } from "./types.js";
@@ -194,6 +195,13 @@ export default class WrightfulReporter implements Reporter {
   // `onBegin`, and the batcher only awaits it when it has a batch to flush.
   private openPromise: Promise<void> = Promise.resolve();
   private ci: CIInfo | null = null;
+  /**
+   * Playwright shard coordinates (`config.shard`) for a sharded run, else null.
+   * Captured at `onBegin`, sent on the open payload AND the final `/complete` so
+   * the dashboard keeps the run at status='running' until every shard has
+   * reported (rather than finalizing on the first shard's /complete).
+   */
+  private shard: ShardInfo | null = null;
   private batcher: Batcher<EnqueuedTest> | null = null;
   private accumulator = new TestAccumulator();
   private artifactTasks: Promise<void>[] = [];
@@ -243,6 +251,13 @@ export default class WrightfulReporter implements Reporter {
     this.playwrightVersion = config.version ?? "unknown";
     this.artifactMode = this.options.artifacts ?? DEFAULT_ARTIFACT_MODE;
     this.rootDir = config.rootDir ?? null;
+    // Playwright sets `config.shard` only under `--shard`; remap its
+    // `{ current, total }` to the wire's `{ index, total }`. Null for a
+    // non-sharded run, which keeps the open/complete payloads at their legacy
+    // shape and the dashboard on the finalize-on-first-complete path.
+    this.shard = config.shard
+      ? { index: config.shard.current, total: config.shard.total }
+      : null;
 
     const baseUrl = this.baseUrl;
     const token = this.token;
@@ -289,6 +304,10 @@ export default class WrightfulReporter implements Reporter {
       idempotencyKey: generateIdempotencyKey(ci?.ciBuildId, {
         jobName: ci?.ciJobName ?? null,
       }),
+      // Sent only for a sharded suite (spread away entirely otherwise, so a
+      // non-sharded open is byte-for-byte unchanged). Tells the dashboard how
+      // many shards this run must wait for before it may finalize.
+      ...(this.shard ? { shard: this.shard } : {}),
       run: {
         ciProvider: ci?.ciProvider ?? null,
         ciBuildId: ci?.ciBuildId ?? null,
@@ -420,7 +439,15 @@ export default class WrightfulReporter implements Reporter {
               this.runId,
               "interrupted",
               Date.now() - this.startedAt,
-              { maxRetries: 0, timeoutMs: SHUTDOWN_COMPLETE_TIMEOUT_MS },
+              {
+                maxRetries: 0,
+                timeoutMs: SHUTDOWN_COMPLETE_TIMEOUT_MS,
+                // Record THIS shard as interrupted so the run can finalize on
+                // the surviving shards' completes instead of waiting for the
+                // watchdog (a sharded run stays 'running' until every shard has
+                // a row).
+                shard: this.shard ?? undefined,
+              },
             );
           } catch {
             // Intentionally swallow — we're on our way out either way. The
@@ -710,7 +737,12 @@ export default class WrightfulReporter implements Reporter {
       runStatus = mapFullResultStatus(result.status);
       try {
         await this.withDeadline(
-          this.client.completeRun(this.runId, runStatus, durationMs),
+          // Carry the shard identity so the dashboard records THIS shard's
+          // completion and only flips the run terminal once every shard has
+          // reported. `result.status` reflects only this shard's tests.
+          this.client.completeRun(this.runId, runStatus, durationMs, {
+            shard: this.shard ?? undefined,
+          }),
           deadline,
         );
       } catch (err) {

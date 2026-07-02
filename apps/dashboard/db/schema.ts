@@ -388,6 +388,19 @@ export const runs = pgTable(
     actor: text("actor"),
     totalTests: integer("totalTests").notNull(),
     expectedTotalTests: integer("expectedTotalTests"),
+    /**
+     * Total number of Playwright shards contributing to this run, from
+     * `config.shard.total` on the open payload. NULL for a non-sharded run (or
+     * a pre-shard-aware reporter) — the completeRun path treats NULL / ≤1 as
+     * "finalize on the single /complete" (the legacy behavior).
+     *
+     * When >1 it is the load-bearing denominator for deferred finalization:
+     * `completeRun` keeps the run at status='running' until `runShards` holds a
+     * terminal row for every shard, so the run no longer flips to a terminal
+     * status the instant the FIRST shard finishes while siblings still stream.
+     * See `completeRun` in `src/lib/ingest.ts`.
+     */
+    expectedShards: integer("expectedShards"),
     passed: integer("passed").notNull(),
     failed: integer("failed").notNull(),
     flaky: integer("flaky").notNull(),
@@ -473,6 +486,51 @@ export const runs = pgTable(
      * index — the watchdog is now keyed on lastActivityAt, not createdAt.)
      */
     index("runs_status_lastActivityAt_idx").on(t.status, t.lastActivityAt),
+  ],
+);
+
+/**
+ * Per-shard completion record for a sharded run. A sharded Playwright suite
+ * shares ONE `runs` row (all shards derive the same idempotencyKey); this table
+ * holds one row per shard so the run can (1) defer its terminal status until
+ * every shard has reported and (2) surface a per-shard status breakdown in the
+ * UI. Written by `completeRun` — one row per shard, upserted on the
+ * `(projectId, runId, shardIndex)` unique so a reporter retry of `/complete` is
+ * idempotent. A shard with no row yet is one that has not finished; the run
+ * stays `running` until `count(rows) >= runs.expectedShards`.
+ *
+ * Tenant-scoped like the other run children: carries `projectId` so every read
+ * filters by scope without joining through `runs`.
+ */
+export const runShards = pgTable(
+  "runShards",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("runId")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    /** Playwright `config.shard.current` — 1-based shard index. */
+    shardIndex: integer("shardIndex").notNull(),
+    /** Playwright `config.shard.total` — denormalized copy of the run's expectedShards. */
+    shardTotal: integer("shardTotal").notNull(),
+    /** This shard's own terminal status ('passed' | 'failed' | 'timedout' | 'interrupted'). */
+    status: text("status").notNull(),
+    durationMs: integer("durationMs").notNull(),
+    completedAt: big("completedAt").notNull(),
+    createdAt: big("createdAt").notNull(),
+  },
+  (t) => [
+    // One terminal row per shard; the reporter's `/complete` retry upserts onto
+    // this so a re-sent completion never double-counts toward expectedShards.
+    // (projectId, runId) is a prefix so the "shards for this run" read seeks.
+    uniqueIndex("runShards_project_run_shard_idx").on(
+      t.projectId,
+      t.runId,
+      t.shardIndex,
+    ),
   ],
 );
 

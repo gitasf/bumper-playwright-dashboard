@@ -221,12 +221,36 @@ export default defineEnv({
   WRIGHTFUL_RETENTION_TEST_RESULTS_DAYS: number().default(90),
 
   /**
-   * Max rows of EACH retention axis the sweep deletes per project per cron
-   * invocation. Bounds the per-pass D1 + R2 work so a large backlog drains
-   * across successive daily passes instead of blowing the subrequest budget.
-   * Mirrors `WRIGHTFUL_SWEEP_BATCH_SIZE`. Default 200.
+   * Rows of EACH retention axis deleted per project PER DRAIN ITERATION — the
+   * chunk size, NOT a per-invocation cap. The sweep keeps draining chunks (round-
+   * robin across projects) until its execution budget is spent
+   * (`WRIGHTFUL_RETENTION_SWEEP_BUDGET_MS` / `_MAX_CHUNKS`), so total rows per
+   * invocation scales with the budget, not this number. Bigger chunks = fewer
+   * round-trips; kept well under Postgres's bound-param ceiling. Default 1000.
    */
-  WRIGHTFUL_RETENTION_SWEEP_BATCH_SIZE: number().default(200),
+  WRIGHTFUL_RETENTION_SWEEP_BATCH_SIZE: number().default(1000),
+
+  /**
+   * Wall-clock budget (MS) for ONE retention-sweep cron invocation. The drain
+   * loop keeps deleting chunks until this elapses (or nothing eligible remains),
+   * so the drain rate tracks what a single Cloudflare Workers invocation can do
+   * rather than a fixed row cap. Kept under the Workers per-invocation wall-clock
+   * limit with margin. Raise it (or run the cron more often) for tenants whose
+   * ingest outpaces the drain. Default 20000 (20s).
+   */
+  WRIGHTFUL_RETENTION_SWEEP_BUDGET_MS: number().default(20000),
+
+  /**
+   * Hard backstop on how many drain CHUNKS one retention-sweep invocation may
+   * run — a chunk being one project's per-round sweep of both axes. Wall-clock
+   * (`_BUDGET_MS`) is normally the binding limit; this bounds the pathological
+   * case of a project with a massive artifact backlog. Each chunk costs a
+   * bounded handful of subrequests (~7 worst case: two axis SELECTs, a
+   * cascaded-artifact-key SELECT, two row DELETEs, and the bulk R2 deletes), so
+   * this default keeps worst-case subrequests under the Workers per-invocation
+   * cap with margin. Default 120.
+   */
+  WRIGHTFUL_RETENTION_SWEEP_MAX_CHUNKS: number().default(120),
 
   /**
    * Enable open email/password signup. Off by default — email verification

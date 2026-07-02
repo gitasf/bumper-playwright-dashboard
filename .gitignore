@@ -162,7 +162,6 @@ vite.config.ts.timestamp-*
 node_modules
 .void
 .wrangler
-.claude/skills/
 
 # Conductor workspace scratch dir (chat attachments, agent collaboration files).
 # Conductor also excludes it via .git/info/exclude, but oxfmt/oxlint (vp check)
