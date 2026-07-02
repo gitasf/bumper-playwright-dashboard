@@ -168,6 +168,22 @@ const RunMetaCommon = {
 // by the local seed script to backdate synthetic runs.
 const BackdateSeconds = z.number().int().min(0).optional();
 
+/**
+ * Playwright shard coordinates (`config.shard`), sent on `/api/runs` (open) and
+ * `/api/runs/:id/complete`. Present only for a sharded suite — all shards share
+ * one `idempotencyKey` (so they land on one run), and `total` is the count of
+ * shards the run must wait for before it may finalize. `index` (1-based) is the
+ * completing shard's identity, so `completeRun` records one `runShards` row per
+ * shard rather than flipping the run terminal on the first shard's /complete.
+ * Omitted by a non-sharded run and by pre-shard-aware reporters (both take the
+ * legacy "finalize on the single /complete" path). Mirror of the `shard` field
+ * on `OpenRunPayload` / `CompleteRunPayload` in `@wrightful/reporter`'s types.
+ */
+const ShardSchema = z.object({
+  index: z.number().int().min(1),
+  total: z.number().int().min(1),
+});
+
 export const OpenRunPayloadSchema = z.object({
   idempotencyKey: z.string().min(1).max(MAX.ID),
   run: z.object(RunMetaCommon),
@@ -181,6 +197,7 @@ export const OpenRunPayloadSchema = z.object({
    * oversize files before sending).
    */
   codeowners: z.string().max(MAX.CODEOWNERS).optional(),
+  shard: ShardSchema.optional(),
   createdAt: BackdateSeconds,
 });
 export type OpenRunPayload = z.infer<typeof OpenRunPayloadSchema>;
@@ -193,6 +210,7 @@ export type AppendResultsPayload = z.infer<typeof AppendResultsPayloadSchema>;
 export const CompleteRunPayloadSchema = z.object({
   status: z.enum(["passed", "failed", "timedout", "interrupted"]),
   durationMs: z.number().int().min(0),
+  shard: ShardSchema.optional(),
   completedAt: BackdateSeconds,
 });
 export type CompleteRunPayload = z.infer<typeof CompleteRunPayloadSchema>;

@@ -54,8 +54,23 @@ export interface PlannedTestDescriptor {
   projectName: string | null;
 }
 
+/**
+ * Playwright shard coordinates from `config.shard` (`{ current, total }`),
+ * remapped to `{ index, total }`. Sent on open + complete only for a sharded
+ * suite. All shards of one suite share an idempotencyKey (→ one run); `total`
+ * tells the dashboard how many shards to wait for before the run may finalize,
+ * and `index` (1-based) identifies the completing shard. Omitted on a
+ * non-sharded run. Mirrors `ShardSchema` in apps/dashboard/src/lib/schemas.ts.
+ */
+export interface ShardInfo {
+  index: number;
+  total: number;
+}
+
 export interface OpenRunPayload {
   idempotencyKey: string;
+  /** Present only when `config.shard` is set (a sharded suite). */
+  shard?: ShardInfo;
   /**
    * The repo's CODEOWNERS file contents (roadmap 2.3). The reporter reads it
    * off disk at `onBegin` (`.github/CODEOWNERS`, then `CODEOWNERS`, then
@@ -102,6 +117,12 @@ export interface AppendResultsPayload {
 export interface CompleteRunPayload {
   status: "passed" | "failed" | "timedout" | "interrupted";
   durationMs: number;
+  /**
+   * Present only for a sharded suite (`config.shard` set). Lets the dashboard
+   * record this shard's completion and defer the run's terminal status until
+   * every shard has reported — see `completeRun` in the dashboard's ingest.
+   */
+  shard?: ShardInfo;
 }
 
 export interface ArtifactUpload {

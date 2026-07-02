@@ -58,6 +58,91 @@ export interface RetentionSweepResult {
 }
 
 /**
+ * The per-invocation execution budget the retention drain runs against. The
+ * sweep keeps deleting chunks until this reports empty, rather than stopping at
+ * a fixed row cap — so the drain RATE tracks what one Cloudflare Workers
+ * invocation can actually do (its wall-clock + a hard chunk ceiling) instead of
+ * a hand-tuned row guess that a busy project silently outpaces. Injectable so
+ * `drainRetention` is unit-testable without a real clock (the same reason
+ * `sweepRetention` already takes `now`).
+ */
+export interface SweepBudget {
+  /** Whether the drain may start another chunk (time + chunk-count headroom). */
+  hasRemaining(): boolean;
+  /** Record that one drain chunk (one project's per-round sweep) ran. */
+  recordChunk(): void;
+}
+
+/**
+ * A {@link SweepBudget} that stops at a wall-clock deadline OR once a fixed
+ * number of drain chunks has run — whichever comes first. Wall-clock is the
+ * usual binding constraint; the chunk ceiling is the hard backstop against a
+ * project with a huge artifact backlog. A chunk count is itself a hard
+ * subrequest bound (each chunk does a fixed, bounded handful of DB round-trips +
+ * bulk R2 deletes), so it needs no drift-prone subrequest cost model — the size
+ * of that handful lives only in the `sweepOne` bodies, not reconstructed here.
+ * Both axes stay under the Workers per-invocation limits with margin. `clock`
+ * defaults to `Date.now`; tests inject a deterministic one.
+ */
+export function createSweepBudget(opts: {
+  deadlineAtMs: number;
+  maxChunks: number;
+  clock?: () => number;
+}): SweepBudget {
+  const clock = opts.clock ?? (() => Date.now());
+  let chunks = 0;
+  return {
+    hasRemaining: () => clock() < opts.deadlineAtMs && chunks < opts.maxChunks,
+    recordChunk: () => {
+      chunks += 1;
+    },
+  };
+}
+
+/**
+ * Round-robin drain across projects until the {@link SweepBudget} is spent OR a
+ * full round frees nothing (everything eligible is already gone). `sweepOne`
+ * deletes ONE bounded chunk of each axis for one project and reports the counts
+ * it removed (a {@link RetentionSweepResult} increment).
+ *
+ * PURE orchestrator — no db/R2 — so the drain POLICY (keep going until budget,
+ * stop when idle, fair round-robin) is unit-testable against a fake `sweepOne` +
+ * fake budget, mirroring `drainStaleRuns` in ingest.ts. Round-robin (one chunk
+ * per project per round) rather than draining each project to completion keeps a
+ * single huge project from starving the others within one invocation.
+ */
+export async function drainRetention<P>(
+  projectList: readonly P[],
+  sweepOne: (project: P) => Promise<RetentionSweepResult>,
+  budget: SweepBudget,
+): Promise<RetentionSweepResult> {
+  const total: RetentionSweepResult = {
+    artifactsDeleted: 0,
+    artifactObjectsDeleted: 0,
+    testResultsDeleted: 0,
+  };
+
+  let progressed = true;
+  while (progressed && budget.hasRemaining()) {
+    progressed = false;
+    for (const project of projectList) {
+      // Re-check between projects so a budget that runs out mid-round stops
+      // immediately rather than finishing the round.
+      if (!budget.hasRemaining()) break;
+      const chunk = await sweepOne(project);
+      budget.recordChunk();
+      total.artifactsDeleted += chunk.artifactsDeleted;
+      total.artifactObjectsDeleted += chunk.artifactObjectsDeleted;
+      total.testResultsDeleted += chunk.testResultsDeleted;
+      if (chunk.artifactsDeleted > 0 || chunk.testResultsDeleted > 0)
+        progressed = true;
+    }
+  }
+
+  return total;
+}
+
+/**
  * Chunk a set of ids so a `WHERE projectId = $1 AND <col> IN (chunk)` statement
  * stays under Postgres's per-statement bound-param ceiling. Each id binds one
  * param AND the statement carries one fixed bind (`projectId`), so the ceiling is
@@ -156,15 +241,23 @@ async function sweepProjectTestResults(
 }
 
 /**
- * Sweep every project against its team's retention windows, bounded by `limit`
- * rows per axis per project. The whole policy lives here; the cron is a thin
- * adapter that maps env config in and logs the tally out.
+ * Sweep every project against its team's retention windows, draining chunks of
+ * `chunkSize` rows per axis until the `budget` is spent (or nothing eligible
+ * remains) rather than stopping at a fixed row cap. The whole policy lives here;
+ * the cron is a thin adapter that maps env config in and logs the tally out.
+ *
+ * The drain loop + budget accounting live in `drainRetention` (pure, tested);
+ * this just wires the real per-project chunk (both axes) into it. The budget
+ * charges one chunk per call, so there is no subrequest cost model to keep in
+ * sync with the helper bodies.
  */
 export async function sweepRetention(opts: {
   now: number;
-  limit: number;
+  chunkSize: number;
   defaults: RetentionWindows;
+  budget: SweepBudget;
 }): Promise<RetentionSweepResult> {
+  const { now, chunkSize, defaults, budget } = opts;
   const projectRows = await db
     .select({
       id: projects.id,
@@ -174,24 +267,28 @@ export async function sweepRetention(opts: {
     .from(projects)
     .innerJoin(teams, eq(teams.id, projects.teamId));
 
-  let artifactsDeleted = 0;
-  let artifactObjectsDeleted = 0;
-  let testResultsDeleted = 0;
+  return drainRetention(
+    projectRows,
+    async (p) => {
+      const windows = resolveRetentionWindows(p, defaults);
+      const artifactCutoff = now - windows.artifactDays * SECONDS_PER_DAY;
+      const testResultCutoff = now - windows.testResultDays * SECONDS_PER_DAY;
 
-  for (const p of projectRows) {
-    const windows = resolveRetentionWindows(p, opts.defaults);
-    const artifactCutoff = opts.now - windows.artifactDays * SECONDS_PER_DAY;
-    const testResultCutoff =
-      opts.now - windows.testResultDays * SECONDS_PER_DAY;
+      const a = await sweepProjectArtifacts(p.id, artifactCutoff, chunkSize);
+      const t = await sweepProjectTestResults(
+        p.id,
+        testResultCutoff,
+        chunkSize,
+      );
 
-    const a = await sweepProjectArtifacts(p.id, artifactCutoff, opts.limit);
-    artifactsDeleted += a.rows;
-    artifactObjectsDeleted += a.objects;
-
-    const t = await sweepProjectTestResults(p.id, testResultCutoff, opts.limit);
-    testResultsDeleted += t.rows;
-    artifactObjectsDeleted += t.objects;
-  }
-
-  return { artifactsDeleted, artifactObjectsDeleted, testResultsDeleted };
+      return {
+        artifactsDeleted: a.rows,
+        // Both axes remove R2 objects: the artifact-age pass its own, the
+        // testResults pass the objects of the artifacts it cascade-deletes.
+        artifactObjectsDeleted: a.objects + t.objects,
+        testResultsDeleted: t.rows,
+      };
+    },
+    budget,
+  );
 }

@@ -38,10 +38,12 @@ import {
   WRIGHTFUL_VERSION_HEADER as REPORTER_VERSION_HEADER,
   type AppendResultsResponse,
   type ArtifactRegistration,
+  type CompleteRunPayload,
   type OpenRunPayload,
   type OpenRunResponse,
   type QuarantineResponse,
   type RegisterArtifactsResponse,
+  type ShardInfo,
   type TestResultPayload,
 } from "../types.js";
 import { makeResult, makeTest } from "./fixtures.js";
@@ -269,6 +271,54 @@ describe("reporter ↔ dashboard wire contract", () => {
       });
       expect(parsed.success).toBe(true);
     }
+  });
+
+  it("carries the reporter's shard coordinates on open + complete (sharded suite)", () => {
+    const shard: ShardInfo = { index: 2, total: 4 };
+
+    // The reporter attaches `shard` at the TOP LEVEL of both payloads (see
+    // index.ts onBegin/onEnd); the dashboard must accept that shape.
+    const open = {
+      idempotencyKey: "build-123-e2e",
+      shard,
+      run: {
+        ciProvider: null,
+        ciBuildId: "build-123",
+        branch: null,
+        environment: null,
+        commitSha: null,
+        commitMessage: null,
+        prNumber: null,
+        repo: null,
+        actor: null,
+        reporterVersion: "0.1.1",
+        playwrightVersion: "1.59.0",
+        expectedTotalTests: 0,
+        plannedTests: [],
+      },
+    } satisfies OpenRunPayload;
+    const parsedOpen = OpenRunPayloadSchema.safeParse(open);
+    expect(parsedOpen.success).toBe(true);
+    if (parsedOpen.success) expect(parsedOpen.data.shard).toEqual(shard);
+
+    const complete = {
+      status: "passed",
+      durationMs: 1234,
+      shard,
+    } satisfies CompleteRunPayload;
+    const parsedComplete = CompleteRunPayloadSchema.safeParse(complete);
+    expect(parsedComplete.success).toBe(true);
+    if (parsedComplete.success)
+      expect(parsedComplete.data.shard).toEqual(shard);
+  });
+
+  it("omits shard entirely on a non-sharded run (both payloads)", () => {
+    const parsedComplete = CompleteRunPayloadSchema.safeParse({
+      status: "passed",
+      durationMs: 1,
+    });
+    expect(parsedComplete.success).toBe(true);
+    expect(parsedComplete.success && parsedComplete.data.shard).toBeUndefined();
   });
 
   it("RegisterArtifactsPayloadSchema accepts the reporter's ArtifactRegistration shape", () => {

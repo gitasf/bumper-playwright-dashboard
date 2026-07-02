@@ -15,6 +15,13 @@
       "when": 1781991903203,
       "tag": "20260620214503_motionless_reaper",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782918154395,
+      "tag": "20260701150234_overrated_loki",
+      "breakpoints": true
     }
   ]
 }

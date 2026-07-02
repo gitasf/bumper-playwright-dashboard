@@ -3,6 +3,7 @@ import { and, db, eq, inArray, sql } from "void/db";
 import { logger } from "void/log";
 import {
   runs,
+  runShards,
   testAnnotations,
   testResultAttempts,
   testResults,
@@ -679,11 +680,7 @@ export async function reconcileAndBroadcast(
     return summary;
   }
   if (summary) {
-    await broadcastRunUpdate(runId, [], summary);
-    // Flip the run's row to its terminal status on any open runs list.
-    // Synthetic runs broadcast too — the feed's origin policy is client-side.
-    const event: ProjectFeedEvent = { type: "run-progress", runId, summary };
-    await broadcastProjectRoom(recomputeScope.projectId, event);
+    await broadcastRunProgress(runId, recomputeScope.projectId, summary);
   }
   return summary;
 }
@@ -783,6 +780,23 @@ export async function broadcastRunUpdate(
 }
 
 /**
+ * Fan a reconciled run summary out to BOTH the run room (run-detail page) and
+ * the project room (open-runs list). The terminal broadcast tail shared by
+ * `reconcileAndBroadcast` and `completeShardedRun`'s deferred-finalize path, so
+ * the two-room publish is written once rather than mirrored by convention.
+ * Synthetic runs broadcast too — the feed's origin policy is client-side.
+ */
+async function broadcastRunProgress(
+  runId: string,
+  projectId: string,
+  summary: RunAggregateSummary,
+): Promise<void> {
+  await broadcastRunUpdate(runId, [], summary);
+  const event: ProjectFeedEvent = { type: "run-progress", runId, summary };
+  await broadcastProjectRoom(projectId, event);
+}
+
+/**
  * Honor `payload.createdAt` / `payload.completedAt` overrides only in local
  * dev. The handlers' validators don't (and shouldn't) gate this — a stolen
  * production API key would otherwise be able to fabricate historical runs.
@@ -843,6 +857,11 @@ export function buildRunInsertValues(
     actor: payload.run.actor ?? null,
     totalTests: plannedTests.length,
     expectedTotalTests: payload.run.expectedTotalTests ?? plannedTests.length,
+    // Total shards this run must wait for before it may finalize (from
+    // `config.shard.total`). Null for a non-sharded suite — `completeRun` then
+    // takes the legacy finalize-on-first-complete path. All shards send the
+    // same total, so whichever wins the open sets the authoritative value.
+    expectedShards: payload.shard?.total ?? null,
     passed: 0,
     failed: 0,
     flaky: 0,
@@ -905,9 +924,15 @@ export async function openRun(
     // genuinely new testId), which would pin totalTests at shard 1's count
     // mid-flight. Letting shards 2..N's results arrive as fresh rows keeps
     // totalTests climbing correctly; completeRun's recompute reconciles finals.
-    // The serious sharding bug (a later passing shard overwriting an earlier
-    // failure) is handled by completeRun's atomic monotonic status merge.
-    await reopenRunForWrites(scope, existing[0].id, nowSeconds);
+    // A later passing shard can no longer flip the run terminal early: the run
+    // now stays 'running' until every shard has a `runShards` row and only then
+    // takes the worst status across shards (see `completeRun`).
+    await reopenRunForWrites(
+      scope,
+      existing[0].id,
+      nowSeconds,
+      payload.shard?.total,
+    );
     return { runId: existing[0].id, duplicate: true };
   }
 
@@ -958,7 +983,12 @@ export async function openRun(
       )
       .limit(1);
     if (!winner[0]) throw err;
-    await reopenRunForWrites(scope, winner[0].id, nowSeconds);
+    await reopenRunForWrites(
+      scope,
+      winner[0].id,
+      nowSeconds,
+      payload.shard?.total,
+    );
     return { runId: winner[0].id, duplicate: true };
   }
   await bumpTeamActivity(scope.teamId, nowSeconds);
@@ -1059,6 +1089,9 @@ export const RUN_WRITE_GUARD_COLUMNS = {
   status: runs.status,
   completedAt: runs.completedAt,
   lastActivityAt: runs.lastActivityAt,
+  // `completeRun` reads this off the same probe to decide the sharded
+  // deferred-finalize path vs the legacy single-complete path.
+  expectedShards: runs.expectedShards,
 } as const;
 
 /**
@@ -1072,10 +1105,21 @@ async function reopenRunForWrites(
   scope: TenantScope,
   runId: string,
   nowSeconds: number,
+  expectedShards?: number,
 ): Promise<void> {
   await db
     .update(runs)
-    .set({ lastActivityAt: nowSeconds })
+    .set({
+      lastActivityAt: nowSeconds,
+      // A duplicate open from a sharded suite backfills expectedShards if the
+      // run's opener didn't set it (e.g. a mixed-version fleet where an older
+      // shard opened first). `coalesce` never lowers an already-set total.
+      ...(expectedShards !== undefined
+        ? {
+            expectedShards: sql`coalesce(${runs.expectedShards}, ${expectedShards})`,
+          }
+        : {}),
+    })
     .where(runByIdWhere(scope, runId));
 }
 
@@ -1224,6 +1268,23 @@ function runStatusSeverity(status: string): number {
 }
 
 /**
+ * The worst (highest-severity) status across a set of shard outcomes — the
+ * run's terminal status once every shard has reported. A fold over
+ * `mergeRunStatus`, the SAME severity merge the single-complete path uses (one
+ * severity model, not a parallel one): shard statuses are always terminal (never
+ * "running"), so each step keeps the strictly-more-severe status and equal-
+ * severity ties keep the first-seen one (failed vs timedout are equal severity
+ * and both mean the run failed). That step is order-independent in severity, so
+ * the order shards land in can't change the outcome. PURE, so the deferred-
+ * finalize decision is unit-testable without a DB. Empty input → null (no shard
+ * has finished yet); callers only finalize once it is non-empty.
+ */
+export function worstShardStatus(statuses: readonly string[]): string | null {
+  if (statuses.length === 0) return null;
+  return statuses.reduce((worst, status) => mergeRunStatus(worst, status));
+}
+
+/**
  * The monotonic status-merge invariant, in JS. It is the single source of the
  * decision the run's terminal status obeys across shards:
  *   1. a still-"running" run takes the incoming status verbatim;
@@ -1283,10 +1344,20 @@ export function mergeRunStatusSql(incoming: string) {
  * recompute to reconcile any straggler /results writes that raced this
  * call. Broadcasts the final summary.
  *
- * Sharding-safe: the terminal status is merged ATOMICALLY in SQL — a single
- * UPDATE keeps the more-severe outcome (a later all-passing shard can't
- * overwrite an earlier failure even if two shards' /complete calls overlap),
- * and durationMs/completedAt take the max across shards rather than last-write.
+ * Two paths, chosen by whether the completing reporter identifies itself as a
+ * shard AND the run knows a shard total > 1:
+ *
+ *   - SHARDED (deferred finalize): each shard's /complete records a `runShards`
+ *     row and the run STAYS `running` until every shard has reported, then
+ *     takes the worst status across all shards. This is the fix for "the run
+ *     shows succeeded while sibling shards are still streaming" — the terminal
+ *     flip no longer happens on the FIRST shard's /complete. See
+ *     `completeShardedRun`.
+ *
+ *   - LEGACY (non-sharded / pre-shard-aware reporter / degenerate 1-shard): the
+ *     terminal status is merged ATOMICALLY in SQL on this single /complete — a
+ *     `mergeRunStatusSql` UPDATE keeps the more-severe outcome across any raced
+ *     completes, and durationMs/completedAt take the max. Unchanged behavior.
  */
 export async function completeRun(
   scope: TenantScope,
@@ -1307,6 +1378,25 @@ export async function completeRun(
   // Legitimate duplicate/raced completes land within the window (the first
   // complete just bumped lastActivityAt), and re-runs re-arm it via openRun.
   if (runClosedForWrites(owner[0], nowSeconds)) return { kind: "runClosed" };
+
+  // Deferred finalize for a sharded suite: defer the terminal flip until every
+  // shard has reported. `expectedShards` is set at open from `config.shard.total`
+  // (owner probe), with the payload's own total as a mixed-version fallback. A
+  // missing shard identity, no total, or a 1-shard run falls through to the
+  // legacy single-complete merge below.
+  const expectedShards =
+    owner[0].expectedShards ?? payload.shard?.total ?? null;
+  if (payload.shard && expectedShards !== null && expectedShards > 1) {
+    return completeShardedRun(
+      scope,
+      runId,
+      payload,
+      completedAt,
+      nowSeconds,
+      payload.shard,
+      expectedShards,
+    );
+  }
 
   // Monotonic status merge expressed entirely in SQL so the read (current
   // status) and write happen in one atomic statement — no TOCTOU window
@@ -1343,6 +1433,152 @@ export async function completeRun(
 }
 
 /**
+ * The sharded-run branch of {@link completeRun}: record THIS shard's completion
+ * and finalize the run only once every shard has reported.
+ *
+ * Concurrency: shards complete in any order and can overlap, so the whole
+ * decision runs inside one transaction that first takes a `FOR UPDATE` lock on
+ * the run row. That serializes every sibling's /complete for this run, which is
+ * what makes the count reliable — whichever shard commits LAST acquires the lock
+ * after all the others have committed their rows, sees the full count, and is
+ * the one that flips the run terminal. Without the lock two shards could each
+ * read a count below the total under READ COMMITTED and NEITHER would flip,
+ * stranding the run at 'running' until the watchdog.
+ *
+ * Idempotent: the `runShards` upsert keys on `(projectId, runId, shardIndex)`,
+ * so the reporter's aggressive /complete retry (or a duplicate) updates the
+ * shard's row in place instead of double-counting toward `expectedShards`. The
+ * final-status/duration/completedAt computations are all order-independent
+ * (worst severity, max), so a re-run of the last shard's /complete lands on the
+ * same terminal values.
+ *
+ * While the run is still waiting on shards it stays `running` (no completedAt),
+ * so `runClosedForWrites` never closes it and a slow-but-alive straggler can
+ * always complete — the terminal flip only happens once, when the count is met.
+ */
+async function completeShardedRun(
+  scope: TenantScope,
+  runId: string,
+  payload: CompleteRunPayload,
+  completedAt: number,
+  nowSeconds: number,
+  shard: NonNullable<CompleteRunPayload["shard"]>,
+  expectedShards: number,
+): Promise<CompleteRunOutcome> {
+  const { summary, allDone } = await db.transaction(async (tx) => {
+    // Serialize concurrent shard /complete calls for THIS run (see docstring).
+    await tx
+      .select({ id: runs.id })
+      .from(runs)
+      .where(runByIdWhere(scope, runId))
+      .for("update");
+
+    // Record this shard's terminal outcome, idempotent on the shard-index
+    // unique so a retried /complete can't inflate the completed-shard count.
+    await tx
+      .insert(runShards)
+      .values({
+        id: ulid(),
+        projectId: scope.projectId,
+        runId,
+        shardIndex: shard.index,
+        shardTotal: shard.total,
+        status: payload.status,
+        durationMs: payload.durationMs,
+        completedAt,
+        createdAt: nowSeconds,
+      })
+      .onConflictDoUpdate({
+        target: [runShards.projectId, runShards.runId, runShards.shardIndex],
+        set: {
+          status: payload.status,
+          durationMs: payload.durationMs,
+          completedAt,
+          shardTotal: shard.total,
+        },
+      });
+
+    const shardRows = await tx
+      .select({
+        status: runShards.status,
+        durationMs: runShards.durationMs,
+        completedAt: runShards.completedAt,
+      })
+      .from(runShards)
+      .where(
+        and(
+          eq(runShards.projectId, scope.projectId),
+          eq(runShards.runId, runId),
+        ),
+      );
+
+    const done = shardRows.length >= expectedShards;
+
+    if (done) {
+      // Every shard reported: the run's terminal status is the worst outcome
+      // across shards; duration/completedAt take the max (the last shard's
+      // wall-clock is the run's). `?? payload.status` can't actually fire —
+      // shardRows always holds at least this shard — but keeps the type honest.
+      const finalStatus =
+        worstShardStatus(shardRows.map((r) => r.status)) ?? payload.status;
+      const maxDuration = shardRows.reduce(
+        (m, r) => Math.max(m, r.durationMs),
+        payload.durationMs,
+      );
+      const maxCompletedAt = shardRows.reduce(
+        (m, r) => Math.max(m, r.completedAt),
+        completedAt,
+      );
+      await tx
+        .update(runs)
+        .set({
+          status: finalStatus,
+          durationMs: maxDuration,
+          completedAt: maxCompletedAt,
+          lastActivityAt: nowSeconds,
+          expectedShards,
+        })
+        .where(runByIdWhere(scope, runId));
+    } else {
+      // Still waiting on shards: keep the run visibly in-progress — a pure
+      // liveness bump, no status/completedAt flip. `expectedShards` is already
+      // persisted (at open, then coalesce-backfilled on every duplicate open)
+      // and the done branch re-asserts it, so it needn't be rewritten here.
+      await tx
+        .update(runs)
+        .set({ lastActivityAt: nowSeconds })
+        .where(runByIdWhere(scope, runId));
+    }
+
+    // Reconcile counters from the testResults actually present (straggler
+    // /results that raced this) and project the broadcast summary — it reads
+    // the status/completedAt just written above, so a not-yet-done run's
+    // summary carries status='running'.
+    const recomputed = await aggregateRecomputeStatement(
+      { projectId: scope.projectId },
+      runId,
+      tx,
+    );
+    return { summary: summaryFromBatchResults([recomputed]), allDone: done };
+  });
+
+  await bumpTeamActivity(scope.teamId, nowSeconds);
+
+  if (summary) {
+    await broadcastRunProgress(runId, scope.projectId, summary);
+  }
+
+  // Post the merge-gating GitHub check only once the run is actually terminal —
+  // an in-progress (still-sharding) run must not publish a "completed" check.
+  if (allDone) await maybePostGithubCheck(runId);
+
+  return {
+    kind: "ok",
+    status: summary?.status ?? (allDone ? payload.status : "running"),
+  };
+}
+
+/**
  * Finalize a run the watchdog cron found stuck at status="running" past the
  * stale window (e.g. the CI job was SIGKILL'd and never called /complete).
  *
@@ -1358,6 +1594,14 @@ export async function completeRun(
  * the redundant terminal broadcast is suppressed. The DB stays correct either
  * way — this just spares the duplicate live event + its round-trip.
  *
+ * Shard-aware: a sharded run only sits at 'running' past the window when a shard
+ * never completed (SIGKILL) — but sibling shards that DID complete may have
+ * FAILED. Collapsing such a run to "interrupted" (severity 3) would mask a real
+ * failure (severity 4). So the finalize status is the worst of the completed
+ * shards' statuses AND "interrupted" (the run is incomplete, so at least
+ * interrupted). A non-sharded run has no `runShards` rows → the set is just
+ * {"interrupted"} → the original behavior.
+ *
  * `run` ids come from a trusted DB row (not user input), so no Authorized* brand
  * is required here — the recompute is keyed by the run's own projectId.
  */
@@ -1365,13 +1609,24 @@ export async function finalizeStaleRun(
   run: { id: string; projectId: string; teamId: string },
   completedAt: number,
 ): Promise<void> {
+  const shardRows = await db
+    .select({ status: runShards.status })
+    .from(runShards)
+    .where(
+      and(eq(runShards.projectId, run.projectId), eq(runShards.runId, run.id)),
+    );
+  // "interrupted" is always in the set: the run is being force-finalized while
+  // stuck at 'running', so it is incomplete by definition.
+  const finalStatus =
+    worstShardStatus([...shardRows.map((r) => r.status), "interrupted"]) ??
+    "interrupted";
   await reconcileAndBroadcast(
     run.id,
     (tx) =>
       tx
         .update(runs)
         .set({
-          status: "interrupted",
+          status: finalStatus,
           completedAt,
           lastActivityAt: completedAt,
         })

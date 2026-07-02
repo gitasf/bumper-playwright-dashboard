@@ -12,6 +12,7 @@ import {
   type QuarantineResponse,
   type RegisterArtifactsResponse,
   type ResultMapping,
+  type ShardInfo,
   type TestResultPayload,
 } from "./types.js";
 
@@ -238,14 +239,17 @@ export class StreamClient {
     runId: string,
     status: CompleteRunPayload["status"],
     durationMs: number,
-    options: FetchOptions & { completedAt?: number } = {},
+    options: FetchOptions & { completedAt?: number; shard?: ShardInfo } = {},
   ): Promise<void> {
-    const { completedAt, ...retryOptions } = options;
+    const { completedAt, shard, ...retryOptions } = options;
     const body: CompleteRunPayload & { completedAt?: number } = {
       status,
       durationMs,
     };
     if (completedAt !== undefined) body.completedAt = completedAt;
+    // Sent only for a sharded suite — identifies this shard so the dashboard
+    // defers the run's terminal status until all shards have completed.
+    if (shard !== undefined) body.shard = shard;
     const response = await fetchWithRetry(
       `${this.baseUrl}/api/runs/${runId}/complete`,
       {

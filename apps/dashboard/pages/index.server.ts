@@ -1,6 +1,7 @@
 import { defineHandler, type InferProps } from "void";
-import { getSession } from "void/auth";
+import { getSession, requireAuth } from "void/auth";
 import { getPendingInvitesForUser, getUserTeams } from "@/lib/authz";
+import { acceptDirectedInvite, declineDirectedInvite } from "@/lib/invites";
 
 export type Props = InferProps<typeof loader>;
 
@@ -41,3 +42,33 @@ export const loader = defineHandler(async (c) => {
 
   return { teams, pendingInvites };
 });
+
+/**
+ * The picker's Accept / Decline buttons post here (not to the JSON
+ * `/api/invites/*` routes) so a full-page form submission lands the user
+ * somewhere useful instead of dumping raw `{"ok":true}` JSON in the browser.
+ * Accept redirects into the joined team; both invalid/declined cases fall back
+ * to the picker so the (now-consumed) invite drops off the list.
+ */
+export const actions = {
+  accept: defineHandler(async (c) => {
+    const user = requireAuth(c);
+    const form = await c.req.formData();
+    const inviteId = form.get("inviteId");
+    if (typeof inviteId !== "string" || !inviteId) return c.redirect("/");
+
+    const result = await acceptDirectedInvite(c, user.id, inviteId);
+    if (!result.ok) return c.redirect("/");
+    return c.redirect(`/t/${result.teamSlug}`);
+  }),
+
+  decline: defineHandler(async (c) => {
+    const user = requireAuth(c);
+    const form = await c.req.formData();
+    const inviteId = form.get("inviteId");
+    if (typeof inviteId === "string" && inviteId) {
+      await declineDirectedInvite(user.id, inviteId);
+    }
+    return c.redirect("/");
+  }),
+};

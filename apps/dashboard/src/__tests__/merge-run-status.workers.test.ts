@@ -3,6 +3,7 @@ import {
   currentStatusSeveritySql,
   mergeRunStatus,
   mergeRunStatusSql,
+  worstShardStatus,
 } from "@/lib/ingest";
 
 /**
@@ -172,5 +173,50 @@ describe("mergeRunStatusSql (the executed encoding)", () => {
       const compared = (tokens[ltIndex + 1] as { value?: unknown }).value;
       expect(compared).toBe(rank);
     }
+  });
+});
+
+/**
+ * `worstShardStatus` is the deferred-finalize counterpart to `mergeRunStatus`:
+ * once EVERY shard of a sharded run has reported, the run's terminal status is
+ * the worst status across all shards (rather than the first shard's status). It
+ * folds over the whole set at once (not pairwise on arrival), so it must be
+ * order-independent and pick the highest severity, with ties keeping the
+ * first-seen status (failed/timedout are equal severity — both "failed").
+ */
+describe("worstShardStatus", () => {
+  it("returns null for an empty set (no shard has finished yet)", () => {
+    expect(worstShardStatus([])).toBe(null);
+  });
+
+  it("returns the sole status for a single shard", () => {
+    expect(worstShardStatus(["passed"])).toBe("passed");
+    expect(worstShardStatus(["failed"])).toBe("failed");
+  });
+
+  it("takes the worst outcome across shards regardless of order", () => {
+    expect(worstShardStatus(["passed", "failed", "passed"])).toBe("failed");
+    expect(worstShardStatus(["failed", "passed", "passed"])).toBe("failed");
+    expect(worstShardStatus(["passed", "passed", "interrupted"])).toBe(
+      "interrupted",
+    );
+    expect(worstShardStatus(["skipped", "passed", "flaky"])).toBe("flaky");
+  });
+
+  it("keeps all-passing shards as passed", () => {
+    expect(worstShardStatus(["passed", "passed", "passed"])).toBe("passed");
+  });
+
+  it("is stable on equal-severity ties (failed vs timedout both mean failed)", () => {
+    expect(worstShardStatus(["failed", "timedout"])).toBe("failed");
+    expect(worstShardStatus(["timedout", "failed"])).toBe("timedout");
+  });
+
+  it("treats 'interrupted' as more severe than passed but less than failed — the watchdog's incomplete-run case", () => {
+    // finalizeStaleRun folds the completed shards' statuses together with
+    // "interrupted": an all-passing-but-incomplete run is 'interrupted', but a
+    // completed shard's real failure still wins.
+    expect(worstShardStatus(["passed", "interrupted"])).toBe("interrupted");
+    expect(worstShardStatus(["failed", "interrupted"])).toBe("failed");
   });
 });

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
-import { chunkIdsForInList, resolveRetentionWindows } from "@/lib/retention";
+import {
+  chunkIdsForInList,
+  createSweepBudget,
+  drainRetention,
+  resolveRetentionWindows,
+  type RetentionSweepResult,
+} from "@/lib/retention";
 
 /**
  * Pure core of the two-axis retention sweep — the per-team window resolution.
@@ -86,5 +92,154 @@ describe("chunkIdsForInList", () => {
       expect(chunk.length + 1).toBeLessThanOrEqual(65_535);
     }
     expect(chunks.flat()).toEqual(ids);
+  });
+});
+
+/**
+ * The execution budget the drain runs against — wall-clock deadline OR a
+ * chunk-count ceiling, whichever comes first. Injected clock keeps it
+ * deterministic.
+ */
+describe("createSweepBudget", () => {
+  it("has budget before the deadline and none at/after it", () => {
+    let t = 0;
+    const budget = createSweepBudget({
+      deadlineAtMs: 100,
+      maxChunks: 1_000_000,
+      clock: () => t,
+    });
+    expect(budget.hasRemaining()).toBe(true);
+    t = 99;
+    expect(budget.hasRemaining()).toBe(true);
+    t = 100; // deadline is exclusive
+    expect(budget.hasRemaining()).toBe(false);
+    t = 200;
+    expect(budget.hasRemaining()).toBe(false);
+  });
+
+  it("runs out once the chunk ceiling is reached, independent of time", () => {
+    const budget = createSweepBudget({
+      deadlineAtMs: Number.MAX_SAFE_INTEGER,
+      maxChunks: 2,
+      clock: () => 0,
+    });
+    expect(budget.hasRemaining()).toBe(true);
+    budget.recordChunk();
+    expect(budget.hasRemaining()).toBe(true); // 1 < 2
+    budget.recordChunk();
+    expect(budget.hasRemaining()).toBe(false); // 2 >= 2
+  });
+});
+
+/**
+ * The pure drain policy: round-robin across projects, keep going until the
+ * budget is spent or a full round frees nothing. Exercised against a fake
+ * `sweepOne` + injected budget so the loop logic is tested without db/R2.
+ */
+describe("drainRetention", () => {
+  const EMPTY: RetentionSweepResult = {
+    artifactsDeleted: 0,
+    artifactObjectsDeleted: 0,
+    testResultsDeleted: 0,
+  };
+  // Time never binds; only the chunk ceiling does.
+  const budget = (maxChunks: number) =>
+    createSweepBudget({
+      deadlineAtMs: Number.MAX_SAFE_INTEGER,
+      maxChunks,
+      clock: () => 0,
+    });
+
+  it("does nothing for an empty project list", async () => {
+    let calls = 0;
+    const result = await drainRetention(
+      [],
+      () => {
+        calls++;
+        return Promise.resolve(EMPTY);
+      },
+      budget(1000),
+    );
+    expect(calls).toBe(0);
+    expect(result).toEqual({
+      artifactsDeleted: 0,
+      artifactObjectsDeleted: 0,
+      testResultsDeleted: 0,
+    });
+  });
+
+  it("stops after one round when nothing is left to delete (no progress)", async () => {
+    let calls = 0;
+    const result = await drainRetention(
+      ["p1"],
+      () => {
+        calls++;
+        return Promise.resolve(EMPTY);
+      },
+      budget(1_000_000),
+    );
+    // One visit found nothing → the round made no progress → stop (don't spin
+    // against the whole budget).
+    expect(calls).toBe(1);
+    expect(result.testResultsDeleted).toBe(0);
+  });
+
+  it("keeps draining across rounds until a round frees nothing, accumulating counts", async () => {
+    let calls = 0;
+    const result = await drainRetention(
+      ["p1"],
+      () => {
+        calls++;
+        // Two productive rounds, then empty.
+        if (calls <= 2) {
+          return Promise.resolve({
+            artifactsDeleted: 1,
+            artifactObjectsDeleted: 3,
+            testResultsDeleted: 10,
+          });
+        }
+        return Promise.resolve(EMPTY);
+      },
+      budget(1_000_000),
+    );
+    expect(calls).toBe(3); // 2 productive + 1 idle round that ends it
+    expect(result).toEqual({
+      artifactsDeleted: 2,
+      artifactObjectsDeleted: 6,
+      testResultsDeleted: 20,
+    });
+  });
+
+  it("stops when the chunk budget runs out even if work remains", async () => {
+    let calls = 0;
+    const result = await drainRetention(
+      ["p1"],
+      () => {
+        calls++;
+        // Always more to delete — only the budget can stop this.
+        return Promise.resolve({
+          artifactsDeleted: 0,
+          artifactObjectsDeleted: 0,
+          testResultsDeleted: 5,
+        });
+      },
+      budget(3), // 3 chunks, then stop
+    );
+    expect(calls).toBe(3);
+    expect(result.testResultsDeleted).toBe(15);
+  });
+
+  it("round-robins: every project is visited within a round", async () => {
+    const visited: string[] = [];
+    await drainRetention(
+      ["p1", "p2", "p3"],
+      (p) => {
+        visited.push(p);
+        return Promise.resolve(EMPTY);
+      },
+      budget(1_000_000),
+    );
+    // One round (all empty → no progress → stop), each project once.
+    expect(visited).toEqual(["p1", "p2", "p3"]);
   });
 });
