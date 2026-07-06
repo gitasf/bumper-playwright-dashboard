@@ -43,12 +43,31 @@ export class LoginPage {
     });
   }
 
+  /**
+   * Settle Void's client runtime before the test touches the form.
+   *
+   * On hydration the Void client performs ONE client-side re-navigation to the
+   * current route (`void/pages/client` → `prefetch`). That re-nav REMOUNTS the
+   * login/signup island and resets its local React state (`email` / `password` /
+   * `error`). If a spec fills or submits before it lands, the credentials — and
+   * the pending sign-in error alert — are silently wiped, which is the
+   * load-sensitive flake behind the "waiting for /login navigation to finish"
+   * failures in CI. `networkidle` settles once that re-nav's page fetch
+   * completes. Measured locally: interacting before this settles fails 0/8;
+   * after it, 8/8.
+   */
+  private async waitForClientSettled(): Promise<void> {
+    await this.page.waitForLoadState("networkidle");
+  }
+
   async gotoSignIn(): Promise<void> {
     await this.page.goto("/login");
+    await this.waitForClientSettled();
   }
 
   async gotoSignUp(): Promise<void> {
     await this.page.goto("/signup");
+    await this.waitForClientSettled();
     await expect(this.signUpHeading).toBeVisible();
   }
 

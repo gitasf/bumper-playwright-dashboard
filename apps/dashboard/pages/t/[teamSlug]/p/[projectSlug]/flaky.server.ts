@@ -1,4 +1,4 @@
-import { defineHandler, type InferProps } from "void";
+import { defer, defineHandler, type InferProps } from "void";
 import { and, db, eq, gte, inArray, sql } from "void/db";
 import { runs, testResults, testTags } from "@schema";
 import {
@@ -105,105 +105,16 @@ export const loader = defineHandler(async (c) => {
   ];
   if (branchFilter) aggConditions.push(eq(runs.branch, branchFilter));
 
-  // Join `runs` unconditionally via ciRunsJoinOn: the ON clause carries the
-  // `origin <> 'synthetic'` exclusion, so monitor tests can't rank on the
-  // flaky page even with no branch filter active. (The join used to be
-  // branch-conditional as a perf nicety — skipping a `runs` PK probe per
-  // scanned row — but it's now load-bearing for correctness.)
-  const [branches, aggRows] = await Promise.all([
-    loadProjectBranches(scope),
-    db
-      .select({
-        testId: testResults.testId,
-        total: numericSql(
-          sql`sum(case when ${testResults.status} != 'skipped' then 1 else 0 end)`,
-        ),
-        flakyCount: numericSql(
-          sql`sum(case when ${testResults.status} = 'flaky' then 1 else 0 end)`,
-        ),
-        passedCount: numericSql(
-          sql`sum(case when ${testResults.status} = 'passed' then 1 else 0 end)`,
-        ),
-      })
-      .from(testResults)
-      .innerJoin(runs, ciRunsJoinOn())
-      .where(and(...aggConditions))
-      .groupBy(testResults.testId)
-      .having(
-        sql`sum(case when ${testResults.status} = 'flaky' then 1 else 0 end) >= 1`,
-      ),
-  ]);
+  // The branch list is a cheap index-covered DISTINCT that drives the eager
+  // toolbar filter, so it stays eager. Every heavy pass (the aggregate + the
+  // per-test fan-out) defers together below.
+  const branches = await loadProjectBranches(scope);
 
-  const rankedAll: RankedTest[] = aggRows
-    .map((r) => ({
-      ...r,
-      pct: rate(r.flakyCount, r.flakyCount + r.passedCount),
-    }))
-    .sort((a, b) => b.pct - a.pct || b.flakyCount - a.flakyCount);
-
-  const totalFlakyTests = rankedAll.length;
-  const ranked = rankedAll.slice(0, TOP_N);
-  const truncated = totalFlakyTests > ranked.length;
-  const testIds = ranked.map((r) => r.testId);
-  const kpis = summarizeFlakyKpis(ranked);
-
-  // 2 + 3 in parallel.
-  const sparkByTest = new Map<string, FlakyTestMeta>();
-  const failsByTest = new Map<string, RecentFailureRow[]>();
-  // testId → its owners (manual + CODEOWNERS-derived, manual-wins). Only
-  // testIds with at least one owner appear; absent → no owner.
-  const ownersByTestId: Record<string, OwnerEntry[]> = {};
-
-  if (testIds.length > 0) {
-    const [sparkRows, failRows, tagRows, ownerMap] = await Promise.all([
-      loadSparklinesAndMeta(scope, testIds, branchFilter, SPARKLINE_SIZE),
-      loadRecentFailures(scope, testIds, branchFilter, RECENT_FAILURES),
-      loadTagsByTestId(scope.projectId, testIds),
-      resolveTestOwners(scope, testIds),
-    ]);
-    for (const [testId, owners] of ownerMap) {
-      ownersByTestId[testId] = owners;
-    }
-    for (const r of sparkRows) {
-      let entry = sparkByTest.get(r.testId);
-      if (!entry) {
-        entry = { sparkline: [], title: r.title, file: r.file, tags: [] };
-        sparkByTest.set(r.testId, entry);
-      }
-      if (r.rn === 1) {
-        entry.title = r.title;
-        entry.file = r.file;
-      }
-      entry.sparkline.push({ status: r.status });
-    }
-    for (const r of tagRows) {
-      const entry = sparkByTest.get(r.testId);
-      if (entry && !entry.tags.includes(r.tag)) {
-        entry.tags.push(r.tag);
-      }
-    }
-    for (const r of failRows) {
-      let entry = failsByTest.get(r.testId);
-      if (!entry) {
-        entry = [];
-        failsByTest.set(r.testId, entry);
-      }
-      entry.push({
-        testResultId: r.testResultId,
-        runId: r.runId,
-        commitSha: r.commitSha,
-        branch: r.branch,
-        actor: r.actor,
-        createdAt: r.createdAt,
-        errorMessage: r.errorMessage,
-        errorStack: r.errorStack,
-      });
-    }
-  }
-
-  // Staleness-tolerant analytics: cache privately with SWR (see worklog §4).
-  // `private` keeps tenant-scoped data out of shared/edge caches.
-  c.header("Cache-Control", "private, max-age=300, stale-while-revalidate=900");
+  // A deferred loader streams a variant-specific body (NDJSON on SPA nav /
+  // chunked HTML on document load, keyed by `Vary: X-VoidPages`); SWR/max-age
+  // caching would let the browser replay the wrong variant. Deferred pages must
+  // not be stored. (Was `private, max-age=300, stale-while-revalidate=900`.)
+  c.header("Cache-Control", "private, no-store");
   return {
     project: {
       id: project.id,
@@ -221,22 +132,126 @@ export const loader = defineHandler(async (c) => {
     branchFilter,
     branches,
     rangeDays,
-    totalFlakyTests,
-    truncated,
-    ranked,
-    kpis,
-    // Convert maps to plain objects for serialization.
-    sparkByTest: Object.fromEntries(sparkByTest),
-    failsByTest: Object.fromEntries(failsByTest),
-    // testId → resolved owners (manual + CODEOWNERS, manual-wins) for the
-    // per-row owner chips + assign/remove control.
-    ownersByTestId,
     // Set by the owner mutation route on a validation / conflict failure
     // (it redirects back here with ?ownerError=…). Surfaced as a banner.
     ownerError: url.searchParams.get("ownerError"),
     pathname: url.pathname,
     fullPath: url.pathname + url.search,
     ranges: RANGES,
+
+    // The whole flaky payload streams as ONE grouped resolver behind the KPI
+    // strip + table skeletons: PASS 1 aggregates per testId (→ ranked slice +
+    // KPI numbers + total), then PASS 2 fans out sparklines / recent failures /
+    // tags / owners for that slice. The KPI values, the empty-vs-table branch
+    // and the footer total all derive from PASS 1, so they live in here too.
+    // These are the heaviest reads in the app — keeping them eager would defeat
+    // the conversion. Returns plain serializable JSON (maps → objects).
+    flaky: defer(async () => {
+      // Join `runs` unconditionally via ciRunsJoinOn: the ON clause carries the
+      // `origin <> 'synthetic'` exclusion, so monitor tests can't rank on the
+      // flaky page even with no branch filter active. (The join used to be
+      // branch-conditional as a perf nicety — skipping a `runs` PK probe per
+      // scanned row — but it's now load-bearing for correctness.)
+      const aggRows = await db
+        .select({
+          testId: testResults.testId,
+          total: numericSql(
+            sql`sum(case when ${testResults.status} != 'skipped' then 1 else 0 end)`,
+          ),
+          flakyCount: numericSql(
+            sql`sum(case when ${testResults.status} = 'flaky' then 1 else 0 end)`,
+          ),
+          passedCount: numericSql(
+            sql`sum(case when ${testResults.status} = 'passed' then 1 else 0 end)`,
+          ),
+        })
+        .from(testResults)
+        .innerJoin(runs, ciRunsJoinOn())
+        .where(and(...aggConditions))
+        .groupBy(testResults.testId)
+        .having(
+          sql`sum(case when ${testResults.status} = 'flaky' then 1 else 0 end) >= 1`,
+        );
+
+      const rankedAll: RankedTest[] = aggRows
+        .map((r) => ({
+          ...r,
+          pct: rate(r.flakyCount, r.flakyCount + r.passedCount),
+        }))
+        .sort((a, b) => b.pct - a.pct || b.flakyCount - a.flakyCount);
+
+      const totalFlakyTests = rankedAll.length;
+      const ranked = rankedAll.slice(0, TOP_N);
+      const truncated = totalFlakyTests > ranked.length;
+      const testIds = ranked.map((r) => r.testId);
+      const kpis = summarizeFlakyKpis(ranked);
+
+      // 2 + 3 in parallel.
+      const sparkByTest = new Map<string, FlakyTestMeta>();
+      const failsByTest = new Map<string, RecentFailureRow[]>();
+      // testId → its owners (manual + CODEOWNERS-derived, manual-wins). Only
+      // testIds with at least one owner appear; absent → no owner.
+      const ownersByTestId: Record<string, OwnerEntry[]> = {};
+
+      if (testIds.length > 0) {
+        const [sparkRows, failRows, tagRows, ownerMap] = await Promise.all([
+          loadSparklinesAndMeta(scope, testIds, branchFilter, SPARKLINE_SIZE),
+          loadRecentFailures(scope, testIds, branchFilter, RECENT_FAILURES),
+          loadTagsByTestId(scope.projectId, testIds),
+          resolveTestOwners(scope, testIds),
+        ]);
+        for (const [testId, owners] of ownerMap) {
+          ownersByTestId[testId] = owners;
+        }
+        for (const r of sparkRows) {
+          let entry = sparkByTest.get(r.testId);
+          if (!entry) {
+            entry = { sparkline: [], title: r.title, file: r.file, tags: [] };
+            sparkByTest.set(r.testId, entry);
+          }
+          if (r.rn === 1) {
+            entry.title = r.title;
+            entry.file = r.file;
+          }
+          entry.sparkline.push({ status: r.status });
+        }
+        for (const r of tagRows) {
+          const entry = sparkByTest.get(r.testId);
+          if (entry && !entry.tags.includes(r.tag)) {
+            entry.tags.push(r.tag);
+          }
+        }
+        for (const r of failRows) {
+          let entry = failsByTest.get(r.testId);
+          if (!entry) {
+            entry = [];
+            failsByTest.set(r.testId, entry);
+          }
+          entry.push({
+            testResultId: r.testResultId,
+            runId: r.runId,
+            commitSha: r.commitSha,
+            branch: r.branch,
+            actor: r.actor,
+            createdAt: r.createdAt,
+            errorMessage: r.errorMessage,
+            errorStack: r.errorStack,
+          });
+        }
+      }
+
+      return {
+        totalFlakyTests,
+        truncated,
+        ranked,
+        kpis,
+        // Convert maps to plain objects for serialization.
+        sparkByTest: Object.fromEntries(sparkByTest),
+        failsByTest: Object.fromEntries(failsByTest),
+        // testId → resolved owners (manual + CODEOWNERS, manual-wins).
+        ownersByTestId,
+      };
+    }),
   };
 });
 

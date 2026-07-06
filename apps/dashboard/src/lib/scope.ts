@@ -1,4 +1,4 @@
-import { and, db, eq, lt, ne, sql } from "void/db";
+import { and, db, eq, inArray, lt, ne } from "void/db";
 import { projects, runs, teams } from "@schema";
 import type { ApiKey } from "@schema";
 
@@ -233,6 +233,25 @@ export function childByTestResultWhere(
 }
 
 /**
+ * The `(projectId, testResultId IN (…))` shape — the batched sibling of
+ * {@link childByTestResultWhere} for replacing the child rows of MANY test
+ * results in one statement (the /results flush's tag/annotation/attempt
+ * DELETEs). Callers chunk `testResultIds` under Postgres's bound-param ceiling;
+ * an empty list yields a predicate that matches nothing (`inArray([])` → false),
+ * so a no-child flush deletes nothing.
+ */
+export function childByTestResultsWhere(
+  columns: { projectId: ColumnRef; testResultId: ColumnRef },
+  scope: TenantScope,
+  testResultIds: string[],
+): SqlFragment {
+  return and(
+    eq(columns.projectId, scope.projectId),
+    inArray(columns.testResultId, testResultIds),
+  )!;
+}
+
+/**
  * The `(projectId, runId)` shape — a child row addressed by its owning run
  * within the tenant. Used by the run-diff per-test status read and the
  * run-results page query (both over `testResults`).
@@ -290,13 +309,14 @@ export function childByIdWhere(
  * definition here means the next reader of "is this run dead?" can't re-derive
  * it from `createdAt` and re-introduce that false positive.
  *
- * `coalesce(lastActivityAt, createdAt)` keeps a run whose `lastActivityAt` is
- * somehow NULL (e.g. a row written before this column existed) comparable, so a
- * truly-dead onBegin-only run is still swept rather than skipped forever.
+ * `lastActivityAt` is NOT NULL (initialized to `createdAt` at open, bumped on
+ * every write), so it is compared directly — the old `coalesce(lastActivityAt,
+ * createdAt)` fallback for pre-column rows is gone (those rows were backfilled
+ * when the column was tightened; see `docs/schema-rework-plan.md` Phase 4).
  */
 export function staleRunFilter(cutoffSeconds: number): SqlFragment {
   return and(
     eq(runs.status, "running"),
-    lt(sql`coalesce(${runs.lastActivityAt}, ${runs.createdAt})`, cutoffSeconds),
+    lt(runs.lastActivityAt, cutoffSeconds),
   )!;
 }

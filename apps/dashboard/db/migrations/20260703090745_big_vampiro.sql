@@ -1,0 +1,1 @@
+ALTER TABLE "testResults" ADD COLUMN "updatedAt" bigint;

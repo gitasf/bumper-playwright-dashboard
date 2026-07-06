@@ -1,3 +1,5 @@
+import { use } from "react";
+import { DeferredSection } from "@/components/defer-error-boundary";
 import {
   SettingsCard,
   SettingsHeader,
@@ -5,6 +7,7 @@ import {
 } from "@/components/settings/settings-primitives";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   BillingSuccessPoller,
   ManageButton,
@@ -18,14 +21,16 @@ import type { Props } from "./billing.server";
  * the three on-states — free / trial / paid — with the correct CTA (trial →
  * Upgrade, NOT Manage, since there's no Polar customer yet). Purely
  * presentational; all state classification + formatting is done server-side.
+ *
+ * The header + off-state paint immediately from the eager `billingEnabled`
+ * signal; the on-state's plan panel (a `loadTeamBilling` mirror read + its
+ * derived labels) streams in behind a plan-card skeleton.
  */
 export default function SettingsTeamBillingPage({
   team,
-  billing,
   billingEnabled,
-  priceLabel,
-  periodEndLabel,
   checkoutSuccess,
+  billingDetail,
 }: Props) {
   // OSS / self-host: billing not configured → everything is unlimited, no actions.
   if (!billingEnabled) {
@@ -51,8 +56,6 @@ export default function SettingsTeamBillingPage({
     );
   }
 
-  const showActivating = checkoutSuccess && billing.state !== "paid";
-
   return (
     <SettingsPage>
       <SettingsHeader
@@ -60,6 +63,34 @@ export default function SettingsTeamBillingPage({
         subtitle="Manage this team's subscription."
       />
 
+      <DeferredSection skeleton={<BillingPanelSkeleton />}>
+        <BillingPanel
+          billingDetail={billingDetail}
+          checkoutSuccess={checkoutSuccess}
+          team={team}
+        />
+      </DeferredSection>
+    </SettingsPage>
+  );
+}
+
+/** The on-state plan panel — reads the deferred `billingDetail` group ({ billing,
+ *  priceLabel, periodEndLabel }). The post-checkout "activating" notice + poller
+ *  depend on the resolved billing state (`state !== "paid"`), so they live here. */
+function BillingPanel({
+  billingDetail,
+  checkoutSuccess,
+  team,
+}: {
+  billingDetail: Props["billingDetail"];
+  checkoutSuccess: boolean;
+  team: Props["team"];
+}) {
+  const { billing, priceLabel, periodEndLabel } = use(billingDetail);
+  const showActivating = checkoutSuccess && billing.state !== "paid";
+
+  return (
+    <>
       {showActivating && (
         <Alert variant="info">
           <AlertTitle>Activating your subscription…</AlertTitle>
@@ -129,6 +160,25 @@ export default function SettingsTeamBillingPage({
           )}
         </div>
       </SettingsCard>
-    </SettingsPage>
+    </>
+  );
+}
+
+/** Fallback matching the on-state plan card: the "Plan" card chrome with a
+ *  badge-row placeholder (badge + status line) and a CTA button placeholder,
+ *  so the panel reserves the same box and doesn't shift when billing resolves. */
+function BillingPanelSkeleton() {
+  return (
+    <SettingsCard title="Plan">
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-5 w-16 rounded-full" />
+          <Skeleton className="h-4 w-64" />
+        </div>
+        <div>
+          <Skeleton className="h-9 w-32 rounded-md" />
+        </div>
+      </div>
+    </SettingsCard>
   );
 }

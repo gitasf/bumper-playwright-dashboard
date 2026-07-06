@@ -72,7 +72,9 @@ export interface RunMonitorJobDeps {
    * (`@/lib/monitors/alerts`) in the queue consumers. OPTIONAL + NON-FATAL: like
    * `broadcast`, the result is already in D1, so a throw here must never change
    * the ack/retry outcome — `runMonitorJob` guards every call. Omitted by tests
-   * that don't exercise alerting.
+   * that don't exercise alerting. Called ONLY for a REAL (non-`infraError`)
+   * outcome: a retryable infra error is not a health signal, so `runMonitorJob`
+   * skips it (see the alert-gating note in the executor body).
    */
   alert?: (
     monitor: Monitor,
@@ -234,7 +236,16 @@ export async function runMonitorJob(
       monitor.projectId,
       monitorResultEvent(monitor, execution, result, settledAt),
     );
-    await safeAlert(deps, monitor, result, prevStatus);
+    // Only a REAL (non-infra) outcome is a health signal worth emailing. An
+    // infra error (sandbox unavailable, token mint failed, transient) is being
+    // RETRIED — alerting on it would email "🔴 down" for OUR hiccup and then a
+    // spurious "✅ recovered" when the retry succeeds. Skip it; the retry's
+    // terminal outcome is what alerts, classified against the true prior health
+    // (`recordExecutionResult` leaves the monitor's `lastStatus` untouched on an
+    // infra error, so the baseline isn't polluted with 'error').
+    if (!result.infraError) {
+      await safeAlert(deps, monitor, result, prevStatus);
+    }
     return { action: result.infraError ? "retry" : "ack" };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -246,7 +257,8 @@ export async function runMonitorJob(
       monitor.projectId,
       monitorResultEvent(monitor, execution, result, settledAt),
     );
-    await safeAlert(deps, monitor, result, prevStatus);
+    // No alert here: a thrown executor is always an infra error being retried
+    // (see the success-path note above) — the retry's real outcome alerts.
     return { action: "retry" };
   }
 }

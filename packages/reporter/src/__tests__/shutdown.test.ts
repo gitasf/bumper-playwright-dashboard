@@ -62,6 +62,7 @@ function makeFetch(): {
 describe("WrightfulReporter signal handling", () => {
   let originalEnv: Record<string, string | undefined>;
   let exitMock: ReturnType<typeof vi.fn>;
+  let killMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     originalEnv = {};
@@ -72,12 +73,18 @@ describe("WrightfulReporter signal handling", () => {
     delete process.env.WRIGHTFUL_URL;
     delete process.env.WRIGHTFUL_TOKEN;
 
-    // The signal handler no longer calls process.exit — Playwright owns
-    // process termination. We still spy on it (so a regression that
-    // reintroduces the call can't kill the test runner) and assert it is
-    // NOT invoked.
+    // The signal handler never calls process.exit — Playwright owns the exit
+    // code. We spy on it so a regression that reintroduces the call can't kill
+    // the test runner, and assert it is NOT invoked.
     exitMock = vi.fn() as never;
     vi.spyOn(process, "exit").mockImplementation(exitMock);
+    // On SIGTERM the handler RE-RAISES the signal (`process.kill(pid, SIGTERM)`)
+    // to pass it through to the default terminate once the best-effort /complete
+    // settles — Playwright <=1.61 doesn't watch SIGTERM. Mock process.kill so
+    // that real signal never actually kills this worker, and assert the
+    // pass-through happened.
+    killMock = vi.fn() as never;
+    vi.spyOn(process, "kill").mockImplementation(killMock as never);
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   });
 
@@ -110,7 +117,7 @@ describe("WrightfulReporter signal handling", () => {
     expect(process.listenerCount("SIGINT")).toBe(beforeInt + 1);
   });
 
-  it("on SIGTERM, fires a best-effort /complete with status='interrupted' and does not call process.exit", async () => {
+  it("on SIGTERM, fires a best-effort /complete with status='interrupted' then re-raises SIGTERM (no process.exit)", async () => {
     const { calls, fn } = makeFetch();
     vi.stubGlobal("fetch", vi.fn(fn));
 
@@ -139,12 +146,14 @@ describe("WrightfulReporter signal handling", () => {
     expect(body.status).toBe("interrupted");
     expect(typeof body.durationMs).toBe("number");
 
-    // Playwright (which receives the same signal) owns graceful shutdown and
-    // the exit code — we must NOT preempt it with process.exit.
+    // We never call process.exit (Playwright owns the exit code) — instead we
+    // RE-RAISE SIGTERM so the default terminate runs (Playwright <=1.61 ignores
+    // SIGTERM, and installing our listener otherwise suppresses the default).
     expect(exitMock).not.toHaveBeenCalled();
+    expect(killMock).toHaveBeenCalledWith(process.pid, "SIGTERM");
   });
 
-  it("on SIGINT, fires best-effort /complete and lets Playwright own termination (no process.exit)", async () => {
+  it("on SIGINT, fires best-effort /complete and lets Playwright own termination (no process.exit, no re-raise)", async () => {
     const { calls, fn } = makeFetch();
     vi.stubGlobal("fetch", vi.fn(fn));
 
@@ -164,6 +173,8 @@ describe("WrightfulReporter signal handling", () => {
 
     expect(calls.find((c) => c.url.endsWith("/complete"))).toBeDefined();
     expect(exitMock).not.toHaveBeenCalled();
+    // SIGINT defers to Playwright's own handler — we must NOT re-raise it.
+    expect(killMock).not.toHaveBeenCalled();
   });
 
   it("ignores subsequent signals once shutdown is in flight (single-shot)", async () => {

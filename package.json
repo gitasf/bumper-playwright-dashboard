@@ -38,7 +38,8 @@
     ],
     "patchedDependencies": {
       "@cloudflare/vite-plugin@1.38.0": "patches/@cloudflare__vite-plugin@1.38.0.patch",
-      "void@0.9.2": "patches/void@0.9.2.patch"
+      "void@0.10.4": "patches/void@0.10.4.patch",
+      "@void/react@0.10.4": "patches/@void__react@0.10.4.patch"
     }
   }
 }

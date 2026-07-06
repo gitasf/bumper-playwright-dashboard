@@ -402,6 +402,34 @@ export async function resolveRunDiff(
   runId: string,
   opts: { baseParam?: string | null } = {},
 ): Promise<ResolvedRunDiff | { notFound: true }> {
+  const targets = await resolveRunDiffTargets(scope, runId, opts);
+  if ("notFound" in targets) return targets;
+  const { head, base } = targets;
+  const diff = await computeRunDiff(scope, runId, base);
+  return { head, base, diff };
+}
+
+/** The head + base pair {@link resolveRunDiffTargets} resolves — before any
+ *  per-test scan. */
+export interface ResolvedRunDiffTargets {
+  head: DiffRunRef;
+  base: DiffRunRef | null;
+}
+
+/**
+ * Decide WHICH two runs get diffed — the head (the sole 404 case) + the base —
+ * WITHOUT running the per-test scans. Cheap: single-row indexed lookups only.
+ * Split out of {@link resolveRunDiff} so the run-diff **page** loader can
+ * resolve the gate + base eagerly (for the header/chips/selector) and DEFER the
+ * heavy scans ({@link computeRunDiff}) behind a skeleton, while the JSON API
+ * keeps calling the all-in-one `resolveRunDiff`. The base-selection branches
+ * therefore still live in exactly one place and can't drift between callers.
+ */
+export async function resolveRunDiffTargets(
+  scope: TenantScope,
+  runId: string,
+  opts: { baseParam?: string | null } = {},
+): Promise<ResolvedRunDiffTargets | { notFound: true }> {
   const head = await loadDiffRunRef(scope, runId);
   if (!head) return { notFound: true };
 
@@ -416,12 +444,23 @@ export async function resolveRunDiff(
   } else if (!baseParam) {
     base = await resolveBaseRun(scope, head);
   }
+  return { head, base };
+}
 
+/**
+ * Run the two per-test scans + the pure {@link diffRuns} for an already-resolved
+ * base — the HEAVY half of the diff (each scan can be thousands of `testResults`
+ * rows). Returns `null` when there is no base (the empty state). The page loader
+ * defers this; {@link resolveRunDiff} awaits it inline.
+ */
+export async function computeRunDiff(
+  scope: TenantScope,
+  headRunId: string,
+  base: DiffRunRef | null,
+): Promise<RunDiff | null> {
   const [headStatuses, baseStatuses] = await Promise.all([
-    loadRunTestStatuses(scope, runId),
+    loadRunTestStatuses(scope, headRunId),
     base ? loadRunTestStatuses(scope, base.id) : Promise.resolve([]),
   ]);
-
-  const diff = base ? diffRuns(baseStatuses, headStatuses) : null;
-  return { head, base, diff };
+  return base ? diffRuns(baseStatuses, headStatuses) : null;
 }

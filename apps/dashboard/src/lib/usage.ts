@@ -122,7 +122,6 @@ export function evaluateQuota(
 
 export interface UsageDelta {
   runs?: number;
-  testResults?: number;
   artifactBytes?: number;
   artifactCount?: number;
 }
@@ -143,15 +142,9 @@ export function usageBumpStatement(
   exec: BatchExecutor,
 ) {
   const runsDelta = delta.runs ?? 0;
-  const testResultsDelta = delta.testResults ?? 0;
   const artifactBytesDelta = delta.artifactBytes ?? 0;
   const artifactCountDelta = delta.artifactCount ?? 0;
-  if (
-    runsDelta === 0 &&
-    testResultsDelta === 0 &&
-    artifactBytesDelta === 0 &&
-    artifactCountDelta === 0
-  ) {
+  if (runsDelta === 0 && artifactBytesDelta === 0 && artifactCountDelta === 0) {
     return null;
   }
   return exec
@@ -161,7 +154,6 @@ export function usageBumpStatement(
       teamId,
       periodStart,
       runsCount: runsDelta,
-      testResultsCount: testResultsDelta,
       artifactBytes: artifactBytesDelta,
       artifactCount: artifactCountDelta,
       updatedAt: nowSeconds,
@@ -170,7 +162,6 @@ export function usageBumpStatement(
       target: [usageCounters.teamId, usageCounters.periodStart],
       set: {
         runsCount: sql`${usageCounters.runsCount} + ${runsDelta}`,
-        testResultsCount: sql`${usageCounters.testResultsCount} + ${testResultsDelta}`,
         artifactBytes: sql`${usageCounters.artifactBytes} + ${artifactBytesDelta}`,
         artifactCount: sql`${usageCounters.artifactCount} + ${artifactCountDelta}`,
         updatedAt: nowSeconds,
@@ -202,7 +193,6 @@ export async function checkQuota(
       tier: teams.tier,
       currentPeriodEnd: teams.currentPeriodEnd,
       runsCount: usageCounters.runsCount,
-      testResultsCount: usageCounters.testResultsCount,
       artifactBytes: usageCounters.artifactBytes,
     })
     .from(teams)
@@ -222,12 +212,16 @@ export async function checkQuota(
     nowSeconds,
   );
   const limit = tierLimits(tier)[dimension];
+  // testResults has no stored counter (dropped — schema-rework-plan Phase 3); it
+  // is derived on read. No hot path gates on it today (only `runs` and
+  // `artifactBytes` call checkQuota), so the derive runs only if a caller ever
+  // asks for the `testResults` dimension.
   const used =
     dimension === "runs"
       ? (row?.runsCount ?? 0)
-      : dimension === "testResults"
-        ? (row?.testResultsCount ?? 0)
-        : (row?.artifactBytes ?? 0);
+      : dimension === "artifactBytes"
+        ? (row?.artifactBytes ?? 0)
+        : await countTeamTestResults(teamId, periodStart);
   const status = evaluateQuota(
     used,
     amount,
@@ -358,10 +352,6 @@ export async function reconcileUsage(
       .from(runs)
       .where(and(eq(runs.teamId, team.id), gte(runs.createdAt, periodStart)));
 
-    // Same query `loadTeamUsage` uses to display testResults, so the cron's
-    // stored count and the live page count can't disagree.
-    const testResultsCount = await countTeamTestResults(team.id, periodStart);
-
     const artRows = await db
       .select({
         bytes: numericSql(sql`coalesce(sum(${artifacts.sizeBytes}), 0)`),
@@ -386,7 +376,6 @@ export async function reconcileUsage(
         teamId: team.id,
         periodStart,
         runsCount,
-        testResultsCount,
         artifactBytes,
         artifactCount,
         updatedAt: nowSeconds,
@@ -395,7 +384,6 @@ export async function reconcileUsage(
         target: [usageCounters.teamId, usageCounters.periodStart],
         set: {
           runsCount,
-          testResultsCount,
           artifactBytes,
           artifactCount,
           updatedAt: nowSeconds,

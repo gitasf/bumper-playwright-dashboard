@@ -27,6 +27,7 @@ function makePayload(
     errorMessage: "boom",
     errorStack: "stack",
     workerIndex: 0,
+    shardIndex: null,
     tags: [],
     annotations: [],
     attempts: [

@@ -19,6 +19,23 @@ import {
  */
 export const RECENT_EXECUTION_WINDOW = 24;
 
+/**
+ * The default Playwright spec seeded into a freshly-created monitor's editor.
+ * A minimal, runnable smoke check the user edits to point at their own flow —
+ * concrete enough to run as-is, simple enough to read at a glance.
+ *
+ * Lives in this leaf `.shared.ts` (not `monitor-form.tsx`) so the monitors LIST
+ * page can render it in its empty state WITHOUT importing the form — which would
+ * drag the heavy CodeMirror editor bundle onto a page that never edits anything.
+ */
+export const DEFAULT_MONITOR_SPEC = `import { test, expect } from "@playwright/test";
+
+test("homepage loads", async ({ page }) => {
+  await page.goto("https://example.com");
+  await expect(page).toHaveTitle(/Example/);
+});
+`;
+
 /** Short label for a monitor type, in the product's vocabulary. */
 export function monitorTypeLabel(type: string): string {
   switch (type) {

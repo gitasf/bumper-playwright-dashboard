@@ -2,7 +2,7 @@
 
 import { Search } from "lucide-react";
 import { useState } from "react";
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import {
   ExecStrip,
   MonBadge,

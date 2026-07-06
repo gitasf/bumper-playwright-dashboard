@@ -147,7 +147,8 @@ async function latestFilePerTestId(
   // Latest `file` per testId. Postgres (unlike SQLite) rejects a bare
   // non-grouped column alongside an aggregate/GROUP BY, so use DISTINCT ON:
   // order by createdAt desc and keep the first (newest) row per testId.
-  const rows = await runRows<{ testId: string; file: string }>(sql`
+  const rows = await runRows<{ testId: string; file: string }>(
+    sql`
     select distinct on (${testResults.testId})
       ${testResults.testId} as "testId",
       ${testResults.file} as "file"
@@ -158,7 +159,9 @@ async function latestFilePerTestId(
         sql`, `,
       )})
     order by ${testResults.testId}, ${testResults.createdAt} desc
-  `);
+  `,
+    { feature: "test-owners" },
+  );
   for (const row of rows) {
     out.set(row.testId, row.file);
   }

@@ -3,6 +3,7 @@ import { scaleLinear } from "@visx/scale";
 import { Line } from "@visx/shape";
 import { Link } from "@void/react";
 import { RunHistoryBarHoverCard } from "@/components/run-history-bar-hover";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/cn";
 import { statusToken } from "@/lib/status";
 import { formatDuration } from "@/lib/time-format";
@@ -85,6 +86,87 @@ const INTERNAL_W = 1000;
 const X_AXIS_PX = 14;
 
 /**
+ * Card chrome + title row shared by {@link RunHistoryChart} and
+ * {@link RunHistoryChartSkeleton}. Defining the frame in ONE place is what keeps
+ * the loading and loaded states dimensionally identical: the title row's height
+ * — a fractional ~21.25px, because the `text-sm` title baseline-aligns with the
+ * taller branch-filter control — is produced by the same markup in both states,
+ * so it can't drift and there's no hand-measured height to keep in sync. Only
+ * the body (`children`) differs: the real plot vs a fixed-height shimmer.
+ */
+export function RunHistoryChartFrame({
+  title,
+  subtitle,
+  rightSlot,
+  className,
+  children,
+}: {
+  title?: React.ReactNode;
+  subtitle?: React.ReactNode;
+  rightSlot?: React.ReactNode;
+  className?: string;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <div
+      className={cn("rounded-lg border border-border bg-card p-4", className)}
+    >
+      {(title || subtitle || rightSlot) && (
+        <div className="mb-3 flex items-center gap-3">
+          <div className="flex items-baseline gap-2.5 min-w-0">
+            {title && (
+              <span className="text-sm font-medium truncate">{title}</span>
+            )}
+            {subtitle && (
+              <span className="font-mono text-[11px] text-muted-foreground truncate">
+                {subtitle}
+              </span>
+            )}
+          </div>
+          {rightSlot && (
+            <div className="ml-auto flex items-center gap-3 font-mono text-[11px] text-muted-foreground shrink-0">
+              {rightSlot}
+            </div>
+          )}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Loading fallback for {@link RunHistoryChart}. Renders the SAME
+ * {@link RunHistoryChartFrame} — card chrome + title row pixel-identical to the
+ * loaded chart, no hand-measured heights — and swaps only the plot body for a
+ * fixed-height shimmer. Pass the same `title`/`subtitle` the loaded chart will
+ * use (e.g. the real branch filter, which needs no deferred data); the title
+ * row is then produced by identical markup in both states, so the skeleton→
+ * chart swap moves nothing. `height` must match the chart's plot `height`.
+ */
+export function RunHistoryChartSkeleton({
+  title,
+  subtitle,
+  height = 120,
+  className,
+}: {
+  title?: React.ReactNode;
+  subtitle?: React.ReactNode;
+  height?: number;
+  className?: string;
+}): React.ReactElement {
+  return (
+    <RunHistoryChartFrame
+      className={className}
+      subtitle={subtitle}
+      title={title}
+    >
+      <Skeleton className="w-full rounded-md" style={{ height }} />
+    </RunHistoryChartFrame>
+  );
+}
+
+/**
  * Historical run/test strip — one bar per point, coloured by status, sized by
  * duration. Pure RSC (no client JS): uses visx's
  * SSR-safe primitives (`scaleBand`, `scaleLinear`, `<Bar>`, `<Line>`).
@@ -110,23 +192,15 @@ export function RunHistoryChart({
 }: RunHistoryChartProps) {
   if (points.length === 0) {
     return (
-      <div
-        className={cn("rounded-lg border border-border bg-card p-4", className)}
+      <RunHistoryChartFrame
+        className={className}
+        subtitle={subtitle}
+        title={title}
       >
-        {(title || subtitle) && (
-          <div className="mb-3 flex items-baseline gap-2.5">
-            {title && <span className="text-sm font-medium">{title}</span>}
-            {subtitle && (
-              <span className="font-mono text-[11px] text-muted-foreground">
-                {subtitle}
-              </span>
-            )}
-          </div>
-        )}
         <div className="py-6 text-center text-xs text-muted-foreground">
           {emptyState ?? "No history yet."}
         </div>
-      </div>
+      </RunHistoryChartFrame>
     );
   }
 
@@ -162,29 +236,12 @@ export function RunHistoryChart({
   if (yTicks[yTicks.length - 1] !== max) yTicks.push(max);
 
   return (
-    <div
-      className={cn("rounded-lg border border-border bg-card p-4", className)}
+    <RunHistoryChartFrame
+      className={className}
+      rightSlot={rightSlot}
+      subtitle={subtitle}
+      title={title}
     >
-      {(title || subtitle || rightSlot) && (
-        <div className="mb-3 flex items-center gap-3">
-          <div className="flex items-baseline gap-2.5 min-w-0">
-            {title && (
-              <span className="text-sm font-medium truncate">{title}</span>
-            )}
-            {subtitle && (
-              <span className="font-mono text-[11px] text-muted-foreground truncate">
-                {subtitle}
-              </span>
-            )}
-          </div>
-          {rightSlot && (
-            <div className="ml-auto flex items-center gap-3 font-mono text-[11px] text-muted-foreground shrink-0">
-              {rightSlot}
-            </div>
-          )}
-        </div>
-      )}
-
       <div
         className="grid gap-2"
         style={{ gridTemplateColumns: "40px 1fr", height }}
@@ -306,7 +363,7 @@ export function RunHistoryChart({
           </div>
         </div>
       </div>
-    </div>
+    </RunHistoryChartFrame>
   );
 }
 

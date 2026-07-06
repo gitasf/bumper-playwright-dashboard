@@ -241,14 +241,17 @@ export default defineEnv({
   WRIGHTFUL_RETENTION_SWEEP_BUDGET_MS: number().default(20000),
 
   /**
-   * Hard backstop on how many drain CHUNKS one retention-sweep invocation may
-   * run — a chunk being one project's per-round sweep of both axes. Wall-clock
-   * (`_BUDGET_MS`) is normally the binding limit; this bounds the pathological
-   * case of a project with a massive artifact backlog. Each chunk costs a
-   * bounded handful of subrequests (~7 worst case: two axis SELECTs, a
-   * cascaded-artifact-key SELECT, two row DELETEs, and the bulk R2 deletes), so
-   * this default keeps worst-case subrequests under the Workers per-invocation
-   * cap with margin. Default 120.
+   * Hard backstop on how many PRODUCTIVE drain chunks one retention-sweep
+   * invocation may run — a chunk being one project's per-round sweep of both axes
+   * that actually deleted rows. An idle project (nothing eligible) does NOT count
+   * against this (it costs only its two probe SELECTs, bounded by `_BUDGET_MS`),
+   * so a deployment with many idle projects no longer burns the budget on head
+   * probes and starves the tail. Wall-clock (`_BUDGET_MS`) is normally the binding
+   * limit; this bounds the pathological case of a project with a massive artifact
+   * backlog. Each productive chunk costs a bounded handful of subrequests (~7
+   * worst case: two axis SELECTs, a cascaded-artifact-key SELECT, two row DELETEs,
+   * and the bulk R2 deletes), so this default keeps worst-case subrequests under
+   * the Workers per-invocation cap with margin. Default 120.
    */
   WRIGHTFUL_RETENTION_SWEEP_MAX_CHUNKS: number().default(120),
 

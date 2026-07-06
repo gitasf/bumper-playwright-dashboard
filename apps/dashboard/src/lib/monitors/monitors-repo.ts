@@ -107,10 +107,8 @@ export async function createMonitor(
     // or the tcp host/port JSON. Each type writes its own field, leaving the
     // others null.
     source: input.type === "browser" ? input.source : null,
-    config:
-      input.type === "http" || input.type === "tcp"
-        ? JSON.stringify(input.config)
-        : null,
+    // jsonb column — store the config object directly (no JSON.stringify).
+    config: input.type === "http" || input.type === "tcp" ? input.config : null,
     intervalSeconds: input.intervalSeconds,
     schedulingStrategy: "round_robin",
     retryConfig: null,
@@ -186,12 +184,22 @@ export async function updateMonitor(
     (current.type === "http" || current.type === "tcp") &&
     patch.config !== undefined
   ) {
-    set.config = JSON.stringify(patch.config);
+    // jsonb column — store the config object directly (no JSON.stringify),
+    // matching createMonitor. Double-encoding it as a JSON string would make the
+    // read-path parser (`parseHttp/TcpMonitorConfig`, which now safeParses an
+    // object) reject it as null, silently breaking the monitor.
+    set.config = patch.config;
   }
   if (patch.intervalSeconds !== undefined) {
     set.intervalSeconds = patch.intervalSeconds;
   }
   if (patch.enabled !== undefined) set.enabled = patch.enabled ? 1 : 0;
+  if (patch.alertTargets !== undefined) {
+    // jsonb column — store the `{ users, groups }` object (or null) directly, no
+    // JSON.stringify, matching `config` above. Written in the SAME update as the
+    // config so the edit modal's config + recipients commit atomically.
+    set.alertTargets = patch.alertTargets;
+  }
 
   // Resolve the post-patch enabled/interval to re-derive the schedule, falling
   // back to the current row for fields the patch doesn't touch.
@@ -209,8 +217,11 @@ export async function updateMonitor(
 
 /**
  * Delete a monitor. The `monitorExecutions.monitorId` FK cascades the execution
- * history; produced `runs` are retained with a now-dangling `monitorId` (the
- * schema comment documents this — readers treat a missing monitor gracefully).
+ * history; produced `runs` are retained, their `monitorId` set to null by the
+ * FK's `onDelete: "set null"` (readers treat a missing monitor link gracefully).
+ * A run being opened concurrently with this delete is handled by `openRun`'s
+ * FK-violation recovery (it nulls the stale link and retries), not by any guard
+ * here.
  */
 export async function deleteMonitor(
   scope: TenantScope,
@@ -255,23 +266,6 @@ export async function setMonitorAlertsEnabled(
   await db
     .update(monitors)
     .set({ alertsEnabled: alertsEnabled ? 1 : 0, updatedAt: now })
-    .where(monitorByIdWhere(scope, monitorId));
-}
-
-/**
- * Set a monitor's alert recipients. `targetsJson` is the pre-serialized
- * `alertTargets` value (`null` = all members; else a `{ users, groups }` JSON
- * string from `serializeAlertTargets`). One-statement, like the toggles.
- */
-export async function setMonitorAlertTargets(
-  scope: TenantScope,
-  monitorId: string,
-  targetsJson: string | null,
-  now: number,
-): Promise<void> {
-  await db
-    .update(monitors)
-    .set({ alertTargets: targetsJson, updatedAt: now })
     .where(monitorByIdWhere(scope, monitorId));
 }
 
@@ -443,6 +437,16 @@ export async function claimExecution(
  * by id — a concurrent newer execution recording after this one is acceptable
  * (last-write-wins on `lastStatus` is exactly the desired semantics for "the
  * most recent result").
+ *
+ * INFRA errors (`result.infraError`) record the execution row (so the failed
+ * attempt is visible in the timeline / `ExecStrip`) but DO NOT bump the
+ * monitor's denormalized `lastStatus`/`lastRunAt`: an infra error is OUR-side
+ * (sandbox unavailable, transient) and is being retried, not a health signal
+ * about the monitored target. Persisting it would regress the monitor badge AND
+ * pollute the health baseline the alert classifier reads on the retry, turning
+ * one transient hiccup into a "down" + spurious "recovered" email pair. The
+ * badge therefore stays owned by real recorded executions — the same policy the
+ * stale-execution reaper (`sweepStaleExecutions`) already follows.
  */
 export async function recordExecutionResult(
   execution: MonitorExecution,
@@ -456,11 +460,10 @@ export async function recordExecutionResult(
         state: result.state,
         runId: result.runId,
         durationMs: result.durationMs,
-        // http inline result fields; null for browser executions.
+        // http inline result fields; null for browser executions. jsonb column —
+        // store the detail object directly (no JSON.stringify).
         statusCode: result.statusCode,
-        resultDetail: result.resultDetail
-          ? JSON.stringify(result.resultDetail)
-          : null,
+        resultDetail: result.resultDetail ?? null,
         errorMessage: result.errorMessage,
         completedAt: now,
       })
@@ -470,15 +473,20 @@ export async function recordExecutionResult(
           eq(monitorExecutions.id, execution.id),
         ),
       ),
-    tx
-      .update(monitors)
-      .set({ lastStatus: result.state, lastRunAt: now, updatedAt: now })
-      .where(
-        and(
-          eq(monitors.projectId, execution.projectId),
-          eq(monitors.id, execution.monitorId),
-        ),
-      ),
+    // Skip the monitor badge/baseline bump for a retryable infra error (above).
+    ...(result.infraError
+      ? []
+      : [
+          tx
+            .update(monitors)
+            .set({ lastStatus: result.state, lastRunAt: now, updatedAt: now })
+            .where(
+              and(
+                eq(monitors.projectId, execution.projectId),
+                eq(monitors.id, execution.monitorId),
+              ),
+            ),
+        ]),
   ]);
 }
 

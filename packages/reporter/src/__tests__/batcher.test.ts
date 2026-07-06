@@ -22,6 +22,7 @@ function makeResult(key: string): TestResultPayload {
     errorMessage: null,
     errorStack: null,
     workerIndex: 0,
+    shardIndex: null,
     tags: [],
     annotations: [],
     attempts: [

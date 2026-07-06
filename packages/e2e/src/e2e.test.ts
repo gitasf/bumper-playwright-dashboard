@@ -181,17 +181,20 @@ describe("Wrightful E2E", () => {
       const detailRes = await fetchAuthed(`${PROJECT_URL}/runs/${runId}`);
       const detailHtml = await detailRes.text();
       expect(detailRes.status).toBe(200);
-      // Two assertions instead of a loose OR over 'demo'||'spec'||'Test Results'
-      // (which passed on nearly any non-empty page — "Test Results" isn't even
-      // a string the Void run-detail page renders):
       //   1. Stable page chrome — the Tests/Environment tab pills — proves we
       //      landed on the run-detail page rather than an error/empty render.
-      //   2. A streamed test-file marker (`.spec`, from the demo suite's
-      //      *.spec.ts files) proves real test-result data rendered, not just
-      //      the page shell.
       expect(detailHtml).toContain("Tests");
       expect(detailHtml).toContain("Environment");
-      expect(detailHtml).toContain(".spec");
+      //   2. The Tests-tab group list now loads client-side (deferred), so the
+      //      test-file names are no longer in the SSR HTML — they come from the
+      //      grouped-read API the island calls. Hit that data path and assert it
+      //      returns the streamed run's `.spec` files (real test-result data,
+      //      not just the page shell).
+      const groupsRes = await fetchAuthed(
+        `${DASHBOARD_URL}/api/t/${TEAM_SLUG}/p/${PROJECT_SLUG}/runs/${runId}/groups?groupBy=file`,
+      );
+      expect(groupsRes.status).toBe(200);
+      expect(await groupsRes.text()).toContain(".spec");
     });
   });
 

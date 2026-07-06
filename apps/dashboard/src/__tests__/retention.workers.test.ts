@@ -242,4 +242,52 @@ describe("drainRetention", () => {
     // One round (all empty → no progress → stop), each project once.
     expect(visited).toEqual(["p1", "p2", "p3"]);
   });
+
+  it("idle projects do NOT consume the chunk budget (the tail is never starved)", async () => {
+    // Far more projects than the tiny chunk budget, ALL idle. Before the fix,
+    // each idle probe charged a chunk, so only `maxChunks` projects were ever
+    // visited and the rest starved every pass. Now an idle sweep costs no chunk,
+    // so the whole list is probed in the single (no-progress) round.
+    const projects = Array.from({ length: 200 }, (_, i) => `p${i}`);
+    const visited: string[] = [];
+    await drainRetention(
+      projects,
+      (p) => {
+        visited.push(p);
+        return Promise.resolve(EMPTY);
+      },
+      budget(5), // a budget far smaller than the project count
+    );
+    expect(visited).toEqual(projects); // every project reached despite budget=5
+  });
+
+  it("a productive head does not starve the idle tail: the tail is reached before the budget is spent", async () => {
+    // p-busy always has work; the rest are idle. Because idle sweeps don't charge
+    // the budget, round 1 reaches the WHOLE list (both idle projects) before the
+    // budget is spent — the fix. (Before, each idle probe charged a chunk, so a
+    // budget(2) would be exhausted at p-idle-1 and p-idle-2 would never be seen.)
+    const projects = ["p-busy", "p-idle-1", "p-idle-2"];
+    const visited: string[] = [];
+    await drainRetention(
+      projects,
+      (p) => {
+        visited.push(p);
+        return Promise.resolve(
+          p === "p-busy"
+            ? {
+                artifactsDeleted: 0,
+                artifactObjectsDeleted: 0,
+                testResultsDeleted: 5,
+              }
+            : EMPTY,
+        );
+      },
+      budget(2), // only p-busy's chunks count → 2 productive rounds
+    );
+    // Round 1 visits all three (p-busy productive → charge #1; both idle → free).
+    // Round 2 visits p-busy (charge #2 → budget hits 2) then stops. Crucially the
+    // idle tail WAS reached (in round 1), which the pre-fix idle-charging blocked.
+    expect(visited).toEqual(["p-busy", "p-idle-1", "p-idle-2", "p-busy"]);
+    expect(visited).toContain("p-idle-2");
+  });
 });

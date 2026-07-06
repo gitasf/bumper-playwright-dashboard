@@ -24,6 +24,13 @@ import {
 } from "../ci.js";
 import { MAX_CODEOWNERS_BYTES } from "../codeowners-file.js";
 import {
+  MAX_MESSAGE,
+  MAX_STACK,
+  MAX_TITLE,
+  truncate,
+  truncateNullable,
+} from "../limits.js";
+import {
   normalizeContentType,
   SAFE_CONTENT_TYPES as REPORTER_SAFE_CONTENT_TYPES,
 } from "../attachments.js";
@@ -82,6 +89,49 @@ describe("reporter ↔ dashboard wire contract", () => {
 
     const parsed = AppendResultsPayloadSchema.safeParse({ results: [payload] });
     expect(parsed.success).toBe(true);
+  });
+
+  it("clamps an over-cap title + error client-side so the payload still parses (no 400/413)", () => {
+    // The reporter's preflight caps MUST mirror the dashboard's, or an oversized
+    // title (hard-rejected) 400s the run and a huge error 413s the body.
+    expect(MAX_TITLE).toBe(DASHBOARD_MAX.TITLE);
+    expect(MAX_MESSAGE).toBe(DASHBOARD_MAX.MESSAGE);
+    expect(MAX_STACK).toBe(DASHBOARD_MAX.STACK);
+
+    const test = makeTest({
+      id: "big",
+      outcome: "unexpected",
+      title: "T".repeat(DASHBOARD_MAX.TITLE + 500),
+    });
+    const payload = buildPayload({
+      test,
+      results: [
+        makeResult({
+          status: "failed",
+          duration: 1,
+          retry: 0,
+          errorMessage: "E".repeat(DASHBOARD_MAX.MESSAGE + 1000),
+        }),
+      ],
+    });
+
+    // Clamped to the caps — and the testId (a hash of the raw titlePath) is
+    // unchanged by truncating the DISPLAY title, so prefill + result still match.
+    expect(payload.title.length).toBe(DASHBOARD_MAX.TITLE);
+    expect((payload.errorMessage ?? "").length).toBe(DASHBOARD_MAX.MESSAGE);
+    // The real dashboard schema now accepts it verbatim (would have 400'd raw).
+    const parsed = AppendResultsPayloadSchema.safeParse({ results: [payload] });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("truncate mirrors the dashboard's surrogate-pair-safe algorithm", () => {
+    expect(truncate("abcdef", 3)).toBe("abc");
+    expect(truncate("ab", 5)).toBe("ab");
+    // Cutting at 3 would split the 😀 surrogate pair (idx 2-3) → pulled back to 2.
+    expect(truncate("ab😀", 3)).toBe("ab");
+    expect(truncateNullable(null, 5)).toBeNull();
+    expect(truncateNullable(undefined, 5)).toBeNull();
+    expect(truncateNullable("keep", 10)).toBe("keep");
   });
 
   it("buildPayload output for a flaky test parses with all attempts present", () => {

@@ -1,0 +1,1 @@
+CREATE INDEX "runs_monitorId_idx" ON "runs" USING btree ("monitorId") WHERE "runs"."monitorId" is not null;

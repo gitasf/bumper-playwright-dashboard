@@ -14,10 +14,19 @@ import {
   Users,
   UsersRound,
 } from "lucide-react";
-import { useState } from "react";
-import { Link, useRouter, useShared } from "@void/react";
-import { CommandMenu, useCommandMenuShortcut } from "@/components/command-menu";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { useRouter, useShared } from "@void/react";
+import { useCommandMenuShortcut } from "@/components/command-menu-shortcut";
+import { DeferErrorBoundary } from "@/components/defer-error-boundary";
+import { Link, PREFETCH_REALTIME } from "@/components/ui/link";
 import { QueryProvider } from "@/components/query-provider";
+
+// Lazy-loaded and mounted only on first open (see `cmdMounted`): the command
+// menu pulls in Base UI Combobox machinery (~15-25 KB gz) and the layout renders
+// on every page, so keeping it out of the first-load bundle until ⌘K is free.
+const CommandMenu = lazy(() =>
+  import("@/components/command-menu").then((m) => ({ default: m.CommandMenu })),
+);
 import { SidebarUserMenu } from "@/components/sidebar-user-menu";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { cn } from "@/lib/cn";
@@ -88,6 +97,12 @@ export function AppLayout({ children, mode }: AppLayoutProps) {
   const user = auth?.user ?? null;
 
   const [cmdOpen, setCmdOpen] = useState(false);
+  // Mount the lazy command menu the first time it opens, then keep it mounted so
+  // its close animation runs and the chunk isn't re-fetched on the next ⌘K.
+  const [cmdMounted, setCmdMounted] = useState(false);
+  useEffect(() => {
+    if (cmdOpen) setCmdMounted(true);
+  }, [cmdOpen]);
   useCommandMenuShortcut(setCmdOpen);
 
   return (
@@ -142,14 +157,23 @@ export function AppLayout({ children, mode }: AppLayoutProps) {
         </main>
       </div>
 
-      <CommandMenu
-        activeProject={selectedProject}
-        activeTeam={selectedTeam}
-        onOpenChange={setCmdOpen}
-        open={cmdOpen}
-        projects={teamProjects}
-        teams={userTeams}
-      />
+      {cmdMounted && (
+        // Error boundary: a failed lazy chunk (e.g. a hashed filename 404 after a
+        // redeploy while this tab was open) degrades to no menu instead of
+        // throwing past Suspense and blanking the whole app shell.
+        <DeferErrorBoundary fallback={null}>
+          <Suspense fallback={null}>
+            <CommandMenu
+              activeProject={selectedProject}
+              activeTeam={selectedTeam}
+              onOpenChange={setCmdOpen}
+              open={cmdOpen}
+              projects={teamProjects}
+              teams={userTeams}
+            />
+          </Suspense>
+        </DeferErrorBoundary>
+      )}
     </QueryProvider>
   );
 }
@@ -243,14 +267,25 @@ function AppSidebarMiddle({ pathname, base }: AppSidebarMiddleProps) {
     icon: typeof CheckSquare;
     id: NavId;
     count?: number;
+    // Realtime-seeded destinations (Runs list → useProjectRoom, Monitors list →
+    // useFeedRoom) tighten the hover-prefetch reuse window to 5s so a click can't
+    // commit a stale room seed (rooms have no replay; no initial-mount refresh).
+    cacheFor?: string;
   }[] = base
     ? [
-        { href: base, label: "Runs", icon: CheckSquare, id: "runs" },
+        {
+          href: base,
+          label: "Runs",
+          icon: CheckSquare,
+          id: "runs",
+          cacheFor: PREFETCH_REALTIME,
+        },
         {
           href: `${base}/monitors`,
           label: "Monitors",
           icon: Radar,
           id: "monitors",
+          cacheFor: PREFETCH_REALTIME,
         },
         {
           href: `${base}/flaky`,
@@ -279,6 +314,7 @@ function AppSidebarMiddle({ pathname, base }: AppSidebarMiddleProps) {
         const active = activeNav === item.id;
         return (
           <Link
+            cacheFor={item.cacheFor}
             className={cn(
               "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
               active

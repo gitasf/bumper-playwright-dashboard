@@ -208,30 +208,34 @@ describe("testResultsScopeJoin", () => {
 
 describe("searchFragment", () => {
   it("is empty for a null query", () => {
-    expect(isEmptyFragment(searchFragment(null))).toBe(true);
+    expect(isEmptyFragment(searchFragment(null, "proj_01"))).toBe(true);
   });
 
   it("is empty for an empty-string query", () => {
-    expect(isEmptyFragment(searchFragment(""))).toBe(true);
+    expect(isEmptyFragment(searchFragment("", "proj_01"))).toBe(true);
   });
 
-  it("emits a title-or-file ILIKE predicate with an ESCAPE clause", () => {
-    // The ESCAPE '\' clause is load-bearing: without it the escaped pattern
-    // below matches nothing. On Postgres the search is case-insensitive, so the
-    // fragment renders `ilike`.
-    expect(renderSql(searchFragment("login")).replace(/\s+/g, " ").trim()).toBe(
-      "and (tr.title ilike ? escape '\\' or tr.file ilike ? escape '\\')",
+  it("emits an EXISTS against the tests catalog with a title-or-file ILIKE + ESCAPE", () => {
+    // The match resolves against the `tests` catalog (correlated on tr."testId")
+    // so the trigram indexes live on `tests`, not the result-history table. The
+    // ESCAPE '\' clause is load-bearing; on Postgres the search renders `ilike`.
+    expect(
+      renderSql(searchFragment("login", "proj_01")).replace(/\s+/g, " ").trim(),
+    ).toBe(
+      `and exists ( select 1 from "tests" t where t."projectId" = ? ` +
+        `and t."testId" = tr."testId" ` +
+        `and (t.title ilike ? escape '\\' or t.file ilike ? escape '\\') )`,
     );
   });
 
-  it("escapes ILIKE metacharacters, wraps in %…%, and binds twice (title + file)", () => {
-    const op = readSql(searchFragment("50%"));
-    // Same escaped, %-wrapped pattern is bound for both comparisons — `%` in
-    // the user's term matches literally (same semantics as the runs search).
-    // The operator sub-fragments are also in `args`, so filter to the bound
-    // string params.
+  it("binds the projectId first, then the escaped %…%-wrapped pattern twice (title + file)", () => {
+    const op = readSql(searchFragment("50%", "proj_01"));
+    // projectId scopes the correlated subquery; the same escaped, %-wrapped
+    // pattern is bound for both comparisons — `%` in the user's term matches
+    // literally. Operator sub-fragments also land in `args`, so filter to the
+    // bound string params and assert order.
     const bound = op.args.filter((a) => typeof a === "string");
-    expect(bound).toEqual(["%50\\%%", "%50\\%%"]);
+    expect(bound).toEqual(["proj_01", "%50\\%%", "%50\\%%"]);
     expect(renderSql(op)).not.toContain("50%");
   });
 });

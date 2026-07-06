@@ -1,22 +1,34 @@
-import { Link } from "@void/react";
-import { ArtifactsRail } from "@/components/artifacts-rail";
-import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
+import { Link, PREFETCH_REALTIME } from "@/components/ui/link";
+import { use } from "react";
+import {
+  ArtifactsRail,
+  type EnvironmentFields,
+} from "@/components/artifacts-rail";
 import {
   AttemptPanel,
   AttemptTabsBar,
   type AttemptTabItem,
 } from "@/components/attempt-tabs";
+import { DeferredSection } from "@/components/defer-error-boundary";
+import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
 import { QuarantineControl } from "@/components/quarantine-control";
-import { RunHistoryChart } from "@/components/run-history-chart";
+import {
+  RunHistoryChart,
+  RunHistoryChartSkeleton,
+} from "@/components/run-history-chart";
 import { StatusBadge } from "@/components/status-badge";
+import { TestErrorAlert } from "@/components/test-error-alert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { TestErrorAlert } from "@/components/test-error-alert";
+import { Skeleton } from "@/components/ui/skeleton";
 import { parseTitleSegments } from "@/lib/group-tests-by-file";
 import type { AttemptArtifactGroup } from "@/lib/test-artifact-actions";
 import { buildTestHistoryView } from "@/lib/test-history-view";
 import { formatDuration } from "@/lib/time-format";
 import type { Props } from "./index.server";
+
+/** The loader's success shape — carries the deferred `history` + `artifacts`. */
+type OkProps = Extract<Props, { kind: "ok" }>;
 
 function attemptLabel(attempt: number, totalAttempts: number): string {
   if (totalAttempts === 1) return "only attempt";
@@ -34,10 +46,12 @@ function normaliseAttemptRowStatus(status: string): AttemptRowStatus {
 
 /**
  * Test detail page. Single-spec deep dive: attempts tabs on the left,
- * artifacts rail on the right, history strip + tags/annotations across
- * the top. The loader returns either `kind: "ok"` (full data) or
- * `kind: "not_found"` (testResult or run row missing) so this component
- * doesn't have to do its own existence gating.
+ * artifacts rail on the right, history strip + tags/annotations across the top.
+ * The loader returns either `kind: "ok"` (full data) or `kind: "not_found"`.
+ *
+ * The header, metadata, attempt tabs and error panels paint immediately; the
+ * two costly reads stream in behind skeletons via `defer()`: the duration
+ * history strip and the per-attempt artifact rail (the token-signing fan-out).
  */
 export default function TestDetailPage(props: Props) {
   if (props.kind === "not_found") {
@@ -67,25 +81,20 @@ export default function TestDetailPage(props: Props) {
     quarantineError,
     tags: tagRows,
     annotations: annotationRows,
-    artifactGroups,
-    maxObservedAttempt,
     attempts: attemptRows,
-    history: historyRows,
+    history,
+    artifacts,
   } = props;
 
   const base = `/t/${project.teamSlug}/p/${project.projectSlug}`;
   const quarantineActionPath = `/api/t/${project.teamSlug}/p/${project.projectSlug}/quarantine`;
 
-  // Finished, server-ordered artifact presentation keyed by attempt. The page
-  // no longer sees raw rows, r2Key, or tokens — just ready-to-render actions.
-  const groupsByAttempt = new Map<number, AttemptArtifactGroup>(
-    artifactGroups.map((g) => [g.attempt, g] as const),
-  );
-
+  // Attempt count from the eager per-attempt rows; the fallback trusts the
+  // reporter's `retryCount + 1`. (Formerly also `max`'d with an artifact-derived
+  // `maxObservedAttempt`, but that now streams in the deferred rail — the eager
+  // tab scaffold must not read it, or the whole left column would suspend.)
   const totalAttempts =
-    attemptRows.length > 0
-      ? attemptRows.length
-      : Math.max(result.retryCount + 1, maxObservedAttempt + 1);
+    attemptRows.length > 0 ? attemptRows.length : result.retryCount + 1;
 
   const attemptsByIndex = new Map<
     number,
@@ -124,16 +133,6 @@ export default function TestDetailPage(props: Props) {
   const reproduceCommand = `npx playwright test ${JSON.stringify(
     result.file,
   )} --grep ${JSON.stringify(testTitle)}`;
-
-  const { points: historyPoints, stats: historyStats } = buildTestHistoryView(
-    historyRows,
-    {
-      base,
-      teamSlug: project.teamSlug,
-      projectSlug: project.projectSlug,
-      currentTestResultId: testResultId,
-    },
-  );
 
   const tabValues = allAttempts.map((a) => String(a));
   const resolveAttemptView = (attempt: number) => {
@@ -177,10 +176,11 @@ export default function TestDetailPage(props: Props) {
         <div className="flex min-w-0 items-center gap-3">
           <HeaderCrumbs
             items={[
-              { label: "Runs", href: base },
+              { label: "Runs", href: base, cacheFor: PREFETCH_REALTIME },
               {
                 label: `#${runId.slice(-7)}`,
                 href: `${base}/runs/${runId}`,
+                cacheFor: PREFETCH_REALTIME,
               },
             ]}
           />
@@ -235,25 +235,21 @@ export default function TestDetailPage(props: Props) {
       </div>
 
       <div className="px-6 pt-4 pb-2 shrink-0">
-        <RunHistoryChart
-          points={historyPoints}
-          title={`Duration · last ${historyPoints.length} run${historyPoints.length === 1 ? "" : "s"} of this test`}
-          subtitle={result.file}
-          rightSlot={
-            historyPoints.length > 1 ? (
-              <>
-                <span>pass {historyStats.passPct}%</span>
-                <span style={{ color: "var(--color-destructive)" }}>
-                  × {historyStats.failed}
-                </span>
-                <span style={{ color: "var(--color-warning)" }}>
-                  ⚠ {historyStats.flaky}
-                </span>
-              </>
-            ) : null
+        <DeferredSection
+          resetKey={testResultId}
+          skeleton={
+            <RunHistoryChartSkeleton subtitle={result.file} title="Duration" />
           }
-          emptyState="No prior runs recorded for this test yet."
-        />
+        >
+          <HistoryChartRegion
+            base={base}
+            file={result.file}
+            history={history}
+            projectSlug={project.projectSlug}
+            teamSlug={project.teamSlug}
+            testResultId={testResultId}
+          />
+        </DeferredSection>
       </div>
 
       <div className="flex flex-row gap-0">
@@ -292,30 +288,149 @@ export default function TestDetailPage(props: Props) {
           </div>
         </section>
         <aside className="w-[320px] shrink-0 bg-muted/10">
-          {allAttempts.map((attempt) => {
-            const group = groupsByAttempt.get(attempt);
-            return (
-              <AttemptPanel
-                key={attempt}
-                value={String(attempt)}
-                values={tabValues}
-                defaultValue={defaultTab}
-              >
-                <ArtifactsRail
-                  media={group?.media ?? []}
-                  copyPrompt={group?.copyPrompt ?? null}
-                  reproduceCommand={reproduceCommand}
-                  environment={{
-                    browser: result.projectName,
-                    workerIndex: result.workerIndex,
-                    playwrightVersion: run.playwrightVersion,
-                  }}
-                />
-              </AttemptPanel>
-            );
-          })}
+          <DeferredSection
+            resetKey={testResultId}
+            skeleton={<ArtifactsRailSkeleton />}
+          >
+            <TestArtifactsRail
+              allAttempts={allAttempts}
+              artifacts={artifacts}
+              defaultTab={defaultTab}
+              environment={{
+                browser: result.projectName,
+                workerIndex: result.workerIndex,
+                playwrightVersion: run.playwrightVersion,
+              }}
+              reproduceCommand={reproduceCommand}
+              tabValues={tabValues}
+            />
+          </DeferredSection>
         </aside>
       </div>
+    </div>
+  );
+}
+
+/** Deferred per-test duration history strip. Reads the bounded `history` scan
+ *  via `use()` and builds the chart view here (buildTestHistoryView is pure).
+ *  The skeleton passes the same eager `subtitle` (file) + a stable title, so
+ *  the shared RunHistoryChartFrame title row is identical across the swap. */
+function HistoryChartRegion({
+  history,
+  base,
+  teamSlug,
+  projectSlug,
+  testResultId,
+  file,
+}: {
+  history: OkProps["history"];
+  base: string;
+  teamSlug: string;
+  projectSlug: string;
+  testResultId: string;
+  file: string;
+}) {
+  const historyRows = use(history);
+  const { points: historyPoints, stats: historyStats } = buildTestHistoryView(
+    historyRows,
+    { base, teamSlug, projectSlug, currentTestResultId: testResultId },
+  );
+  return (
+    <RunHistoryChart
+      points={historyPoints}
+      title={`Duration · last ${historyPoints.length} run${historyPoints.length === 1 ? "" : "s"} of this test`}
+      subtitle={file}
+      rightSlot={
+        historyPoints.length > 1 ? (
+          <>
+            <span>pass {historyStats.passPct}%</span>
+            <span style={{ color: "var(--color-destructive)" }}>
+              × {historyStats.failed}
+            </span>
+            <span style={{ color: "var(--color-warning)" }}>
+              ⚠ {historyStats.flaky}
+            </span>
+          </>
+        ) : null
+      }
+      emptyState="No prior runs recorded for this test yet."
+    />
+  );
+}
+
+/** Deferred per-attempt artifact rail (right column). Reads the artifact
+ *  fan-out via `use()`; the active-attempt panel is chosen off the `?attempt=`
+ *  URL param, exactly like the eager left column, so the Suspense boundary
+ *  between them is invisible. Reproduction + environment are eager-derived and
+ *  passed in. */
+function TestArtifactsRail({
+  artifacts,
+  allAttempts,
+  tabValues,
+  defaultTab,
+  reproduceCommand,
+  environment,
+}: {
+  artifacts: OkProps["artifacts"];
+  allAttempts: number[];
+  tabValues: string[];
+  defaultTab: string;
+  reproduceCommand: string;
+  environment: EnvironmentFields;
+}) {
+  const { artifactGroups } = use(artifacts);
+  const groupsByAttempt = new Map<number, AttemptArtifactGroup>(
+    artifactGroups.map((g) => [g.attempt, g] as const),
+  );
+  return (
+    <>
+      {allAttempts.map((attempt) => {
+        const group = groupsByAttempt.get(attempt);
+        return (
+          <AttemptPanel
+            key={attempt}
+            value={String(attempt)}
+            values={tabValues}
+            defaultValue={defaultTab}
+          >
+            <ArtifactsRail
+              media={group?.media ?? []}
+              copyPrompt={group?.copyPrompt ?? null}
+              reproduceCommand={reproduceCommand}
+              environment={environment}
+            />
+          </AttemptPanel>
+        );
+      })}
+    </>
+  );
+}
+
+/** Fallback for the artifact rail — mirrors its three sections (media buttons /
+ *  reproduction block / environment rows). The aside sits beside the taller
+ *  error column and is the terminal region, so its resolved height doesn't
+ *  shift anything else. */
+function ArtifactsRailSkeleton() {
+  return (
+    <div className="flex flex-col">
+      <section className="p-5 border-b border-border">
+        <Skeleton className="mb-3 h-2.5 w-16" />
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      </section>
+      <section className="p-5 border-b border-border">
+        <Skeleton className="mb-3 h-2.5 w-20" />
+        <Skeleton className="h-[68px] w-full rounded-md" />
+      </section>
+      <section className="p-5">
+        <Skeleton className="mb-3 h-2.5 w-20" />
+        <div className="space-y-2">
+          <Skeleton className="h-3.5 w-full" />
+          <Skeleton className="h-3.5 w-2/3" />
+        </div>
+      </section>
     </div>
   );
 }

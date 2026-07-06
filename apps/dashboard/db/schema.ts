@@ -10,8 +10,10 @@
 import { sql } from "void/_db";
 import {
   bigint,
+  check,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -95,6 +97,17 @@ export const teams = pgTable(
   (t) => [
     uniqueIndex("teams_slug_idx").on(t.slug),
     index("teams_lastActivityAt_idx").on(t.lastActivityAt),
+    // The artifact window must stay ≤ the testResults window so an expiring
+    // testResult's FK cascade never orphans still-live R2 objects. This was
+    // enforced ONLY in the settings action (`general.server.ts`); the CHECK
+    // closes the gap for seed scripts / admin tools / billing-sync writes. It
+    // covers only the both-set case (a DB CHECK can't see the `WRIGHTFUL_RETENTION_*`
+    // env defaults a NULL falls back to), so the settings-action validation of
+    // the mixed NULL/env cases stays load-bearing. See schema-rework-plan Phase 3.
+    check(
+      "teams_retention_window_chk",
+      sql`${t.retentionArtifactDays} is null or ${t.retentionTestResultsDays} is null or ${t.retentionArtifactDays} <= ${t.retentionTestResultsDays}`,
+    ),
   ],
 );
 
@@ -290,12 +303,11 @@ export const apiKeys = pgTable(
  * the ingest pipeline increments in the SAME transaction as its writes
  * (`usageBumpStatement` in `src/lib/usage.ts`) — a run open bumps `runsCount`,
  * an artifact registration bumps `artifactBytes`/`artifactCount` — atomically
- * with the data it meters, never a separate round-trip. `testResultsCount` is
- * the EXCEPTION: it is NOT bumped on the /results hot path (that upsert
- * serialized every concurrent flush of a team on this single row). Since
- * testResults is never quota-gated, it is derived on read (`countTeamTestResults`)
- * and re-based by the cron, so the stored column is a backstop, not the source
- * the usage page reads. `periodStart` is the UTC month-boundary epoch-seconds
+ * with the data it meters, never a separate round-trip. testResults are NOT
+ * metered here at all (there is deliberately no `testResultsCount` column — it
+ * would have serialized every concurrent /results flush of a team on this single
+ * row, and testResults is never quota-gated): the count is derived on read
+ * (`countTeamTestResults`) wherever it's shown. `periodStart` is the UTC month-boundary epoch-seconds
  * (`monthStartSeconds`), so a new month lands on a fresh row via the upsert's
  * `onConflictDoUpdate` — no reset job. `checkQuota` reads the current row to
  * gate ingest against the team's tier limits; the `rollup-usage` cron
@@ -311,7 +323,11 @@ export const usageCounters = pgTable(
     /** UTC start-of-month epoch-seconds — the rolling billing window key. */
     periodStart: big("periodStart").notNull(),
     runsCount: integer("runsCount").notNull().default(0),
-    testResultsCount: integer("testResultsCount").notNull().default(0),
+    // NB: `testResultsCount` was removed (schema-rework-plan Phase 3). It was a
+    // half-alive column — never bumped on the /results hot path (that upsert
+    // serialized every concurrent flush of a team on this one row), never read by
+    // the usage page (which derives it via `countTeamTestResults`), only re-based
+    // by the rollup cron. The derived-on-read path is the single source now.
     artifactBytes: big("artifactBytes").notNull().default(0),
     artifactCount: integer("artifactCount").notNull().default(0),
     updatedAt: big("updatedAt").notNull(),
@@ -366,9 +382,11 @@ export const runs = pgTable(
      *   1. Defense-in-depth for the `AuthorizedProjectId` brand — every
      *      scoped query filters by `(teamId, projectId)` so a leaked project
      *      id can't cross teams even if the brand check is bypassed.
-     *   2. Single-hop authz on the live socket (`src/live.ts`): we resolve a
-     *      subscriber's read access by `SELECT teamId FROM runs WHERE id = ?`
-     *      then joining memberships, instead of hopping through projects.
+     *   2. Single-hop authz on the realtime socket: the run-room subscription
+     *      gate (`authorizeTopicSubscription` in `src/lib/authz.ts`, wired into
+     *      `routes/ws/run/[runId].ws.ts`) resolves a subscriber's read access by
+     *      `SELECT teamId FROM runs WHERE id = ?` then joining memberships,
+     *      instead of hopping through projects.
      */
     teamId: text("teamId")
       .notNull()
@@ -421,11 +439,13 @@ export const runs = pgTable(
      * `createdAt`, via `staleRunFilter` (src/lib/scope.ts): "no write activity
      * for N minutes" is what 'stuck' actually means, so a legitimately long
      * suite that is still streaming results is no longer force-flipped to
-     * 'interrupted'. Nullable for migration safety on rows that predate the
-     * column; readers `coalesce(lastActivityAt, createdAt)` so a NULL is never
-     * treated as "infinitely stale".
+     * 'interrupted'. NOT NULL — every writer sets it (initialized to `createdAt`
+     * at open, bumped in-transaction on every subsequent write), so
+     * `staleRunFilter` reads it directly with no `coalesce` fallback. (Rows that
+     * predated the column were backfilled to `createdAt` when it was tightened —
+     * see `docs/schema-rework-plan.md` Phase 4.)
      */
-    lastActivityAt: big("lastActivityAt"),
+    lastActivityAt: big("lastActivityAt").notNull(),
     completedAt: big("completedAt"),
     /**
      * Where this run came from. `'ci'` (default) — a normal reporter run from
@@ -435,15 +455,17 @@ export const runs = pgTable(
      */
     origin: text("origin").notNull().default("ci"),
     /**
-     * For `origin = 'synthetic'`, the `monitors.id` this run belongs to. A
-     * LOGICAL foreign key (no `.references()`) — declared without a Drizzle FK
-     * to avoid a `runs` ↔ `monitors` cascade cycle in the generated migration,
-     * matching the existing logical-FK precedent (`memberships.userId`). Null
-     * for CI runs. A deleted monitor cascades its `monitorExecutions`; the run
-     * itself is retained with a dangling `monitorId` (harmless — readers treat
-     * a missing monitor gracefully).
+     * For `origin = 'synthetic'`, the `monitors.id` this run belongs to. Null
+     * for CI runs. A REAL FK with `onDelete: "set null"`: there is no cycle to
+     * avoid (`monitors` references only `teams`/`projects`, never `runs`), and
+     * `set null` is exactly the intended semantics — a deleted monitor leaves the
+     * run retained with a null link, which readers already treat gracefully.
+     * (Was a logical FK on a since-disproven cycle rationale — see
+     * `docs/schema-rework-plan.md` Phase 3.)
      */
-    monitorId: text("monitorId"),
+    monitorId: text("monitorId").references(() => monitors.id, {
+      onDelete: "set null",
+    }),
     /**
      * The GitHub check-run id created for this run, or null. Lets the terminal
      * path (`completeRun` / `finalizeStaleRun` → `maybePostGithubCheck`) PATCH
@@ -456,14 +478,19 @@ export const runs = pgTable(
       t.projectId,
       t.idempotencyKey,
     ),
-    // Reserved for the upcoming "runs for this monitor" list — no read uses it
-    // yet (the only `monitorId` touch today is the ingest write). Pure write
-    // amplification until that query lands; drop it if the feature is cut.
-    index("runs_project_monitor_created_at_idx").on(
-      t.projectId,
-      t.monitorId,
-      t.createdAt,
-    ),
+    // (Dropped `runs_project_monitor_created_at_idx` — it was self-documented
+    // "pure write amplification" for a "runs for this monitor" list that never
+    // landed. Re-add it WITH that feature; index additions are cheap + additive.
+    // See schema-rework-plan Phase 3.)
+    //
+    // Indexes the child side of the `runs.monitorId → monitors` FK so its
+    // `onDelete: "set null"` doesn't seq-scan the (largest) runs table on every
+    // monitor deletion. PARTIAL (`WHERE monitorId IS NOT NULL`) so it stays tiny:
+    // only synthetic runs carry a monitorId — the CI hot path is null and not
+    // indexed, adding no write amplification there.
+    index("runs_monitorId_idx")
+      .on(t.monitorId)
+      .where(sql`${t.monitorId} is not null`),
     index("runs_project_created_at_idx").on(t.projectId, t.createdAt),
     index("runs_project_branch_created_at_idx").on(
       t.projectId,
@@ -554,7 +581,28 @@ export const testResults = pgTable(
     errorMessage: text("errorMessage"),
     errorStack: text("errorStack"),
     workerIndex: integer("workerIndex"),
+    /** Playwright shard that ran this test (config.shard.current, 1-based); null for a non-sharded run. */
+    shardIndex: integer("shardIndex"),
+    /**
+     * INSERT-ONLY first-seen time. Set once — at the queued prefill (run open)
+     * for a planned test, or at the first streamed result for a non-prefilled
+     * one — and NEVER rewritten by a later /results flush. That is what keeps it
+     * a true insert timestamp (not "last-modified"), so usage metering by month,
+     * analytics time-buckets, retention age, and the createdAt cursor all read a
+     * stable value. The mutable "last write" time lives in {@link updatedAt}.
+     */
     createdAt: big("createdAt").notNull(),
+    /**
+     * Last-write time — bumped to the flush time on every /results upsert of this
+     * (runId, testId) row (and set = createdAt on first insert). NOT NULL — both
+     * write paths (prefill insert + /results upsert) always set it, so a reader
+     * that wants a last-modified value reads it directly with no `coalesce`. No
+     * reader needs it yet, so it carries no index. Splitting write-time out of
+     * `createdAt` is the fix for the old UPDATE path that rewrote `createdAt` to
+     * the flush time. (Rows predating the column were backfilled to `createdAt`
+     * when it was tightened — see `docs/schema-rework-plan.md` Phase 4.)
+     */
+    updatedAt: big("updatedAt").notNull(),
   },
   (t) => [
     index("testResults_testId_createdAt_idx").on(t.testId, t.createdAt),
@@ -576,6 +624,67 @@ export const testResults = pgTable(
       t.testId,
       t.createdAt,
     ),
+    // NB: the ⌘K test-search trigram GIN indexes used to live here, over the
+    // ENTIRE retained result history. They moved to the `tests` catalog table
+    // below (bounded by suite size, not history) — see `docs/schema-rework-plan.md`
+    // Phase 1. The `pg_trgm` extension stays (created by migration
+    // `20260703092642_slimy_layla_miller.sql`) because `tests` now needs it.
+  ],
+);
+
+/**
+ * Per-project test identity catalog — one row per stable `testId`, the dimension
+ * table `testResults` (a fact table, one row per test PER RUN) never had.
+ *
+ * Upserted at ingest inside the same `runBatch` as the results it describes
+ * (openRun's queued-test prefill AND appendRunResults), latest-wins on
+ * `title`/`file` — see `buildTestCatalogUpsertStatements` in `src/lib/ingest.ts`.
+ *
+ * It exists to stop three consumers from each re-deriving test identity off the
+ * fact table:
+ *   1. The ⌘K command-palette search (`ILIKE '%q%'` on title/file) reads THIS
+ *      table, so the trigram GIN indexes are bounded by suite size instead of
+ *      retained-row count (the reason they moved off `testResults`).
+ *   2. The tests-catalog + slowest-tests `q` filter resolves matching `testId`s
+ *      here (`searchFragment`) instead of scanning the result partition.
+ *   3. Quarantine / ownership key on the bare `(projectId, testId)` — this is
+ *      their natural anchor row (a hard composite FK is deferred, see the plan).
+ *
+ * Identity/dimension only: NO status or aggregate columns — those stay derived
+ * from `testResults` on read. Carries denormalized `projectId` like every other
+ * run-scoped table so tenant isolation needs no join. NOT swept by the retention
+ * cron (bounded by suite size, not history).
+ */
+export const tests = pgTable(
+  "tests",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** Stable Playwright test id — the same value `testResults`/quarantine/owners key on. */
+    testId: text("testId").notNull(),
+    /** Latest-seen title; refreshed on every ingest upsert of this (projectId, testId). */
+    title: text("title").notNull(),
+    /** Latest-seen spec file; refreshed on every ingest upsert. */
+    file: text("file").notNull(),
+    /** INSERT-ONLY first-seen time — kept on conflict, never rewritten. */
+    firstSeenAt: big("firstSeenAt").notNull(),
+    /** Bumped to the ingest time on every upsert of this (projectId, testId). */
+    lastSeenAt: big("lastSeenAt").notNull(),
+  },
+  (t) => [
+    // The upsert conflict target AND the point-seek for quarantine/owner anchoring.
+    uniqueIndex("tests_project_testId_idx").on(t.projectId, t.testId),
+    // Backs the palette's recent-first ordering and the catalog's default sort.
+    index("tests_project_lastSeenAt_idx").on(t.projectId, t.lastSeenAt),
+    // Trigram GIN backing the ⌘K palette + catalog `q` search — matches
+    // title/file with a LEADING-wildcard `ILIKE '%q%'` a b-tree can't accelerate.
+    // Over `tests` these are bounded by the project's live suite size, not its
+    // full retained result history. REQUIRES the `pg_trgm` extension (already
+    // created by an earlier migration; the generated migration needs no augment).
+    index("tests_title_trgm_idx").using("gin", t.title.op("gin_trgm_ops")),
+    index("tests_file_trgm_idx").using("gin", t.file.op("gin_trgm_ops")),
   ],
 );
 
@@ -658,7 +767,11 @@ export const artifacts = pgTable(
     type: text("type").notNull(),
     name: text("name").notNull(),
     contentType: text("contentType").notNull(),
-    sizeBytes: integer("sizeBytes").notNull(),
+    // bigint, not integer: the cap is env-configurable via
+    // `WRIGHTFUL_MAX_ARTIFACT_BYTES` (default 50 MiB), and an operator setting a
+    // >2 GiB cap would overflow int4. `usage.ts`'s `coalesce(sum(...))` already
+    // routes through `numericSql`, so the read side is unaffected.
+    sizeBytes: big("sizeBytes").notNull(),
     /**
      * R2 object key. Built by `buildArtifactR2Key` in `src/lib/artifacts.ts`:
      * `t/<teamId>/p/<projectId>/runs/<runId>/<testResultId>/<artifactId>/<safe-filename>`.
@@ -744,23 +857,31 @@ export const monitors = pgTable(
      */
     alertsEnabled: integer("alertsEnabled").notNull().default(1),
     /**
-     * Who alerts notify, as JSON. `null` = ALL team members (the default). A
+     * Who alerts notify, as `jsonb`. `null` = ALL team members (the default). A
      * `{ users: string[], groups: string[] }` object = those specific members +
      * the members of those `memberGroups`, unioned and re-intersected with live
      * memberships at send time. Parsing/expansion: `src/lib/monitors/alert-targets.ts`.
      */
-    alertTargets: text("alertTargets"),
+    alertTargets: jsonb("alertTargets").$type<{
+      users: string[];
+      groups: string[];
+    }>(),
     /** Playwright spec source for `type = 'browser'`; null for non-browser types. */
     source: text("source"),
-    /** Type-specific config as JSON (e.g. browser: timeout/workers; http: url/assertions). */
-    config: text("config"),
+    /**
+     * Type-specific config as `jsonb` (e.g. browser: timeout/workers; http:
+     * url/assertions; tcp: host/port). Polymorphic by monitor `type`, so it
+     * carries no `$type` here — the read path validates + narrows it through the
+     * Zod parsers in `monitor-schemas.ts` (`parseHttpMonitorConfig` / `parseTcpMonitorConfig`).
+     */
+    config: jsonb("config"),
     intervalSeconds: integer("intervalSeconds").notNull(),
     /** 'round_robin' | 'parallel' — reserved for multi-location; v1 single origin. */
     schedulingStrategy: text("schedulingStrategy")
       .notNull()
       .default("round_robin"),
-    /** Retries/anti-flapping config as JSON. Reserved (not consumed in v1). */
-    retryConfig: text("retryConfig"),
+    /** Retries/anti-flapping config as `jsonb`. Reserved (not consumed in v1). */
+    retryConfig: jsonb("retryConfig"),
     /**
      * Epoch-seconds of the next due execution; the sweep's seek key. Null means
      * "not scheduled" (paused / never armed). Advanced transactionally in the
@@ -792,8 +913,9 @@ export const monitors = pgTable(
  * One row per scheduled attempt of a monitor. For `type = 'browser'`, `runId`
  * links to the full `runs` row the in-container reporter streamed (so the rich
  * run/test UI is reused); lighter uptime types fill result fields inline (added
- * later). `runId` is a LOGICAL ref (no `.references()`) to avoid a FK cycle and
- * so a deleted run leaves the execution row intact with a null link.
+ * later). `runId` is a real FK to `runs.id` with `onDelete: "set null"` — a
+ * deleted run leaves the execution row intact with a null link (there is no FK
+ * cycle to avoid; see schema-rework-plan Phase 3).
  */
 export const monitorExecutions = pgTable(
   "monitorExecutions",
@@ -811,8 +933,13 @@ export const monitorExecutions = pgTable(
     /** queued | running | pass | degraded | fail | error. */
     state: text("state").notNull(),
     attempt: integer("attempt").notNull().default(0),
-    /** Logical ref to `runs.id` for browser executions; null otherwise. */
-    runId: text("runId"),
+    /**
+     * `runs.id` for browser executions; null otherwise. REAL FK with
+     * `onDelete: "set null"` (no cycle exists — see the same fix on
+     * `runs.monitorId`): a deleted run leaves the execution row intact with a
+     * null link, the behavior the old logical-FK comment described wanting.
+     */
+    runId: text("runId").references(() => runs.id, { onDelete: "set null" }),
     durationMs: integer("durationMs"),
     /**
      * HTTP response status code for `http` (uptime) executions; null for browser
@@ -822,12 +949,14 @@ export const monitorExecutions = pgTable(
      */
     statusCode: integer("statusCode"),
     /**
-     * Inline result detail for `http` executions as JSON (`HttpResultDetail`):
-     * per-assertion outcomes, timing phases, redirect chain, and a capped body
-     * excerpt on a failed body assertion. Null for browser executions (whose
-     * detail lives in the linked `runs` row).
+     * Inline result detail for `http`/`tcp` executions as `jsonb`
+     * (`HttpResultDetail` / `TcpResultDetail`): per-assertion outcomes, timing
+     * phases, redirect chain, and a capped body excerpt on a failed body
+     * assertion. Null for browser executions (whose detail lives in the linked
+     * `runs` row). Polymorphic by execution type, so no `$type` — the read path
+     * validates + narrows it via `parseHttpResultDetail` / `parseTcpResultDetail`.
      */
-    resultDetail: text("resultDetail"),
+    resultDetail: jsonb("resultDetail"),
     errorMessage: text("errorMessage"),
     createdAt: big("createdAt").notNull(),
   },
@@ -935,15 +1064,15 @@ export const testOwners = pgTable(
   },
   (t) => [
     // One row per (project, test, owner) — assigning the same owner twice is an
-    // upsert/ignore, not a duplicate.
+    // upsert/ignore, not a duplicate. Its leading `(projectId, testId)` prefix
+    // also serves the per-test owner lookup (`projectId = ? AND testId IN (…)`)
+    // the page-badge join (`resolveTestOwners`) runs, so no standalone
+    // `(projectId, testId)` index is needed.
     uniqueIndex("testOwners_project_testId_owner_idx").on(
       t.projectId,
       t.testId,
       t.owner,
     ),
-    // Serves the per-test owner lookup (`projectId = ? AND testId IN (…)`) the
-    // page-badge join (`resolveTestOwners`) runs.
-    index("testOwners_project_testId_idx").on(t.projectId, t.testId),
   ],
 );
 
@@ -1010,8 +1139,8 @@ export const auditLog = pgTable(
      * after the underlying entity is deleted.
      */
     targetId: text("targetId"),
-    /** Extra structured context as a JSON string (serialized by `recordAudit`). */
-    metadata: text("metadata"),
+    /** Extra structured context as `jsonb` (written directly by `recordAudit`). */
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: big("createdAt").notNull(),
   },
   (t) => [
@@ -1034,6 +1163,7 @@ export type UsageCounter = typeof usageCounters.$inferSelect;
 export type GithubInstallation = typeof githubInstallations.$inferSelect;
 export type Run = typeof runs.$inferSelect;
 export type TestResult = typeof testResults.$inferSelect;
+export type TestCatalogRow = typeof tests.$inferSelect;
 export type TestTag = typeof testTags.$inferSelect;
 export type TestAnnotation = typeof testAnnotations.$inferSelect;
 export type TestResultAttempt = typeof testResultAttempts.$inferSelect;

@@ -110,13 +110,20 @@ function makeBuilder(kind: string, inTx: boolean): BuilderNode {
     "onConflictDoNothing",
     "onConflictDoUpdate",
     "innerJoin",
+    // appendRunResults takes a `SELECT … FOR UPDATE` lock inside its transaction
+    // and reads prev-status off `tx`, so the tx select chain needs `.for`.
+    "for",
   ] as const) {
     node[m] = chain;
   }
   node.then = (onFulfilled?: (value: unknown) => unknown) => {
-    if (inTx) {
-      // runBatch awaits tx statements in order — record + resolve the configured
-      // per-statement row-set (only the last one is read, as the summary).
+    // In-transaction WRITES (insert/update/delete) are what `runBatch` (and
+    // appendRunResults' inline transaction) await in order — record + resolve
+    // the configured per-statement row-set (only the last, the summary, is
+    // read). In-transaction SELECTs (the FOR UPDATE lock + resolveTestResultIds,
+    // now run on `tx`) are READS: like the pooled-`db` reads they dequeue the
+    // `awaitResults` FIFO and are NOT recorded as statements.
+    if (inTx && kind !== "select") {
       txStatements.push(node);
       return Promise.resolve(
         onFulfilled ? onFulfilled(txStatementResult) : txStatementResult,
@@ -254,10 +261,11 @@ describe("openRun", () => {
     expect(out.duplicate).toBe(false);
     expect(typeof out.runId).toBe("string");
     expect(out.runId.length).toBeGreaterThan(0);
-    // One run insert + one prefill insert chunk + the usage-meter bump (also an
-    // insert/upsert) → run together in one atomic open transaction.
+    // One run insert + one prefill insert chunk + one tests-catalog upsert +
+    // the usage-meter bump (also an insert/upsert) → run together in one atomic
+    // open transaction.
     expect(transactionSpy).toHaveBeenCalledTimes(1);
-    expect(txStatements).toHaveLength(3);
+    expect(txStatements).toHaveLength(4);
     expect(txStatements.every((s) => s.__kind === "insert")).toBe(true);
     // Initial snapshot is synthesized inline (no DB read) and broadcast to the
     // run room — totals reflect the planned-test count, status "running".
@@ -336,6 +344,75 @@ describe("openRun", () => {
     expect(transactionSpy).not.toHaveBeenCalled();
     expect(broadcastRunSpy).not.toHaveBeenCalled();
   });
+
+  it("recovers a synthetic run whose monitor was deleted mid-open: nulls monitorId and retries once", async () => {
+    // [0] idempotency SELECT (no existing); [1] bumpTeamActivity UPDATE (after
+    // the successful retry). The first open transaction raises a FK violation
+    // (runs.monitorId → a monitor deleted between scheduling and open).
+    awaitResults = [[], []];
+    const fkErr = Object.assign(
+      new Error('insert on table "runs" violates foreign key constraint'),
+      { code: "23503" },
+    );
+    transactionSpy.mockImplementationOnce(() => {
+      throw fkErr;
+    });
+    const payload: OpenRunPayload = {
+      idempotencyKey: "key-fk",
+      run: {
+        origin: "synthetic",
+        monitorId: "mon-gone",
+        plannedTests: [{ testId: "t1", title: "a", file: "spec.ts" }],
+      },
+    } as OpenRunPayload;
+
+    const out = await openRun(scope, payload, NOW);
+
+    // The FK-recovery nulled the stale link (onDelete: set null semantics) and
+    // retried the SAME open batch — a genuinely new run, not a duplicate.
+    expect(out.duplicate).toBe(false);
+    expect(typeof out.runId).toBe("string");
+    expect(transactionSpy).toHaveBeenCalledTimes(2);
+    expect(broadcastRunSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows a non-FK error from the open transaction (no retry)", async () => {
+    awaitResults = [[]]; // pre-check SELECT only; never reaches bumpTeamActivity
+    transactionSpy.mockImplementationOnce(() => {
+      throw new Error("connection reset");
+    });
+    const payload: OpenRunPayload = {
+      idempotencyKey: "key-boom",
+      run: { origin: "synthetic", monitorId: "mon-x", plannedTests: [] },
+    } as OpenRunPayload;
+
+    await expect(openRun(scope, payload, NOW)).rejects.toThrow(
+      "connection reset",
+    );
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
+    expect(broadcastRunSpy).not.toHaveBeenCalled();
+  });
+
+  it("rethrows a FK violation when there is no monitorId to blame (CI run)", async () => {
+    // The gate is `monitorId != null`: a CI run (no monitorId) whose FK violation
+    // can only be projectId/teamId (NOT NULL, unfixable) must rethrow, not loop.
+    awaitResults = [[]];
+    const fkErr = Object.assign(new Error("violates foreign key constraint"), {
+      code: "23503",
+    });
+    transactionSpy.mockImplementationOnce(() => {
+      throw fkErr;
+    });
+    const payload: OpenRunPayload = {
+      idempotencyKey: "key-ci",
+      run: { plannedTests: [] },
+    } as OpenRunPayload;
+
+    await expect(openRun(scope, payload, NOW)).rejects.toThrow(
+      "foreign key constraint",
+    );
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("appendRunResults", () => {
@@ -352,9 +429,11 @@ describe("appendRunResults", () => {
   });
 
   it("on a real delta: appends the delta UPDATE LAST and broadcasts txResults[last][0]", async () => {
-    // [0] ownership SELECT → owned; [1] resolveTestResultIds SELECT → no prior
-    // rows (fresh inserts, so a real +totalTests delta UPDATE is emitted).
-    awaitResults = [[{ id: "run-1" }], []];
+    // [0] ownership SELECT (pooled) → owned; [1] FOR UPDATE lock SELECT (tx) →
+    // the run row; [2] resolveTestResultIds SELECT (tx) → no prior rows (fresh
+    // inserts, so a real +totalTests delta UPDATE is emitted). The tx SELECTs
+    // (lock + prev-status read) dequeue the read FIFO, they are not statements.
+    awaitResults = [[{ id: "run-1" }], [{ id: "run-1" }], []];
     const persisted = summaryRow({ totalTests: 1, passed: 1, failed: 0 });
     // The summary-producing statement is appended LAST, so its row is the FINAL
     // per-statement result (txResults[last][0]) — exactly the old "summary is the
@@ -397,12 +476,14 @@ describe("appendRunResults", () => {
   });
 
   it("on a no-op delta (re-send of an unchanged status): swaps the delta UPDATE for a liveness-bump UPDATE as the LAST statement", async () => {
-    // [0] ownership SELECT → owned; [1] resolveTestResultIds SELECT → the test
-    // already exists at the SAME status, so computeAggregateDelta is all-zero
-    // and aggregateDeltaStatement returns null → the no-delta branch swaps in
-    // `activityBumpStatement` (a liveness-only UPDATE, not a read-only SELECT)
-    // so even a zero-bucket-change flush advances `lastActivityAt`.
+    // [0] ownership SELECT → owned; [1] FOR UPDATE lock SELECT (tx) → the run
+    // row; [2] resolveTestResultIds SELECT (tx) → the test already exists at the
+    // SAME status, so computeAggregateDelta is all-zero and aggregateDeltaStatement
+    // returns null → the no-delta branch swaps in `activityBumpStatement` (a
+    // liveness-only UPDATE, not a read-only SELECT) so even a zero-bucket-change
+    // flush advances `lastActivityAt`.
     awaitResults = [
+      [{ id: "run-1" }],
       [{ id: "run-1" }],
       [{ id: "tr-1", testId: "t1", status: "passed" }],
     ];
@@ -427,7 +508,9 @@ describe("appendRunResults", () => {
   });
 
   it("returns notFound when the run vanished mid-transaction (summary statement matched no row)", async () => {
-    awaitResults = [[{ id: "run-1" }], []];
+    // ownership + FOR UPDATE lock + resolveTestResultIds reads, then the summary
+    // statement matches no row (txStatementResult empty).
+    awaitResults = [[{ id: "run-1" }], [{ id: "run-1" }], []];
     // Final statement produced no row → summaryFromBatchResults yields null.
     txStatementResult = [];
     const payload: AppendResultsPayload = { results: [result()] };
@@ -439,7 +522,8 @@ describe("appendRunResults", () => {
   });
 
   it("threads clientKey → assigned id into the returned mapping", async () => {
-    awaitResults = [[{ id: "run-1" }], []];
+    // ownership + FOR UPDATE lock + resolveTestResultIds reads (all empty prior).
+    awaitResults = [[{ id: "run-1" }], [{ id: "run-1" }], []];
     txStatementResult = [summaryRow()];
     const payload: AppendResultsPayload = {
       results: [result({ testId: "t1", clientKey: "ck-1" })],

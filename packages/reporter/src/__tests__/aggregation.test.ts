@@ -188,6 +188,28 @@ describe("buildPayload", () => {
     expect(payload.file).toBe("/abs/path/tests/demo.spec.ts");
   });
 
+  it("carries the shard index when running under --shard", () => {
+    const test = makeTest({ outcome: "expected" });
+    const payload = buildPayload(
+      {
+        test,
+        results: [makeResult({ status: "passed", duration: 1, retry: 0 })],
+      },
+      null,
+      2,
+    );
+    expect(payload.shardIndex).toBe(2);
+  });
+
+  it("emits shardIndex: null on a non-sharded run", () => {
+    const test = makeTest({ outcome: "expected" });
+    const payload = buildPayload({
+      test,
+      results: [makeResult({ status: "passed", duration: 1, retry: 0 })],
+    });
+    expect(payload.shardIndex).toBeNull();
+  });
+
   it("emits one attempts[] entry per Playwright attempt with its own error", () => {
     const test = makeTest({ retries: 2, outcome: "unexpected" });
     const payload = buildPayload({

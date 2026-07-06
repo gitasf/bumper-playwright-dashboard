@@ -15,11 +15,17 @@ export class RunDetailPage {
 
   readonly testRowLinks: Locator;
   readonly testTitleHeading: Locator;
+  readonly testGroups: Locator;
 
   constructor(page: Page, teamSlug: string, projectSlug: string) {
     this.page = page;
     this.teamSlug = teamSlug;
     this.projectSlug = projectSlug;
+    // The Tests tab paginates BY GROUP: each group renders as a disclosure
+    // button (`data-testid="run-test-group"`, `aria-expanded`) and its test-row
+    // links only render while it's open. Only failing groups auto-expand, so
+    // reaching a passing run's rows means expanding the group first.
+    this.testGroups = page.getByTestId("run-test-group");
     // Each test row in the Tests tab (`RunProgress` → `TestRow`) renders as
     // a `<Link>` whose href is `…/runs/<runId>/tests/<id>?attempt=0`. Scope
     // to those anchors by href: no other anchor on the run-detail page
@@ -57,7 +63,28 @@ export class RunDetailPage {
     );
   }
 
+  /**
+   * Expand every collapsed test group so their rows render. The Tests-tab group
+   * list loads client-side and only auto-expands FAILING groups, so a passing
+   * group's `a[href*="/tests/"]` rows stay hidden until toggled. Waits for the
+   * (deferred) group list to load, then opens each still-collapsed group. No-op
+   * when the run has no groups (e.g. an empty run).
+   */
+  async expandTestGroups(): Promise<void> {
+    // The list is client-loaded behind a skeleton; give it room to arrive.
+    await expect(this.testGroups.first()).toBeVisible({ timeout: 15_000 });
+    const count = await this.testGroups.count();
+    for (let i = 0; i < count; i++) {
+      const header = this.testGroups.nth(i);
+      // Skip already-open groups — clicking one would collapse it.
+      if ((await header.getAttribute("aria-expanded")) === "false") {
+        await header.click();
+      }
+    }
+  }
+
   async clickFirstTest(): Promise<void> {
+    await this.expandTestGroups();
     const link = this.testRowLinks.first();
     await expect(link).toBeVisible({ timeout: 10_000 });
     await link.click();

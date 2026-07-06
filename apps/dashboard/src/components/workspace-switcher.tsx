@@ -1,6 +1,7 @@
 import { Check, ChevronsUpDown, FlaskConical, Plus } from "lucide-react";
 import { useState } from "react";
-import { Link, useRouter } from "@void/react";
+import { useRouter } from "@void/react";
+import { Link } from "@/components/ui/link";
 import { useNavigate } from "@/lib/navigate";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
 import { avatarHue } from "@/lib/avatar-hue";

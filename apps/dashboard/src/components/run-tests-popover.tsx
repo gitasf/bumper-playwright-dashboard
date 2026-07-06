@@ -3,7 +3,7 @@ import { ArrowRight } from "lucide-react";
 import type React from "react";
 import { useCallback, useState } from "react";
 import { fetch } from "void/client";
-import { Link } from "@void/react";
+import { Link, PREFETCH_REALTIME } from "@/components/ui/link";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
 import { statusLabel, statusToken } from "@/lib/status";
 
@@ -141,7 +141,11 @@ export function RunTestsPopover({
         )}
 
         <div className="px-4 py-2.5 border-t border-border bg-muted/20">
+          {/* runHref is the realtime-seeded run-detail page (useRunRoom) — tighten
+           * the prefetch reuse window to 5s so a click can't commit a stale seed
+           * (rooms have no replay; no initial-mount refresh). */}
           <Link
+            cacheFor={PREFETCH_REALTIME}
             href={runHref}
             className="inline-flex items-center gap-1 text-xs font-medium hover:underline"
           >

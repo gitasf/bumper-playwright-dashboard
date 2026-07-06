@@ -326,24 +326,3 @@ export function CommandMenu({
     </CommandDialog>
   );
 }
-
-/**
- * Global ⌘K / Ctrl+K shortcut. Toggles the command menu open. Lifted here
- * so the listener tracks the menu's open state via the setter without
- * coupling the rest of the layout to keyboard plumbing.
- */
-export function useCommandMenuShortcut(
-  setOpen: (updater: (open: boolean) => boolean) => void,
-) {
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const isK = e.key === "k" || e.key === "K";
-      if (!isK) return;
-      if (!(e.metaKey || e.ctrlKey)) return;
-      e.preventDefault();
-      setOpen((o) => !o);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [setOpen]);
-}

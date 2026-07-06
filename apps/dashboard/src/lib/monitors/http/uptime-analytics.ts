@@ -47,7 +47,8 @@ export function httpResponseTimeBuckets(opts: {
   // makes BOTH drivers parse them to numbers. This raw `runRows` path bypasses
   // Drizzle's field decoders, so the cast must live in the SQL, not `.mapWith`.
   // Hour index (~5e5) and per-hour counts/durations comfortably fit int4.
-  return runRows<ResponseTimeBucketRow>(sql`
+  return runRows<ResponseTimeBucketRow>(
+    sql`
     with ranked as (
       select
         cast("monitorExecutions"."createdAt" / 3600 as integer) as bucket,
@@ -74,7 +75,9 @@ export function httpResponseTimeBuckets(opts: {
     from ranked
     group by bucket
     order by bucket
-  `);
+  `,
+    { feature: "monitor-uptime" },
+  );
 }
 
 export interface UptimeWindowCounts {
@@ -131,7 +134,8 @@ export async function httpUptimeWindows(opts: {
         ? sql`sum(case when "monitorExecutions".state in ('pass','degraded','fail') then 1 else 0 end)`
         : sql`sum(case when "monitorExecutions"."createdAt" >= ${sinceSec} and "monitorExecutions".state in ('pass','degraded','fail') then 1 else 0 end)`,
     );
-  const row = await runRow<RawUptimeRow>(sql`
+  const row = await runRow<RawUptimeRow>(
+    sql`
     select
       ${upSum(d1)} as u1,
       ${countableSum(d1)} as c1,
@@ -143,7 +147,9 @@ export async function httpUptimeWindows(opts: {
     where "monitorExecutions"."projectId" = ${opts.scope.projectId}
       and "monitorExecutions"."monitorId" = ${opts.monitorId}
       and "monitorExecutions"."createdAt" >= ${d30}
-  `);
+  `,
+    { feature: "monitor-uptime" },
+  );
   return {
     d1: { up: row?.u1 ?? 0, countable: row?.c1 ?? 0 },
     d7: { up: row?.u7 ?? 0, countable: row?.c7 ?? 0 },

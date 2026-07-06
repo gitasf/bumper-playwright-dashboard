@@ -183,9 +183,12 @@ export class MonitorsPage {
 
   // ─── Alert controls (owner-only, detail page) ───────────────────────────────
   //
-  // The Mute/Unmute button and the alert-recipients picker are server-rendered
-  // forms that POST and redirect back to the detail page — no island. The
-  // button label is the unambiguous state signal (alerts on ⇒ "Mute alerts").
+  // The Mute/Unmute button is a server-rendered header form that POSTs and
+  // redirects back — no island. The alert-recipients picker now lives INSIDE
+  // the edit modal (a `MonitorEditDialog` island keyed off `?edit=1`): its
+  // radios/checkboxes ride in the same `updateMonitor` form as the config, so
+  // one "Save changes" persists both. The button label is the unambiguous
+  // state signal (alerts on ⇒ "Mute alerts").
 
   get muteAlertsButton(): Locator {
     return this.page.getByRole("button", { name: /^mute alerts$/i });
@@ -207,42 +210,70 @@ export class MonitorsPage {
     await expect(this.muteAlertsButton).toBeVisible();
   }
 
-  private get recipientsForm(): Locator {
-    return this.page.locator('form[action*="setAlertRecipients"]');
+  /** The "Edit" affordance (`Button render={<Link href=?edit=1>}` ⇒ role link). */
+  private get editLink(): Locator {
+    return this.page.getByRole("link", { name: /^edit$/i }).first();
+  }
+
+  /** The edit form inside the modal (config + recipients share one form). */
+  private get editForm(): Locator {
+    return this.page.locator('form[action*="updateMonitor"]');
+  }
+
+  get saveEditButton(): Locator {
+    return this.editForm.getByRole("button", { name: /save changes/i });
+  }
+
+  /**
+   * Open the edit modal. The modal's open state is keyed off `?edit=1`, which
+   * the "Edit" link navigates to; the island then hydrates and shows it. Only
+   * clicks when the form isn't already visible so a re-click can't land on the
+   * (backdrop-covered) link, and retries to ride out the hydration window.
+   */
+  async openEdit(): Promise<void> {
+    await expect(async () => {
+      if (!(await this.saveEditButton.isVisible())) {
+        await this.editLink.click();
+      }
+      await expect(this.saveEditButton).toBeVisible({ timeout: 3_000 });
+    }).toPass({ timeout: 15_000 });
   }
 
   recipientModeRadio(mode: "all" | "specific"): Locator {
-    return this.recipientsForm.locator(
+    return this.editForm.locator(
       `input[name="recipientMode"][value="${mode}"]`,
     );
   }
 
   /** The member checkbox (name="user") whose label carries `email`. */
   recipientMemberCheckbox(email: string): Locator {
-    return this.recipientsForm
+    return this.editForm
       .locator("label")
       .filter({ hasText: email })
       .getByRole("checkbox");
   }
 
-  get saveRecipientsButton(): Locator {
-    return this.recipientsForm.getByRole("button", {
-      name: /save recipients/i,
-    });
-  }
-
-  /** Pick "specific" recipients (the given member emails) and save. */
+  /**
+   * Pick "specific" recipients (the given member emails) and save. Assumes the
+   * edit modal is already open (call {@link openEdit} first). Waits for the
+   * modal to close after the save redirect.
+   */
   async setSpecificRecipients(memberEmails: string[]): Promise<void> {
     await this.recipientModeRadio("specific").check();
     for (const email of memberEmails) {
       await this.recipientMemberCheckbox(email).check();
     }
-    await this.saveRecipientsButton.click();
+    await this.saveEditButton.click();
+    await expect(this.editForm).toBeHidden();
   }
 
-  /** Reset recipients back to "All team members" and save. */
+  /**
+   * Reset recipients back to "All team members" and save. Assumes the edit
+   * modal is already open; waits for it to close after the save redirect.
+   */
   async setAllRecipients(): Promise<void> {
     await this.recipientModeRadio("all").check();
-    await this.saveRecipientsButton.click();
+    await this.saveEditButton.click();
+    await expect(this.editForm).toBeHidden();
   }
 }

@@ -6,8 +6,9 @@ import { expect, test } from "./fixtures";
  * (`monitors.alertTargets`).
  *
  * Email-independent — no send is exercised; this asserts the two settings
- * round-trip through the real `setMonitorAlertsEnabled` /
- * `setMonitorAlertTargets` writes and re-render correctly after a reload (so a
+ * round-trip through the real writes (`setMonitorAlertsEnabled` for the toggle;
+ * `updateMonitor`, which now persists `alertTargets` alongside the config, for
+ * the in-modal recipients picker) and re-render correctly after a reload (so a
  * regression in the toggle/picker form wiring or the `alertTargets`
  * serialize/parse is caught). An http (uptime) monitor is used because it
  * creates without the browser source editor; the alert chrome is shared across
@@ -51,19 +52,24 @@ test.describe("Monitor alert controls", () => {
       url: "https://example.com",
     });
 
+    // Recipients now live inside the edit modal — open it to reach the picker.
     // Default targets are null ⇒ "All team members" selected.
+    await monitorsPage.openEdit();
     await expect(monitorsPage.recipientModeRadio("all")).toBeChecked();
 
-    // Narrow to the primary user specifically, then reload and confirm both the
-    // mode and the member selection persisted (alertTargets serialize/parse).
+    // Narrow to the primary user specifically (saving closes the modal), then
+    // reopen and confirm both the mode and the member selection persisted
+    // (alertTargets serialize/parse) — reloading first to read fresh from PG.
     await monitorsPage.setSpecificRecipients([ctx.email]);
     await monitorsPage.gotoDetail(monitorId);
+    await monitorsPage.openEdit();
     await expect(monitorsPage.recipientModeRadio("specific")).toBeChecked();
     await expect(monitorsPage.recipientMemberCheckbox(ctx.email)).toBeChecked();
 
     // Reset to all members (stores null) and confirm it persisted.
     await monitorsPage.setAllRecipients();
     await monitorsPage.gotoDetail(monitorId);
+    await monitorsPage.openEdit();
     await expect(monitorsPage.recipientModeRadio("all")).toBeChecked();
   });
 });

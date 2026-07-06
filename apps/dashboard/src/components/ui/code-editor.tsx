@@ -1,10 +1,18 @@
 "use client";
 
-import { javascript } from "@codemirror/lang-javascript";
-import CodeMirror from "@uiw/react-codemirror";
 import { SquareCode } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { DeferErrorBoundary } from "@/components/defer-error-boundary";
 import { cn } from "@/lib/cn";
+
+/**
+ * The CodeMirror editor body is heavy (~180 KB gzipped with the JS grammar) and
+ * only the editable, hydrated path ever renders it — so it lives in its own
+ * module and is lazy-loaded on demand. `readOnly` editors (e.g. the monitor
+ * detail page's "Test definition" view) and the monitors list page never fetch
+ * the chunk; the create/edit form pulls it in only once the editor mounts.
+ */
+const CodeMirrorField = lazy(() => import("./code-editor-codemirror"));
 
 /**
  * Controlled code editor island for the monitor Playwright source.
@@ -18,7 +26,8 @@ import { cn } from "@/lib/cn";
  * mount, which would crash the Worker's server render. We therefore render a
  * monospace `<textarea>` (also `name`d, so the form is fully functional even
  * before/without hydration) on the server and for the first client paint, then
- * swap to CodeMirror once a `mounted` flag flips in an effect. The hidden input
+ * swap to CodeMirror once a `mounted` flag flips in an effect. It's also the
+ * `Suspense` fallback while the lazy CodeMirror chunk loads. The hidden input
  * mirrors the controlled value so whichever editor is showing, the submitted
  * field is always current.
  *
@@ -60,6 +69,18 @@ export function CodeEditor({
   const heightStyle = typeof height === "number" ? `${height}px` : height;
   const lineCount = value.length === 0 ? 1 : value.split("\n").length;
 
+  const fallback = (
+    <EditorFallback
+      ariaLabel={ariaLabel}
+      heightStyle={heightStyle}
+      lineCount={lineCount}
+      onValueChange={onValueChange}
+      placeholder={placeholder}
+      readOnly={readOnly}
+      value={value}
+    />
+  );
+
   return (
     <div
       className={cn(
@@ -89,51 +110,78 @@ export function CodeEditor({
         </span>
       </div>
 
-      {/* Editor body — CodeMirror once hydrated, else a gutter-faking textarea. */}
+      {/* Editor body — lazy CodeMirror once hydrated + editable, else the
+       * gutter-faking textarea (also the Suspense fallback during chunk load). */}
       <div className="bg-bg-0">
         {mounted && !readOnly ? (
-          <CodeMirror
-            aria-label={ariaLabel}
-            basicSetup={{
-              lineNumbers: true,
-              highlightActiveLine: true,
-              foldGutter: false,
-              autocompletion: false,
-            }}
-            extensions={[javascript({ jsx: false, typescript: true })]}
-            height={heightStyle}
-            onChange={onValueChange}
-            placeholder={placeholder}
-            style={{ background: "transparent" }}
-            theme="none"
-            value={value}
-          />
+          // Error boundary: if the lazy CodeMirror chunk fails to load (e.g. a
+          // hashed filename 404 after a redeploy while this tab was open), fall
+          // back to the fully-functional textarea instead of throwing past
+          // Suspense and blanking the form.
+          <DeferErrorBoundary fallback={fallback}>
+            <Suspense fallback={fallback}>
+              <CodeMirrorField
+                aria-label={ariaLabel}
+                height={heightStyle}
+                onValueChange={onValueChange}
+                placeholder={placeholder}
+                value={value}
+              />
+            </Suspense>
+          </DeferErrorBoundary>
         ) : (
-          <div className="flex" style={{ height: heightStyle }}>
-            {/* Line-number gutter feel. */}
-            <div
-              aria-hidden="true"
-              className="shrink-0 select-none overflow-hidden border-r border-line-1 bg-bg-1 py-3 text-right font-mono text-[12.5px] leading-5 text-fg-4"
-              style={{ width: 46 }}
-            >
-              {Array.from({ length: lineCount }, (_, i) => (
-                <div className="px-2.5" key={i}>
-                  {i + 1}
-                </div>
-              ))}
-            </div>
-            <textarea
-              aria-label={ariaLabel}
-              className="block min-w-0 flex-1 resize-none whitespace-pre bg-transparent px-3.5 py-3 font-mono text-[12.5px] leading-5 text-fg-1 outline-none placeholder:text-muted-foreground/72"
-              onChange={(e) => onValueChange(e.target.value)}
-              placeholder={placeholder}
-              readOnly={readOnly}
-              spellCheck={false}
-              value={value}
-            />
-          </div>
+          fallback
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Gutter-faking `<textarea>` — the SSR / pre-hydration / read-only view AND the
+ * `Suspense` fallback while the CodeMirror chunk loads. Fully functional (mirrors
+ * into the controlled value), so the form works even before the editor swaps in.
+ */
+function EditorFallback({
+  value,
+  onValueChange,
+  lineCount,
+  heightStyle,
+  placeholder,
+  readOnly,
+  ariaLabel,
+}: {
+  value: string;
+  onValueChange: (next: string) => void;
+  lineCount: number;
+  heightStyle: string;
+  placeholder?: string;
+  readOnly: boolean;
+  ariaLabel: string;
+}) {
+  return (
+    <div className="flex" style={{ height: heightStyle }}>
+      {/* Line-number gutter feel. */}
+      <div
+        aria-hidden="true"
+        className="shrink-0 select-none overflow-hidden border-r border-line-1 bg-bg-1 py-3 text-right font-mono text-[12.5px] leading-5 text-fg-4"
+        style={{ width: 46 }}
+      >
+        {Array.from({ length: lineCount }, (_, i) => (
+          <div className="px-2.5" key={i}>
+            {i + 1}
+          </div>
+        ))}
+      </div>
+      <textarea
+        aria-label={ariaLabel}
+        className="block min-w-0 flex-1 resize-none whitespace-pre bg-transparent px-3.5 py-3 font-mono text-[12.5px] leading-5 text-fg-1 outline-none placeholder:text-muted-foreground/72"
+        onChange={(e) => onValueChange(e.target.value)}
+        placeholder={placeholder}
+        readOnly={readOnly}
+        spellCheck={false}
+        value={value}
+      />
     </div>
   );
 }

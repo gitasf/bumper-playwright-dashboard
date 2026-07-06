@@ -1,5 +1,6 @@
 import { CheckCircle2, TriangleAlert, XCircle } from "lucide-react";
-import { Link } from "@void/react";
+import { use } from "react";
+import { Link, PREFETCH_STABLE } from "@/components/ui/link";
 import { AnalyticsButtonGroup } from "@/components/analytics/button-group";
 import {
   BucketBarChart,
@@ -8,9 +9,15 @@ import {
 import { InsightsTabs } from "@/components/analytics/insights-tabs";
 import { AnalyticsKpiCard } from "@/components/analytics/kpi-card";
 import { MetricSparkline } from "@/components/analytics/metric-sparkline";
+import { DeferredSection } from "@/components/defer-error-boundary";
 import { PageHeader } from "@/components/page-header";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import {
+  ChartSkeleton,
+  KpiCardSkeleton,
+  TablePaginationFooterSkeleton,
+} from "@/components/skeletons";
 import { TablePaginationFooter } from "@/components/table-pagination-footer";
 import { Card, CardPanel } from "@/components/ui/card";
 import {
@@ -19,6 +26,7 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -36,9 +44,11 @@ import type { BottleneckRow, Props } from "./slowest-tests.server";
 const HIST_BINS = 20;
 
 /**
- * Slowest tests page. Two views composed:
- *   - Top: 20-bin histogram of test durations over the selected window.
- *   - Bottom: paginated table of testIds ranked by p95 (avg, runs, 7d trend).
+ * Slowest tests page. The header, tabs, filters, the "Tests tracked" KPI and
+ * the pagination shell paint immediately from the cheap eager `totals` +
+ * `branches`. The two heavy regions — the duration histogram and the ranked
+ * bottlenecks table (+ its p95 KPIs and 7-day sparklines) — each stream in
+ * behind their own skeleton via `defer()`. See the server module for the split.
  */
 export default function SlowestTestsPage({
   project,
@@ -50,48 +60,15 @@ export default function SlowestTestsPage({
   currentPage,
   totalPages,
   fromRow,
-  toRow,
+  offset,
+  pageSize,
   totals,
   bucketMs,
   histogram,
-  bottlenecks,
-  sparklines,
+  slowest,
   pathname,
   ranges,
 }: Props) {
-  const base = `/t/${project.teamSlug}/p/${project.slug}`;
-  const topBin = HIST_BINS - 1;
-
-  const histByBin = new Map(histogram.map((r) => [r.bin, r.cnt]));
-  const histBuckets: BucketBarChartBucket[] = Array.from(
-    { length: HIST_BINS },
-    (_, i) => {
-      const cnt = histByBin.get(i) ?? 0;
-      const loMs = i * bucketMs;
-      const hiMs = (i + 1) * bucketMs;
-      const label =
-        i === topBin ? `${formatDuration(loMs)}+` : formatDuration(loMs);
-      return {
-        key: String(i),
-        label,
-        segments: [{ count: cnt, color: "var(--color-primary)" }],
-        total: cnt,
-        tooltip: (
-          <>
-            <div className="mb-1 font-mono text-[10px] text-muted-foreground">
-              {i === topBin
-                ? `${formatDuration(loMs)}+`
-                : `${formatDuration(loMs)} – ${formatDuration(hiMs)}`}
-            </div>
-            <div className="font-mono text-xs">
-              {cnt.toLocaleString()} test{cnt === 1 ? "" : "s"}
-            </div>
-          </>
-        ),
-      };
-    },
-  );
-
   const { with: hrefWith, pageHref } = makeHrefBuilder(pathname, {
     range,
     branch: branchParam,
@@ -99,15 +76,19 @@ export default function SlowestTestsPage({
     page: currentPage > 1 ? String(currentPage) : null,
   });
 
-  // KPI summary across the ranked window.
-  const topRow = bottlenecks[0];
-  const p95Values = bottlenecks
-    .map((b) => b.p95)
-    .filter((v): v is number => v != null);
-  const avgP95 =
-    p95Values.length === 0
-      ? null
-      : p95Values.reduce((s, v) => s + v, 0) / p95Values.length;
+  // A deferred region that fails latches its error boundary; clear it when the
+  // filters/page change so the SPA-nav re-fetch re-attempts the region.
+  const resetKey = `${range}:${branchParam ?? ""}:${q}:${currentPage}`;
+
+  // Reserve the exact number of skeleton rows the resolved bottlenecks table
+  // will render — the page size, clamped to the rows left on the last page
+  // (0 → the Empty state). `totals.totalUniqueTests` is eager and already
+  // reflects the active branch/search filter, so the skeleton row count can't
+  // drift from what streams in.
+  const bottlenecksRowCount = Math.min(
+    pageSize,
+    Math.max(0, totals.totalUniqueTests - offset),
+  );
 
   return (
     <>
@@ -143,18 +124,12 @@ export default function SlowestTestsPage({
             label="Tests tracked"
             value={totals.totalUniqueTests.toLocaleString()}
           />
-          <AnalyticsKpiCard
-            footnote={topRow?.title ?? "—"}
-            label="Slowest test (p95)"
-            value={
-              topRow?.p95 == null ? "—" : formatDuration(Math.round(topRow.p95))
-            }
-          />
-          <AnalyticsKpiCard
-            footnote="Across the ranked window"
-            label="Average p95"
-            value={avgP95 == null ? "—" : formatDuration(Math.round(avgP95))}
-          />
+          <DeferredSection resetKey={resetKey} skeleton={<KpiCardSkeleton />}>
+            <SlowestTestKpi slowest={slowest} />
+          </DeferredSection>
+          <DeferredSection resetKey={resetKey} skeleton={<KpiCardSkeleton />}>
+            <AverageP95Kpi slowest={slowest} />
+          </DeferredSection>
         </div>
 
         <Card className="overflow-hidden rounded-[9px] border-line-1">
@@ -176,12 +151,12 @@ export default function SlowestTestsPage({
             </span>
           </div>
           <CardPanel className="px-[18px] py-4">
-            <BucketBarChart
-              ariaLabel="Execution time distribution histogram"
-              buckets={histBuckets}
-              emptyState="No runs in this window."
-              height={200}
-            />
+            <DeferredSection
+              resetKey={resetKey}
+              skeleton={<ChartSkeleton height={200} />}
+            >
+              <HistogramChart bucketMs={bucketMs} histogram={histogram} />
+            </DeferredSection>
           </CardPanel>
         </Card>
 
@@ -189,7 +164,7 @@ export default function SlowestTestsPage({
           <div className="flex items-center justify-between gap-4 border-b border-line-1 px-[18px] py-3">
             <div className="min-w-0">
               <h2 className="text-[13px] font-semibold tracking-tight">
-                Top {bottlenecks.length} slowest tests
+                Slowest tests
               </h2>
               <p className="mt-0.5 text-[11.5px] text-fg-3">
                 {totals.totalUniqueTests.toLocaleString()} unique test
@@ -210,138 +185,359 @@ export default function SlowestTestsPage({
               />
             </form>
           </div>
-          <CardPanel className="pt-0">
-            {bottlenecks.length === 0 ? (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyTitle>No tests in this window</EmptyTitle>
-                  <EmptyDescription>
-                    {q
-                      ? `No tests match "${q}". Try a wider window or clear the filter.`
-                      : `No runs with recorded durations in the selected window${
-                          branchFilter ? ` on ${branchFilter}` : ""
-                        }.`}
-                  </EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            ) : (
-              <Table className="table-fixed">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-10 px-4" />
-                    <TableHead className="px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-                      Test
-                    </TableHead>
-                    <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-                      Avg
-                    </TableHead>
-                    <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-                      P95
-                    </TableHead>
-                    <TableHead className="w-[120px] px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-                      Trend
-                    </TableHead>
-                    <TableHead className="w-[80px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-                      Runs
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {bottlenecks.map((row) => {
-                    const tone = rowTone(row);
-                    // Link to the test-level history page (stable testId), not
-                    // the latest run's result — mirrors the tests catalog.
-                    const href = `${base}/tests/${row.testId}`;
-                    const spark = sparklines[row.testId] ?? [];
-                    return (
-                      <TableRow key={row.testId}>
-                        <TableCell className="w-10 px-4 py-3 align-middle">
-                          {/* Stretched-link pattern — `<Link>` is
-                           * position: static so its `after:inset-0`
-                           * pseudo fills the TableRow (which is
-                           * `relative`). Whole row = click target. */}
-                          <Link
-                            className="flex items-center justify-center focus-visible:outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring"
-                            href={href}
-                          >
-                            <span className="sr-only">
-                              View {row.title ?? row.testId}
-                            </span>
-                            <tone.Icon
-                              size={16}
-                              style={{ color: tone.iconColor }}
-                            />
-                          </Link>
-                        </TableCell>
-                        <TableCell className="px-4 py-3 align-middle">
-                          <div className="min-w-0">
-                            <div
-                              className="truncate text-[13px] text-foreground"
-                              title={row.title ?? row.testId}
-                            >
-                              {row.title ?? row.testId}
-                            </div>
-                            <div
-                              className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground"
-                              title={row.file ?? ""}
-                            >
-                              {row.file ?? ""}
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="w-[100px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-foreground">
-                          {row.avgDur === null
-                            ? "—"
-                            : formatDuration(Math.round(row.avgDur))}
-                        </TableCell>
-                        <TableCell
-                          className={cn(
-                            "w-[100px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums font-medium",
-                            tone.p95Text,
-                          )}
-                        >
-                          {row.p95 === null
-                            ? "—"
-                            : formatDuration(Math.round(row.p95))}
-                        </TableCell>
-                        <TableCell className="w-[120px] px-4 py-3 align-middle">
-                          <MetricSparkline
-                            area={false}
-                            ariaLabel="7-day duration trend"
-                            className="mx-auto"
-                            color={tone.sparkColor}
-                            height={20}
-                            points={spark.map((p) => ({
-                              x: p.day,
-                              y: p.avg,
-                            }))}
-                            width={80}
-                          />
-                        </TableCell>
-                        <TableCell className="w-[80px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-muted-foreground">
-                          {row.n.toLocaleString()}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            )}
-          </CardPanel>
-          {bottlenecks.length > 0 && (
-            <TablePaginationFooter
-              fromRow={fromRow}
-              toRow={toRow}
-              totalCount={totals.totalUniqueTests}
+          <DeferredSection
+            resetKey={resetKey}
+            skeleton={
+              <BottlenecksSkeleton
+                rowCount={bottlenecksRowCount}
+                totalPages={totalPages}
+              />
+            }
+          >
+            <BottlenecksSection
+              branchFilter={branchFilter}
               currentPage={currentPage}
-              totalPages={totalPages}
-              itemNoun="test"
+              fromRow={fromRow}
               pageHref={pageHref}
-              className="border-border/50"
+              project={project}
+              q={q}
+              slowest={slowest}
+              totalPages={totalPages}
+              totals={totals}
             />
-          )}
+          </DeferredSection>
         </Card>
       </div>
+    </>
+  );
+}
+
+function SlowestTestKpi({ slowest }: { slowest: Props["slowest"] }) {
+  const { bottlenecks } = use(slowest);
+  const topRow = bottlenecks[0];
+  return (
+    <AnalyticsKpiCard
+      footnote={topRow?.title ?? "—"}
+      label="Slowest test (p95)"
+      value={topRow?.p95 == null ? "—" : formatDuration(Math.round(topRow.p95))}
+    />
+  );
+}
+
+function AverageP95Kpi({ slowest }: { slowest: Props["slowest"] }) {
+  const { bottlenecks } = use(slowest);
+  const p95Values = bottlenecks
+    .map((b) => b.p95)
+    .filter((v): v is number => v != null);
+  const avgP95 =
+    p95Values.length === 0
+      ? null
+      : p95Values.reduce((s, v) => s + v, 0) / p95Values.length;
+  return (
+    <AnalyticsKpiCard
+      footnote="Across the ranked window"
+      label="Average p95"
+      value={avgP95 == null ? "—" : formatDuration(Math.round(avgP95))}
+    />
+  );
+}
+
+function HistogramChart({
+  histogram,
+  bucketMs,
+}: {
+  histogram: Props["histogram"];
+  bucketMs: number;
+}) {
+  const rows = use(histogram);
+  const topBin = HIST_BINS - 1;
+  const histByBin = new Map(rows.map((r) => [r.bin, r.cnt]));
+  const histBuckets: BucketBarChartBucket[] = Array.from(
+    { length: HIST_BINS },
+    (_, i) => {
+      const cnt = histByBin.get(i) ?? 0;
+      const loMs = i * bucketMs;
+      const hiMs = (i + 1) * bucketMs;
+      const label =
+        i === topBin ? `${formatDuration(loMs)}+` : formatDuration(loMs);
+      return {
+        key: String(i),
+        label,
+        segments: [{ count: cnt, color: "var(--color-primary)" }],
+        total: cnt,
+        tooltip: (
+          <>
+            <div className="mb-1 font-mono text-[10px] text-muted-foreground">
+              {i === topBin
+                ? `${formatDuration(loMs)}+`
+                : `${formatDuration(loMs)} – ${formatDuration(hiMs)}`}
+            </div>
+            <div className="font-mono text-xs">
+              {cnt.toLocaleString()} test{cnt === 1 ? "" : "s"}
+            </div>
+          </>
+        ),
+      };
+    },
+  );
+
+  return (
+    <BucketBarChart
+      ariaLabel="Execution time distribution histogram"
+      buckets={histBuckets}
+      emptyState="No runs in this window."
+      height={200}
+    />
+  );
+}
+
+/** Shared 6-column header used by the bottlenecks table and its skeleton, so
+ *  the fixed column widths can't drift between states. */
+function BottlenecksTableHead() {
+  return (
+    <TableHeader>
+      <TableRow>
+        <TableHead className="w-10 px-4" />
+        <TableHead className="px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+          Test
+        </TableHead>
+        <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+          Avg
+        </TableHead>
+        <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+          P95
+        </TableHead>
+        <TableHead className="w-[120px] px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+          Trend
+        </TableHead>
+        <TableHead className="w-[80px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+          Runs
+        </TableHead>
+      </TableRow>
+    </TableHeader>
+  );
+}
+
+function BottlenecksSection({
+  slowest,
+  project,
+  totals,
+  branchFilter,
+  q,
+  currentPage,
+  totalPages,
+  fromRow,
+  pageHref,
+}: {
+  slowest: Props["slowest"];
+  project: Props["project"];
+  totals: Props["totals"];
+  branchFilter: Props["branchFilter"];
+  q: string;
+  currentPage: number;
+  totalPages: number;
+  fromRow: number;
+  pageHref: (page: number) => string;
+}) {
+  const { bottlenecks, sparklines, toRow } = use(slowest);
+  const base = `/t/${project.teamSlug}/p/${project.slug}`;
+
+  return (
+    <>
+      <CardPanel className="pt-0">
+        {bottlenecks.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyTitle>No tests in this window</EmptyTitle>
+              <EmptyDescription>
+                {q
+                  ? `No tests match "${q}". Try a wider window or clear the filter.`
+                  : `No runs with recorded durations in the selected window${
+                      branchFilter ? ` on ${branchFilter}` : ""
+                    }.`}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <Table className="table-fixed">
+            <BottlenecksTableHead />
+            <TableBody>
+              {bottlenecks.map((row) => {
+                const tone = rowTone(row);
+                // Link to the test-level history page (stable testId), not
+                // the latest run's result — mirrors the tests catalog.
+                const href = `${base}/tests/${row.testId}`;
+                const spark = sparklines[row.testId] ?? [];
+                return (
+                  <TableRow key={row.testId}>
+                    <TableCell className="w-10 px-4 py-3 align-middle">
+                      {/* Stretched-link pattern — `<Link>` is
+                       * position: static so its `after:inset-0`
+                       * pseudo fills the TableRow (which is
+                       * `relative`). Whole row = click target. */}
+                      <Link
+                        cacheFor={PREFETCH_STABLE}
+                        className="flex items-center justify-center focus-visible:outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring"
+                        href={href}
+                      >
+                        <span className="sr-only">
+                          View {row.title ?? row.testId}
+                        </span>
+                        <tone.Icon
+                          size={16}
+                          style={{ color: tone.iconColor }}
+                        />
+                      </Link>
+                    </TableCell>
+                    <TableCell className="px-4 py-3 align-middle">
+                      <div className="min-w-0">
+                        <div
+                          className="truncate text-[13px] text-foreground"
+                          title={row.title ?? row.testId}
+                        >
+                          {row.title ?? row.testId}
+                        </div>
+                        <div
+                          className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground"
+                          title={row.file ?? ""}
+                        >
+                          {row.file ?? ""}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="w-[100px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-foreground">
+                      {row.avgDur === null
+                        ? "—"
+                        : formatDuration(Math.round(row.avgDur))}
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        "w-[100px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums font-medium",
+                        tone.p95Text,
+                      )}
+                    >
+                      {row.p95 === null
+                        ? "—"
+                        : formatDuration(Math.round(row.p95))}
+                    </TableCell>
+                    <TableCell className="w-[120px] px-4 py-3 align-middle">
+                      <MetricSparkline
+                        area={false}
+                        ariaLabel="7-day duration trend"
+                        className="mx-auto"
+                        color={tone.sparkColor}
+                        height={20}
+                        points={spark.map((p) => ({
+                          x: p.day,
+                          y: p.avg,
+                        }))}
+                        width={80}
+                      />
+                    </TableCell>
+                    <TableCell className="w-[80px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-muted-foreground">
+                      {row.n.toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </CardPanel>
+      {bottlenecks.length > 0 && (
+        <TablePaginationFooter
+          className="border-border/50"
+          currentPage={currentPage}
+          fromRow={fromRow}
+          itemNoun="test"
+          pageHref={pageHref}
+          toRow={toRow}
+          totalCount={totals.totalUniqueTests}
+          totalPages={totalPages}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * Suspense fallback matching the bottlenecks table. `rowCount` is the exact
+ * number of rows the resolved page will show (page size clamped to the last
+ * page), so the table doesn't grow or collapse on resolve; `rowCount === 0`
+ * mirrors `BottlenecksSection`'s Empty branch (no table, no footer). Table
+ * cells inherit `leading-none` (line-height 1) from `TableCell`, so the Test
+ * cell reserves `h-[13px]` + `h-[11px]` (its `text-[13px]`/`text-[11px]` lines,
+ * NOT their 1.5× line boxes) for a 26px content stack, matching the real row.
+ * The footer placeholder reserves `TablePaginationFooter`'s box, which the old
+ * skeleton omitted entirely (the footer popped in below the table on resolve).
+ */
+function BottlenecksSkeleton({
+  rowCount,
+  totalPages,
+}: {
+  rowCount: number;
+  totalPages: number;
+}) {
+  if (rowCount === 0) {
+    // Matches BottlenecksSection's Empty branch: no table, no footer.
+    return (
+      <CardPanel className="pt-0">
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>
+              <Skeleton className="h-7 w-44" />
+            </EmptyTitle>
+            <EmptyDescription>
+              <Skeleton className="mt-1 h-5 w-64" />
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </CardPanel>
+    );
+  }
+
+  return (
+    <>
+      <CardPanel className="pt-0">
+        <Table className="table-fixed">
+          <BottlenecksTableHead />
+          <TableBody>
+            {Array.from({ length: rowCount }, (_, i) => (
+              <TableRow key={i}>
+                <TableCell className="w-10 px-4 py-3 align-middle">
+                  <Skeleton className="mx-auto h-4 w-4 rounded-full" />
+                </TableCell>
+                <TableCell className="px-4 py-3 align-middle">
+                  {/* leading-none: text-[13px] + mt-0.5 + text-[11px] = 26px */}
+                  <div className="min-w-0">
+                    <Skeleton className="h-[13px] w-2/3" />
+                    <Skeleton className="mt-0.5 h-[11px] w-1/2" />
+                  </div>
+                </TableCell>
+                <TableCell className="w-[100px] px-4 py-3 align-middle">
+                  <Skeleton className="ml-auto h-3 w-12" />
+                </TableCell>
+                <TableCell className="w-[100px] px-4 py-3 align-middle">
+                  <Skeleton className="ml-auto h-3 w-12" />
+                </TableCell>
+                <TableCell className="w-[120px] px-4 py-3 align-middle">
+                  <Skeleton className="mx-auto h-5 w-20" />
+                </TableCell>
+                <TableCell className="w-[80px] px-4 py-3 align-middle">
+                  <Skeleton className="ml-auto h-3 w-8" />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardPanel>
+      {/* Mirrors the real footer (which passes className="border-border/50");
+       * the page-number strip only appears when totalPages > 1, so this lands at
+       * ~57px (multi-page) / ~41px (single page), same as the resolved footer. */}
+      <TablePaginationFooterSkeleton
+        className="border-border/50"
+        showPager={totalPages > 1}
+      />
     </>
   );
 }

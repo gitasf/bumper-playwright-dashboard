@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
  *
  *  1. `buildAuditRow` — the PURE row-shape builder. Pins the action constant,
  *     actor, the projectId/targetType/targetId defaults, and the one-place
- *     metadata JSON serialization. No DB, no request context.
+ *     metadata (stored as a jsonb object). No DB, no request context.
  *
  *  2. `recordAudit` — the best-effort writer. The hard contract: a failed audit
  *     write must NEVER propagate (it can't be allowed to break the invite / key /
@@ -94,7 +94,7 @@ describe("buildAuditRow (pure row shape)", () => {
     expect(row.metadata).toBeNull();
   });
 
-  it("serializes the metadata bag to a JSON string in one place", () => {
+  it("stores the metadata bag as an object (jsonb column, no stringify)", () => {
     const row = buildAuditRow("u", {
       teamId: "team_1",
       action: AUDIT_ACTIONS.MEMBER_ROLE_CHANGE,
@@ -104,7 +104,7 @@ describe("buildAuditRow (pure row shape)", () => {
     });
     expect(row.targetType).toBe("member");
     expect(row.targetId).toBe("user_2");
-    expect(row.metadata).toBe('{"role":"viewer"}');
+    expect(row.metadata).toEqual({ role: "viewer" });
   });
 
   it("passes the supplied projectId straight through", () => {
@@ -131,7 +131,7 @@ describe("recordAudit (best-effort writer)", () => {
     expect(row.actorUserId).toBe("user_actor_1");
     expect(row.action).toBe("invite.mint");
     expect(row.targetId).toBe("a@b.com");
-    expect(row.metadata).toBe('{"role":"member"}');
+    expect(row.metadata).toEqual({ role: "member" });
     expect(loggerError).not.toHaveBeenCalled();
   });
 

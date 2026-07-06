@@ -142,6 +142,10 @@ test.describe("Realtime UI updates (void/ws rooms)", () => {
       await appendResults(request, ctx.apiKey, runId, [
         { testId: "f-1", title: "f1", status: "failed" },
       ]);
+      // The tab paginates by group: the live rows land in a group whose header
+      // streams in on the throttled skeleton refresh. Expand it (idempotent for
+      // the auto-expanded failing group) so all three rows render, then assert.
+      await runDetailPage.expandTestGroups();
       await expect(runDetailPage.testRowLinks).toHaveCount(3);
 
       // Published SUMMARY snapshot drives the header OutcomeBar (role=img whose

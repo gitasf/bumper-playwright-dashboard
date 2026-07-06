@@ -1,4 +1,4 @@
-import { and, db, eq, inArray, lt } from "void/db";
+import { and, db, eq, inArray, lt, sql } from "void/db";
 import { artifacts, projects, teams, testResults } from "@schema";
 import { deleteArtifactObjectsByKeys } from "@/lib/artifacts";
 import { runBatch } from "@/lib/db-batch";
@@ -69,7 +69,11 @@ export interface RetentionSweepResult {
 export interface SweepBudget {
   /** Whether the drain may start another chunk (time + chunk-count headroom). */
   hasRemaining(): boolean;
-  /** Record that one drain chunk (one project's per-round sweep) ran. */
+  /**
+   * Record that one PRODUCTIVE drain chunk (a per-project sweep that deleted
+   * rows) ran. Idle sweeps don't call this — the chunk ceiling bounds real work,
+   * not idle probes (which are bounded by the wall-clock deadline).
+   */
   recordChunk(): void;
 }
 
@@ -110,6 +114,15 @@ export function createSweepBudget(opts: {
  * fake budget, mirroring `drainStaleRuns` in ingest.ts. Round-robin (one chunk
  * per project per round) rather than draining each project to completion keeps a
  * single huge project from starving the others within one invocation.
+ *
+ * The budget's chunk ceiling is charged ONLY for a PRODUCTIVE chunk (one that
+ * actually deleted rows) — an idle project (nothing eligible) costs its two probe
+ * SELECTs but does NOT consume a chunk. Without this, a deployment with more
+ * projects than the chunk ceiling had its budget eaten by idle probes on the head
+ * of the list, so the tail was swept LATE or never (unbounded-retention bug for
+ * those tenants). The wall-clock deadline (still checked every project) remains
+ * the hard bound that terminates an all-idle-but-slow scan. Fairness across
+ * invocations is provided by `sweepRetention`'s randomized project order.
  */
 export async function drainRetention<P>(
   projectList: readonly P[],
@@ -130,12 +143,15 @@ export async function drainRetention<P>(
       // immediately rather than finishing the round.
       if (!budget.hasRemaining()) break;
       const chunk = await sweepOne(project);
-      budget.recordChunk();
       total.artifactsDeleted += chunk.artifactsDeleted;
       total.artifactObjectsDeleted += chunk.artifactObjectsDeleted;
       total.testResultsDeleted += chunk.testResultsDeleted;
-      if (chunk.artifactsDeleted > 0 || chunk.testResultsDeleted > 0)
+      // Charge the chunk ceiling only when the chunk did real work; an idle
+      // project must not consume the budget (see docstring).
+      if (chunk.artifactsDeleted > 0 || chunk.testResultsDeleted > 0) {
+        budget.recordChunk();
         progressed = true;
+      }
     }
   }
 
@@ -248,8 +264,10 @@ async function sweepProjectTestResults(
  *
  * The drain loop + budget accounting live in `drainRetention` (pure, tested);
  * this just wires the real per-project chunk (both axes) into it. The budget
- * charges one chunk per call, so there is no subrequest cost model to keep in
- * sync with the helper bodies.
+ * charges one chunk per PRODUCTIVE call (a chunk that deleted rows), so there is
+ * no subrequest cost model to keep in sync with the helper bodies, and idle
+ * projects don't burn the budget. The project scan is randomly ordered so no
+ * fixed head of the list monopolizes the budget across the 6-hour passes.
  */
 export async function sweepRetention(opts: {
   now: number;
@@ -265,7 +283,16 @@ export async function sweepRetention(opts: {
       retentionTestResultsDays: teams.retentionTestResultsDays,
     })
     .from(projects)
-    .innerJoin(teams, eq(teams.id, projects.teamId));
+    .innerJoin(teams, eq(teams.id, projects.teamId))
+    // Randomize the scan order every invocation. The previous query had NO
+    // ORDER BY, so Postgres returned projects in a stable physical order and the
+    // budget-bounded drain always started at the same head — beyond the chunk
+    // budget the SAME tail of projects was swept LATE or never every 6-hour pass
+    // (an unbounded-retention violation for those tenants). Random order gives
+    // every project a fair chance across passes; combined with `drainRetention`
+    // only charging the budget for PRODUCTIVE chunks, the productive budget is
+    // spent on projects that actually have eligible rows, not idle head probes.
+    .orderBy(sql`random()`);
 
   return drainRetention(
     projectRows,

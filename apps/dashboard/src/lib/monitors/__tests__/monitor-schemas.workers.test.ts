@@ -137,21 +137,22 @@ describe("TcpMonitorConfigSchema — port + timeout bounds", () => {
   });
 });
 
+// The config/detail columns are `jsonb`, so the parsers take the already-parsed
+// value (an object/null), not a JSON string.
 describe("parseTcpMonitorConfig", () => {
-  it("parses valid stored JSON", () => {
-    const config = parseTcpMonitorConfig(
-      JSON.stringify({ host: "db.example.com", port: 5432 }),
-    );
+  it("parses a valid stored config object", () => {
+    const config = parseTcpMonitorConfig({
+      host: "db.example.com",
+      port: 5432,
+    });
     expect(config?.host).toBe("db.example.com");
     expect(config?.port).toBe(5432);
   });
 
-  it("returns null for null / malformed / invalid (incl. a blocked host)", () => {
+  it("returns null for null / non-object / invalid (incl. a blocked host)", () => {
     expect(parseTcpMonitorConfig(null)).toBe(null);
-    expect(parseTcpMonitorConfig("{not json")).toBe(null);
-    expect(
-      parseTcpMonitorConfig(JSON.stringify({ host: "127.0.0.1", port: 5432 })),
-    ).toBe(null);
+    expect(parseTcpMonitorConfig("not an object")).toBe(null);
+    expect(parseTcpMonitorConfig({ host: "127.0.0.1", port: 5432 })).toBe(null);
   });
 });
 
@@ -163,13 +164,11 @@ describe("TcpResultDetail round-trip", () => {
       timings: { connectMs: 12, totalMs: 14 },
     };
     expect(TcpResultDetailSchema.safeParse(detail).success).toBe(true);
-    expect(parseTcpResultDetail(JSON.stringify(detail))).toEqual(detail);
+    expect(parseTcpResultDetail(detail)).toEqual(detail);
     expect(parseTcpResultDetail(null)).toBe(null);
-    expect(parseTcpResultDetail("{not json")).toBe(null);
+    expect(parseTcpResultDetail("not an object")).toBe(null);
     // Missing nested timings → degrades to null, never throws.
-    expect(parseTcpResultDetail(JSON.stringify({ host: "x", port: 1 }))).toBe(
-      null,
-    );
+    expect(parseTcpResultDetail({ host: "x", port: 1 })).toBe(null);
   });
 });
 
@@ -294,18 +293,14 @@ describe("AssertionSchema — per-source validation table", () => {
 });
 
 describe("parseHttpMonitorConfig", () => {
-  it("parses valid stored JSON", () => {
-    const config = parseHttpMonitorConfig(
-      JSON.stringify({ url: "https://example.com" }),
-    );
+  it("parses a valid stored config object", () => {
+    const config = parseHttpMonitorConfig({ url: "https://example.com" });
     expect(config?.url).toBe("https://example.com");
   });
 
-  it("returns null for null / malformed / invalid", () => {
+  it("returns null for null / non-object / invalid", () => {
     expect(parseHttpMonitorConfig(null)).toBe(null);
-    expect(parseHttpMonitorConfig("{not json")).toBe(null);
-    expect(parseHttpMonitorConfig(JSON.stringify({ url: "ftp://x" }))).toBe(
-      null,
-    );
+    expect(parseHttpMonitorConfig("not an object")).toBe(null);
+    expect(parseHttpMonitorConfig({ url: "ftp://x" })).toBe(null);
   });
 });

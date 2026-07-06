@@ -38,8 +38,8 @@ export const POST = defineHandler(async (c) => {
   // Reserve the synthetic-monitor label namespace. The orphaned-key sweeper
   // (`sweep-synthetic-keys`) identifies its keys solely by this label prefix and
   // hard-deletes them once aged out, so a user key sharing the prefix would be
-  // silently destroyed. SQLite `LIKE` is ASCII-case-insensitive, so reject
-  // case-insensitively to match what the sweeper would catch.
+  // silently destroyed. Fold case in JS and reject case-insensitively so no
+  // casing of the reserved prefix can slip through and later be reaped.
   if (label.toLowerCase().startsWith(SYNTHETIC_KEY_LABEL_PREFIX)) {
     return c.json(
       {

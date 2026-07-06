@@ -21,6 +21,8 @@ test.describe("Run detail", () => {
     await runsListPage.goto();
     const runId = await runsListPage.firstRunId();
     await runDetailPage.goto(runId);
+    // Rows live inside paginated-by-group sections; expand them so a row renders.
+    await runDetailPage.expandTestGroups();
     await expect(runDetailPage.testRowLinks.first()).toBeVisible({
       timeout: 10_000,
     });

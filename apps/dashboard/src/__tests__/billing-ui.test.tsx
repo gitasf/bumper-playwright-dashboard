@@ -39,6 +39,24 @@ const { ManageButton, UpgradeButton } =
   await import("../../pages/settings/teams/[teamSlug]/billing-actions");
 type Props = Parameters<typeof SettingsTeamBillingPage>[0];
 
+// The plan panel now reads a deferred `billingDetail` via React's `use()`. Build
+// a synchronously-*fulfilled* thenable (status/value set, the tracked-promise
+// convention `use()` honors) so the read resolves inline without suspending —
+// keeps these render tests synchronous.
+function fulfilledBillingDetail(
+  billing: TeamBilling,
+  periodEndLabel: string | null,
+): Props["billingDetail"] {
+  const value = { billing, priceLabel: "$10/mo", periodEndLabel };
+  const thenable = Promise.resolve(value) as Promise<typeof value> & {
+    status: string;
+    value: typeof value;
+  };
+  thenable.status = "fulfilled";
+  thenable.value = value;
+  return thenable as unknown as Props["billingDetail"];
+}
+
 function makeProps(
   over: {
     billingEnabled?: boolean;
@@ -60,11 +78,9 @@ function makeProps(
   };
   return {
     team: { id: "team_1", slug: "acme", name: "Acme Inc", role: "owner" },
-    billing,
     billingEnabled: over.billingEnabled ?? true,
-    priceLabel: "$10/mo",
-    periodEndLabel: over.periodEndLabel ?? null,
     checkoutSuccess: over.checkoutSuccess ?? false,
+    billingDetail: fulfilledBillingDetail(billing, over.periodEndLabel ?? null),
   };
 }
 

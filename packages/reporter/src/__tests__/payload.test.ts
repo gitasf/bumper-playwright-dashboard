@@ -193,6 +193,19 @@ describe("buildOpenRunPayload", () => {
       buildOpenRunPayload({ ...META, idempotencyKey: "" }, []),
     ).toThrow(/idempotencyKey/);
   });
+
+  it("carries a top-level shard when supplied (sharded suite)", () => {
+    const payload = buildOpenRunPayload(
+      { ...META, shard: { index: 2, total: 4 } },
+      [],
+    );
+    expect(payload.shard).toEqual({ index: 2, total: 4 });
+  });
+
+  it("omits shard entirely when not supplied (non-sharded)", () => {
+    const payload = buildOpenRunPayload(META, []);
+    expect("shard" in payload).toBe(false);
+  });
 });
 
 describe("buildCompleteRunPayload", () => {
@@ -200,6 +213,16 @@ describe("buildCompleteRunPayload", () => {
     expect(buildCompleteRunPayload("passed", 1234)).toEqual({
       status: "passed",
       durationMs: 1234,
+    });
+  });
+
+  it("includes shard coordinates when supplied", () => {
+    expect(
+      buildCompleteRunPayload("failed", 500, { index: 3, total: 8 }),
+    ).toEqual({
+      status: "failed",
+      durationMs: 500,
+      shard: { index: 3, total: 8 },
     });
   });
 });

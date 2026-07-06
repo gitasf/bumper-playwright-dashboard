@@ -49,8 +49,9 @@ test.describe("Test Replay (embedded trace viewer)", () => {
     const runId = await runsListPage.firstRunId();
     await runDetailPage.goto(runId);
 
-    // The button renders only for rows whose test has a trace (the loader's
-    // `tracedTestIds`); the failures run has at least one.
+    // The button renders only for rows whose test has a trace (the row page's
+    // `hasTrace`); the worst (failing) group auto-expands on first paint, so its
+    // rows load without a manual expand and the failures run has at least one.
     const replay = page.getByRole("button", { name: /test replay/i }).first();
     await expect(replay).toBeVisible({ timeout: 10_000 });
 

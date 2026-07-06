@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus, X } from "lucide-react";
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,6 +56,12 @@ export interface HttpMonitorFormProps {
   defaultEnabled?: boolean;
   cancelHref?: string;
   limitReached?: boolean;
+  /**
+   * Optional slot rendered just above the actions footer, inside the same
+   * `<form>` — the edit surface passes the alert-recipient fields here so one
+   * "Save changes" persists the config and its recipients together.
+   */
+  recipients?: React.ReactNode;
 }
 
 /** Human labels for the assertion vocabulary (kept terse + technical). */
@@ -91,6 +97,7 @@ export function HttpMonitorForm({
   defaultEnabled = true,
   cancelHref,
   limitReached = false,
+  recipients,
 }: HttpMonitorFormProps) {
   const [enabled, setEnabled] = useState(defaultEnabled);
   const [followRedirects, setFollowRedirects] = useState(
@@ -316,6 +323,8 @@ export function HttpMonitorForm({
           </Button>
         )}
       </div>
+
+      {recipients}
 
       {/* Enabled toggle + actions. */}
       <div className="mt-0.5 flex items-center gap-3 border-t border-line-1 pt-4">

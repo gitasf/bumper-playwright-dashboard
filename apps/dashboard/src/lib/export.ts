@@ -340,17 +340,20 @@ export async function buildRunTestsCsv(
         cursor,
         limit: 1,
         status: null,
+        skipOwnershipCheck: true,
       });
       truncated = (probe?.results.length ?? 0) > 0;
       break;
     }
     const limit = Math.min(EXPORT_PAGE_SIZE, remaining);
+    // Ownership was confirmed by the up-front probe above, so skip the per-page
+    // re-probe (this loop can run many pages) — `page` is always non-null here.
     const page = await loadRunResultsPage(scope, runId, {
       cursor,
       limit,
       status: null,
+      skipOwnershipCheck: true,
     });
-    // page is non-null: we already confirmed ownership above.
     if (!page) break;
     for (const t of page.results) {
       body += csvRow(testCsvCells(t)) + "\r\n";

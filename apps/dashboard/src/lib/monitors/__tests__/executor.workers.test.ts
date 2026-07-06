@@ -218,6 +218,75 @@ describe("runMonitorJob", () => {
     });
   });
 
+  it("fires the alert on a REAL outcome, with the prior status for classification", async () => {
+    const alert = vi.fn<NonNullable<RunMonitorJobDeps["alert"]>>(() =>
+      Promise.resolve(),
+    );
+    // The monitor's CURRENT lastStatus is the PRIOR result the classifier needs.
+    const monitorWithStatus = {
+      id: "mon-1",
+      projectId: "proj-1",
+      lastStatus: "pass",
+    } as Monitor;
+    const deps = makeDeps({
+      alert,
+      loadMonitor: () => Promise.resolve(monitorWithStatus),
+    });
+
+    await runMonitorJob(JOB, deps);
+
+    expect(alert).toHaveBeenCalledTimes(1);
+    const [mon, result, prevStatus] = alert.mock.calls[0]!;
+    expect(mon).toBe(monitorWithStatus);
+    expect(result).toBe(PASS_RESULT);
+    expect(prevStatus).toBe("pass");
+  });
+
+  it("does NOT fire the alert on a retryable infra error (no spurious down/recovery emails)", async () => {
+    // The core P1 fix: a transient infra error must not email "down", because
+    // the retry would then email a spurious "recovered". The result is still
+    // RECORDED (visible in the timeline) — only the alert is suppressed.
+    const alert = vi.fn<NonNullable<RunMonitorJobDeps["alert"]>>(() =>
+      Promise.resolve(),
+    );
+    const infraResult: ExecutionResult = {
+      state: "error",
+      runId: null,
+      durationMs: 10,
+      errorMessage: "sandbox unavailable (concurrency)",
+      infraError: true,
+      statusCode: null,
+      resultDetail: null,
+    };
+    const deps = makeDeps({
+      alert,
+      executor: { execute: () => Promise.resolve(infraResult) },
+    });
+
+    const outcome = await runMonitorJob(JOB, deps);
+
+    expect(outcome).toEqual({ action: "retry" });
+    expect(deps.recordResult).toHaveBeenCalledTimes(1);
+    expect(alert).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire the alert when the executor throws (infra error)", async () => {
+    const alert = vi.fn<NonNullable<RunMonitorJobDeps["alert"]>>(() =>
+      Promise.resolve(),
+    );
+    const deps = makeDeps({
+      alert,
+      executor: {
+        execute: () => Promise.reject(new Error("container boot timeout")),
+      },
+    });
+
+    const outcome = await runMonitorJob(JOB, deps);
+
+    expect(outcome).toEqual({ action: "retry" });
+    expect(alert).not.toHaveBeenCalled();
+  });
+
   it("broadcasts the settled result to the monitor's project room on a real outcome", async () => {
     const deps = makeDeps();
 

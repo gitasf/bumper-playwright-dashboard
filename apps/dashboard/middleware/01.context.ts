@@ -3,6 +3,7 @@ import { getSession } from "void/auth";
 import { env } from "void/env";
 import { billingEnabled } from "@/lib/config";
 import { resolveTenantBundleForUser } from "@/lib/authz";
+import { isErrorPage, looksLikeStaticAsset } from "@/lib/error-outcome";
 import type { ResolvedActiveProject, SharedBundle } from "@/lib/shared-bundle";
 import {
   clearWorkspaceCookie,
@@ -62,6 +63,18 @@ export default defineMiddleware(async (c, next) => {
     : null;
 
   const url = new URL(c.req.url);
+
+  // Static assets + the standalone error pages never need the tenant bundle, and
+  // `run_worker_first: ["/**"]` routes every /assets/* chunk fetch through here.
+  // Resolving the bundle would run a Postgres query per static chunk — wasteful,
+  // and a failure surface: a DB hiccup would throw, `00.errors.ts` maps that to a
+  // 500, and the chunk 500s (breaking dynamic import()). Serve these from a stub
+  // with no DB access, like the /api/* branch below.
+  if (looksLikeStaticAsset(url.pathname) || isErrorPage(url.pathname)) {
+    c.set("shared", STUB_SHARED(auth));
+    await next();
+    return;
+  }
 
   if (!session) {
     // Anonymous visitors to a protected tenant/settings page are sent to

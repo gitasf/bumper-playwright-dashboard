@@ -1,3 +1,4 @@
+import { use } from "react";
 import { AnalyticsButtonGroup } from "@/components/analytics/button-group";
 import { InsightsTabs } from "@/components/analytics/insights-tabs";
 import { AnalyticsKpiCard } from "@/components/analytics/kpi-card";
@@ -6,9 +7,11 @@ import {
   type LineChartBucket,
   type LineChartSeries,
 } from "@/components/analytics/line-chart";
+import { DeferredSection } from "@/components/defer-error-boundary";
 import { PageHeader } from "@/components/page-header";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { ChartSkeleton, KpiCardSkeleton } from "@/components/skeletons";
 import { Card, CardPanel } from "@/components/ui/card";
 import { alignBuckets } from "@/lib/analytics/bucketing";
 import { makeHrefBuilder } from "@/lib/page-links";
@@ -24,9 +27,17 @@ const SERIES_COLORS = {
   p95: "var(--fail)",
 } as const;
 
+const SERIES: LineChartSeries[] = [
+  { key: "p50", label: "p50", color: SERIES_COLORS.p50 },
+  { key: "p90", label: "p90", color: SERIES_COLORS.p90 },
+  { key: "p95", label: "p95", color: SERIES_COLORS.p95 },
+];
+
 /**
- * Run Duration analytics page. Multi-series line chart of p50/p90/p95
- * durations per bucket plus the overall percentile KPI cards.
+ * Run Duration analytics page. The header, tabs, filters and chart chrome paint
+ * immediately from the cheap eager shell; the two percentile passes stream in
+ * behind skeletons via one grouped `defer()` — the KPI cards (overall values +
+ * per-bucket sparklines) and the p50/p90/p95 line chart. See the server module.
  */
 export default function RunDurationPage({
   project,
@@ -34,19 +45,177 @@ export default function RunDurationPage({
   segment,
   nowSec,
   windowStartSec,
-  perBucket,
-  overall,
   branchParam,
   branches,
+  duration,
   pathname,
   ranges,
 }: Props) {
-  const series: LineChartSeries[] = [
-    { key: "p50", label: "p50", color: SERIES_COLORS.p50 },
-    { key: "p90", label: "p90", color: SERIES_COLORS.p90 },
-    { key: "p95", label: "p95", color: SERIES_COLORS.p95 },
-  ];
+  const { with: hrefWith } = makeHrefBuilder(pathname, {
+    range,
+    segment,
+    branch: branchParam,
+  });
 
+  // A deferred region that fails latches its error boundary; clear it when the
+  // filters change so the SPA-nav re-fetch re-attempts the region.
+  const resetKey = `${range}:${branchParam ?? ""}:${segment}`;
+
+  return (
+    <>
+      <PageHeader
+        right={
+          <>
+            <RunHistoryBranchFilter
+              branches={branches}
+              defaultValue={branchParam ?? ALL_BRANCHES}
+            />
+            <AnalyticsButtonGroup
+              hrefFor={(r) => hrefWith({ range: r })}
+              options={ranges}
+              value={range}
+            />
+          </>
+        }
+        title="Insights"
+      />
+
+      <InsightsTabs
+        active="run-duration"
+        branch={branchParam}
+        projectSlug={project.slug}
+        range={range}
+        teamSlug={project.teamSlug}
+      />
+
+      <div className="flex-1 overflow-y-auto min-h-0 px-6 py-6 pb-12 space-y-[18px]">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <DeferredSection
+            resetKey={resetKey}
+            skeleton={
+              <>
+                <KpiCardSkeleton />
+                <KpiCardSkeleton />
+                <KpiCardSkeleton />
+              </>
+            }
+          >
+            <DurationKpis
+              duration={duration}
+              nowSec={nowSec}
+              segment={segment}
+              windowStartSec={windowStartSec}
+            />
+          </DeferredSection>
+        </div>
+
+        <Card className="overflow-hidden rounded-[9px] border-line-1">
+          <div className="border-b border-line-1 px-[18px] py-3">
+            <h2 className="text-[13px] font-semibold tracking-tight">
+              Duration percentiles
+            </h2>
+            <p className="mt-0.5 text-[11.5px] text-fg-3">
+              Per {segment} — p50, p90, p95 of run duration.
+            </p>
+          </div>
+          <CardPanel className="px-[18px] py-4">
+            <DeferredSection
+              resetKey={resetKey}
+              skeleton={<ChartSkeleton height={320} />}
+            >
+              <DurationChart
+                duration={duration}
+                nowSec={nowSec}
+                segment={segment}
+                windowStartSec={windowStartSec}
+              />
+            </DeferredSection>
+            {/* Legend is static (derived from SERIES, no data) — kept eager so
+             * it reserves its space in both states and paints immediately. */}
+            <div className="mt-3.5 flex items-center gap-3.5 text-[11.5px] text-fg-3">
+              {SERIES.map((s) => (
+                <span className="inline-flex items-center gap-1.5" key={s.key}>
+                  <span className="h-0.5 w-3" style={{ background: s.color }} />
+                  {s.label}
+                </span>
+              ))}
+            </div>
+          </CardPanel>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+/** p50/p90/p95 KPI cards. Values come from `overall`; the per-bucket sparklines
+ *  are derived from `perBucket` (both in the grouped `duration` resolver). */
+function DurationKpis({
+  duration,
+  segment,
+  windowStartSec,
+  nowSec,
+}: {
+  duration: Props["duration"];
+  segment: Props["segment"];
+  windowStartSec: number;
+  nowSec: number;
+}) {
+  const { overall, perBucket } = use(duration);
+  const overallCnt = overall.cnt ?? 0;
+
+  // Per-bucket sparkline data for each percentile. Align onto the window
+  // skeleton, then drop null buckets so the line stays meaningful.
+  const aligned = alignBuckets(segment, windowStartSec, nowSec, perBucket);
+  const p50Spark = aligned
+    .map((s) => s.row?.p50)
+    .filter((v): v is number => v != null);
+  const p90Spark = aligned
+    .map((s) => s.row?.p90)
+    .filter((v): v is number => v != null);
+  const p95Spark = aligned
+    .map((s) => s.row?.p95)
+    .filter((v): v is number => v != null);
+
+  return (
+    <>
+      <AnalyticsKpiCard
+        footnote={
+          overallCnt === 0
+            ? "No runs in window"
+            : `Across ${overallCnt.toLocaleString()} runs`
+        }
+        label="Median duration (p50)"
+        spark={p50Spark}
+        value={formatOrDash(overall.p50)}
+      />
+      <AnalyticsKpiCard
+        label="P90 threshold"
+        spark={p90Spark}
+        value={formatOrDash(overall.p90)}
+      />
+      <AnalyticsKpiCard
+        label="P95 wall-clock time"
+        spark={p95Spark}
+        value={formatOrDash(overall.p95)}
+      />
+    </>
+  );
+}
+
+/** The p50/p90/p95 duration line chart. Builds buckets + tooltips (JSX, so it
+ *  lives here, not the serializable resolver) from the deferred `perBucket`. */
+function DurationChart({
+  duration,
+  segment,
+  windowStartSec,
+  nowSec,
+}: {
+  duration: Props["duration"];
+  segment: Props["segment"];
+  windowStartSec: number;
+  nowSec: number;
+}) {
+  const { perBucket } = use(duration);
   const buckets: LineChartBucket[] = alignBuckets(
     segment,
     windowStartSec,
@@ -95,108 +264,15 @@ export default function RunDurationPage({
     };
   });
 
-  const overallCnt = overall.cnt ?? 0;
-  const { p50: p50All, p90: p90All, p95: p95All } = overall;
-
-  // Per-bucket sparkline data for each percentile. Skip null buckets so the
-  // line stays meaningful — `MetricSparkline` will fall back gracefully.
-  const p50Spark = buckets
-    .map((b) => b.values[0])
-    .filter((v): v is number => v != null);
-  const p90Spark = buckets
-    .map((b) => b.values[1])
-    .filter((v): v is number => v != null);
-  const p95Spark = buckets
-    .map((b) => b.values[2])
-    .filter((v): v is number => v != null);
-
-  const { with: hrefWith } = makeHrefBuilder(pathname, {
-    range,
-    segment,
-    branch: branchParam,
-  });
-
   return (
-    <>
-      <PageHeader
-        right={
-          <>
-            <RunHistoryBranchFilter
-              branches={branches}
-              defaultValue={branchParam ?? ALL_BRANCHES}
-            />
-            <AnalyticsButtonGroup
-              hrefFor={(r) => hrefWith({ range: r })}
-              options={ranges}
-              value={range}
-            />
-          </>
-        }
-        title="Insights"
-      />
-
-      <InsightsTabs
-        active="run-duration"
-        branch={branchParam}
-        projectSlug={project.slug}
-        range={range}
-        teamSlug={project.teamSlug}
-      />
-
-      <div className="flex-1 overflow-y-auto min-h-0 px-6 py-6 pb-12 space-y-[18px]">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <AnalyticsKpiCard
-            footnote={
-              overallCnt === 0
-                ? "No runs in window"
-                : `Across ${overallCnt.toLocaleString()} runs`
-            }
-            label="Median duration (p50)"
-            spark={p50Spark}
-            value={formatOrDash(p50All)}
-          />
-          <AnalyticsKpiCard
-            label="P90 threshold"
-            spark={p90Spark}
-            value={formatOrDash(p90All)}
-          />
-          <AnalyticsKpiCard
-            label="P95 wall-clock time"
-            spark={p95Spark}
-            value={formatOrDash(p95All)}
-          />
-        </div>
-
-        <Card className="overflow-hidden rounded-[9px] border-line-1">
-          <div className="border-b border-line-1 px-[18px] py-3">
-            <h2 className="text-[13px] font-semibold tracking-tight">
-              Duration percentiles
-            </h2>
-            <p className="mt-0.5 text-[11.5px] text-fg-3">
-              Per {segment} — p50, p90, p95 of run duration.
-            </p>
-          </div>
-          <CardPanel className="px-[18px] py-4">
-            <AnalyticsLineChart
-              ariaLabel={`Duration percentiles across ${buckets.length} buckets`}
-              buckets={buckets}
-              emptyState="No runs in this window."
-              formatYTick={(ms) => formatDuration(Math.round(ms))}
-              height={320}
-              series={series}
-            />
-            <div className="mt-3.5 flex items-center gap-3.5 text-[11.5px] text-fg-3">
-              {series.map((s) => (
-                <span className="inline-flex items-center gap-1.5" key={s.key}>
-                  <span className="h-0.5 w-3" style={{ background: s.color }} />
-                  {s.label}
-                </span>
-              ))}
-            </div>
-          </CardPanel>
-        </Card>
-      </div>
-    </>
+    <AnalyticsLineChart
+      ariaLabel={`Duration percentiles across ${buckets.length} buckets`}
+      buckets={buckets}
+      emptyState="No runs in this window."
+      formatYTick={(ms) => formatDuration(Math.round(ms))}
+      height={320}
+      series={SERIES}
+    />
   );
 }
 

@@ -7,16 +7,21 @@ import {
   testAnnotations,
   testResultAttempts,
   testResults,
+  tests,
   testTags,
   teams,
 } from "@schema";
-import type { BatchExecutor } from "@/lib/db-batch";
-import { changedRows, isUniqueViolation, runBatch } from "@/lib/db-batch";
+import type { BatchBuilder, BatchExecutor } from "@/lib/db-batch";
+import {
+  changedRows,
+  isForeignKeyViolation,
+  isUniqueViolation,
+  runBatch,
+} from "@/lib/db-batch";
 import { maybePostGithubCheck } from "@/lib/github-checks";
 import { setCodeownersFile } from "@/lib/owners-repo";
 import {
-  childByIdWhere,
-  childByTestResultWhere,
+  childByTestResultsWhere,
   childProjectScopeWhere,
   runByIdWhere,
   staleRunFilter,
@@ -133,6 +138,11 @@ export async function resolveTestResultIds(
   scope: TenantScope,
   runId: string,
   testIds: string[],
+  // The executor the read runs on. Defaults to the pooled `db`, but
+  // `appendRunResults` passes its transaction executor so the prev-status read
+  // happens UNDER the run-row `FOR UPDATE` lock — that is what makes the
+  // additive aggregate delta race-safe (see `appendRunResults`).
+  exec: Pick<typeof db, "select"> = db,
 ): Promise<{
   existingIds: Map<string, string>;
   assignedIds: Map<string, string>;
@@ -144,7 +154,7 @@ export async function resolveTestResultIds(
   // MAX_RESULTS_PER_BATCH (5000) and `dedupeResultsByTestId` only shrinks it, so
   // `testIds` is always well under Postgres's per-statement bound-param ceiling
   // — no IN-list chunking is needed.
-  const rows = await db
+  const rows = await exec
     .select({
       id: testResults.id,
       testId: testResults.testId,
@@ -180,6 +190,7 @@ export function buildQueuePrefillStatements(
   }>,
   nowSeconds: number,
   exec: BatchExecutor,
+  shardIndex: number | null = null,
 ) {
   if (plannedTests.length === 0) return [];
   const rows = plannedTests.map((p) => ({
@@ -196,7 +207,12 @@ export function buildQueuePrefillStatements(
     errorMessage: null,
     errorStack: null,
     workerIndex: null,
+    // The opening shard stamps its planned (still-queued) rows with its own
+    // index so they group by shard before they run; each shard's real result
+    // arrives with its own shardIndex via /results. Null on a non-sharded run.
+    shardIndex,
     createdAt: nowSeconds,
+    updatedAt: nowSeconds,
   }));
   // `onConflictDoNothing` on the (runId, testId) unique index makes prefill
   // safe to run from every shard of a sharded suite: shards share one
@@ -209,20 +225,131 @@ export function buildQueuePrefillStatements(
 }
 
 /**
+ * Upsert the per-project `tests` catalog (the identity/dimension table) for a
+ * set of `{ testId, title, file }` seen in this batch. Built against the passed
+ * executor so it enrolls in the caller's ingest transaction — the catalog row is
+ * written atomically with the results it describes, from BOTH the openRun queued
+ * prefill and the appendRunResults flush.
+ *
+ * `firstSeenAt` is insert-only (kept on conflict); `title`/`file`/`lastSeenAt`
+ * refresh from `excluded` (latest-wins). Deduped by `testId` first because a
+ * multi-row `INSERT … ON CONFLICT` may not touch the same conflict-target
+ * `(projectId, testId)` row twice in one statement — last entry wins, matching
+ * the latest-title/file intent. `projectId` is constant (`scope.projectId`), so
+ * `testId` alone keys the dedup. Empty input → no statements.
+ */
+export function buildTestCatalogUpsertStatements(
+  scope: TenantScope,
+  entries: ReadonlyArray<{ testId: string; title: string; file: string }>,
+  nowSeconds: number,
+  exec: BatchExecutor,
+) {
+  if (entries.length === 0) return [];
+  const byTestId = new Map<string, { title: string; file: string }>();
+  for (const e of entries)
+    byTestId.set(e.testId, { title: e.title, file: e.file });
+  // Sort by `testId` (projectId is constant per statement) so EVERY concurrent
+  // writer emits the shared `(projectId, testId)` ON CONFLICT rows in the same
+  // global order and can't AB/BA deadlock on the per-row locks Postgres takes as
+  // it processes the VALUES list — the catalog row is shared across all runs of
+  // a project, but the ingest transaction only locks the per-run row. Plain
+  // code-unit comparison (NOT `localeCompare`, which is locale-dependent and
+  // would let two processes disagree on order and re-open the cycle). Dedup
+  // above already collapsed same-testId rows, so reordering distinct ids can't
+  // change the upsert outcome.
+  const rows = [...byTestId]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([testId, { title, file }]) => ({
+      id: ulid(),
+      projectId: scope.projectId,
+      testId,
+      title,
+      file,
+      firstSeenAt: nowSeconds,
+      lastSeenAt: nowSeconds,
+    }));
+  return chunkInsertRows(rows).map((chunk) =>
+    exec
+      .insert(tests)
+      .values(chunk)
+      .onConflictDoUpdate({
+        target: [tests.projectId, tests.testId],
+        set: {
+          title: sql`excluded."title"`,
+          file: sql`excluded."file"`,
+          lastSeenAt: sql`excluded."lastSeenAt"`,
+        },
+      }),
+  );
+}
+
+/**
+ * The `ON CONFLICT … DO UPDATE SET` for the /results upsert: the columns an
+ * existing `(runId, testId)` row refreshes — everything a re-streamed result can
+ * change. `id` and the identity columns (`projectId`, `runId`, `testId`) are
+ * omitted (immutable), and `createdAt` is omitted DELIBERATELY: it is
+ * insert-only, so a prefilled/re-sent row keeps its first-seen time instead of
+ * drifting to the flush time (see the column doc on `testResults.createdAt`).
+ * `updatedAt` carries the write time via `excluded`.
+ *
+ * `excluded` is Postgres's alias for the row proposed by the INSERT, so each
+ * column takes the value the multi-row insert would have written — the batched
+ * equivalent of the old per-row `.set({ … })`. Built lazily inside the builder
+ * (not a module const) so `sql` is only referenced at call time, keeping ingest
+ * importable under the stubbed-`void/db` unit tests.
+ */
+function resultUpsertSet() {
+  return {
+    title: sql`excluded."title"`,
+    file: sql`excluded."file"`,
+    projectName: sql`excluded."projectName"`,
+    status: sql`excluded."status"`,
+    durationMs: sql`excluded."durationMs"`,
+    retryCount: sql`excluded."retryCount"`,
+    errorMessage: sql`excluded."errorMessage"`,
+    errorStack: sql`excluded."errorStack"`,
+    workerIndex: sql`excluded."workerIndex"`,
+    shardIndex: sql`excluded."shardIndex"`,
+    updatedAt: sql`excluded."updatedAt"`,
+  };
+}
+
+/**
  * Builds the upsert-and-replace statements for a /results batch. Returns the
  * statement array (built against the transaction executor `tx` for `runBatch`)
  * plus the clientKey→id map the reporter uses to fire per-test artifact uploads.
  *
- * Existing rows (matched on `runId, testId`) are UPDATEd in place; child
- * rows (tags, annotations, attempts) for those ids are DELETEd first so the
- * new set replaces them cleanly. Fresh rows are INSERTed in chunks.
+ * Batched, so per-flush cost is a handful of statements regardless of batch size
+ * (was ~4 statements PER already-existing result — and the reporter prefills a
+ * `queued` row for every planned test, so every streamed result took that path,
+ * making a 5000-result flush ~20k serial round-trips inside one transaction):
+ *
+ *   1. ONE multi-row `INSERT … ON CONFLICT (runId, testId) DO UPDATE` upserts
+ *      every result — a fresh row inserts, a prefilled/re-sent row updates in
+ *      place (keeping its `id` + `createdAt`). Chunked under the bound-param cap.
+ *   2. THREE IN-list DELETEs (tags, annotations, attempts) clear the child rows
+ *      of every touched result so the re-sent set replaces them cleanly. Chunked
+ *      under the cap; a flush is ≤ MAX_RESULTS_PER_BATCH ids so it is one
+ *      statement each in practice. Deleting a fresh row's (absent) children is a
+ *      harmless no-op, so one uniform path covers insert + update.
+ *   3. Chunked multi-row INSERTs of the new child rows.
+ *
+ * Ordering is load-bearing: the parent upsert (1) runs before the child INSERTs
+ * (3) so a fresh row's FK target exists, and the child DELETEs (2) run before
+ * those INSERTs so the replace semantics hold. `runBatch` runs the array in
+ * order on one connection.
+ *
+ * `existingIds` is unused now (the upsert handles insert-vs-update in one
+ * statement) but kept in the signature so the caller can thread the same
+ * `resolveTestResultIds` result to `computeAggregateDelta`; `assignedIds` still
+ * supplies each result's stable id (the existing id for a re-sent test).
  */
 export function buildResultInsertStatements(
   scope: TenantScope,
   runId: string,
   results: TestResultInput[],
   nowSeconds: number,
-  existingIds: Map<string, string>,
+  _existingIds: Map<string, string>,
   assignedIds: Map<string, string>,
   exec: BatchExecutor,
 ) {
@@ -240,7 +367,9 @@ export function buildResultInsertStatements(
     errorMessage: string | null;
     errorStack: string | null;
     workerIndex: number | null;
+    shardIndex: number | null;
     createdAt: number;
+    updatedAt: number;
   }> = [];
   const tagRows: Array<{
     id: string;
@@ -266,6 +395,9 @@ export function buildResultInsertStatements(
     errorStack: string | null;
     createdAt: number;
   }> = [];
+  // Every touched result's id — the child rows of ALL of them are replaced (a
+  // fresh row simply has none to delete).
+  const childReplaceIds: string[] = [];
   const mapping: ResultMapping[] = [];
   // `PromiseLike<unknown>[]` because Drizzle batch accepts a heterogeneous
   // tuple of insert/update/delete builders; expressing the union precisely
@@ -280,60 +412,26 @@ export function buildResultInsertStatements(
       mapping.push({ clientKey: result.clientKey, testResultId });
     }
 
-    if (existingIds.has(result.testId)) {
-      statements.push(
-        exec
-          .update(testResults)
-          .set({
-            title: result.title,
-            file: result.file,
-            projectName: result.projectName ?? null,
-            status: result.status,
-            durationMs: result.durationMs,
-            retryCount: result.retryCount,
-            errorMessage: result.errorMessage ?? null,
-            errorStack: result.errorStack ?? null,
-            workerIndex: result.workerIndex ?? null,
-            createdAt: nowSeconds,
-          })
-          .where(childByIdWhere(testResults, scope, testResultId)),
-      );
-      statements.push(
-        exec
-          .delete(testTags)
-          .where(childByTestResultWhere(testTags, scope, testResultId)),
-      );
-      statements.push(
-        exec
-          .delete(testAnnotations)
-          .where(childByTestResultWhere(testAnnotations, scope, testResultId)),
-      );
-    } else {
-      insertRows.push({
-        id: testResultId,
-        projectId: scope.projectId,
-        runId,
-        testId: result.testId,
-        title: result.title,
-        file: result.file,
-        projectName: result.projectName ?? null,
-        status: result.status,
-        durationMs: result.durationMs,
-        retryCount: result.retryCount,
-        errorMessage: result.errorMessage ?? null,
-        errorStack: result.errorStack ?? null,
-        workerIndex: result.workerIndex ?? null,
-        createdAt: nowSeconds,
-      });
-    }
+    insertRows.push({
+      id: testResultId,
+      projectId: scope.projectId,
+      runId,
+      testId: result.testId,
+      title: result.title,
+      file: result.file,
+      projectName: result.projectName ?? null,
+      status: result.status,
+      durationMs: result.durationMs,
+      retryCount: result.retryCount,
+      errorMessage: result.errorMessage ?? null,
+      errorStack: result.errorStack ?? null,
+      workerIndex: result.workerIndex ?? null,
+      shardIndex: result.shardIndex ?? null,
+      createdAt: nowSeconds,
+      updatedAt: nowSeconds,
+    });
 
-    // Per-attempt rows are fully owned by this result. Re-send re-creates
-    // the set so the reporter staying idempotent under flush retry.
-    statements.push(
-      exec
-        .delete(testResultAttempts)
-        .where(childByTestResultWhere(testResultAttempts, scope, testResultId)),
-    );
+    childReplaceIds.push(testResultId);
     for (const attempt of result.attempts) {
       attemptRows.push({
         id: ulid(),
@@ -366,9 +464,40 @@ export function buildResultInsertStatements(
     }
   }
 
+  // (1) Upsert every result. On conflict the existing row keeps its id +
+  //     createdAt and refreshes the mutable columns from `excluded`.
   for (const chunk of chunkInsertRows(insertRows)) {
-    statements.push(exec.insert(testResults).values(chunk));
+    statements.push(
+      exec
+        .insert(testResults)
+        .values(chunk)
+        .onConflictDoUpdate({
+          target: [testResults.runId, testResults.testId],
+          set: resultUpsertSet(),
+        }),
+    );
   }
+  // (2) Replace child rows: DELETE the existing set for every touched id. Each
+  //     DELETE binds `projectId` (1) + N ids, so chunk N under the ceiling
+  //     (one statement in practice — a flush is ≤ MAX_RESULTS_PER_BATCH ids).
+  for (const chunk of chunkBySize(childReplaceIds, PG_MAX_BOUND_PARAMS - 1)) {
+    statements.push(
+      exec
+        .delete(testTags)
+        .where(childByTestResultsWhere(testTags, scope, chunk)),
+    );
+    statements.push(
+      exec
+        .delete(testAnnotations)
+        .where(childByTestResultsWhere(testAnnotations, scope, chunk)),
+    );
+    statements.push(
+      exec
+        .delete(testResultAttempts)
+        .where(childByTestResultsWhere(testResultAttempts, scope, chunk)),
+    );
+  }
+  // (3) Insert the new child rows.
   for (const chunk of chunkInsertRows(tagRows)) {
     statements.push(exec.insert(testTags).values(chunk));
   }
@@ -526,7 +655,7 @@ export function activityBumpStatement(
  * literals is safe (and, like {@link bucketExpr}, sidesteps D1's bound-param
  * text affinity).
  */
-function statusMatchSql(statuses: readonly string[]) {
+export function statusMatchSql(statuses: readonly string[]) {
   const list = statuses.map((s) => `'${s}'`).join(", ");
   return statuses.length === 1
     ? sql.raw(`"status" = ${list}`)
@@ -564,9 +693,10 @@ export function aggregateRecomputeStatement(
  * This is the single owner of the "last batch row is the summary" cast. Pulled
  * out as a pure function so the positional convention has one unit-tested home
  * instead of being hand-transcribed (`batchResults[len-1] as … ?.[0]`) at every
- * caller — see `runBatchWithSummary`. Returns `null` (never a spurious
- * `undefined`) when the final statement produced no row, e.g. the run vanished
- * between the ownership check and the batch.
+ * caller — `appendRunResults`, `reconcileAndBroadcast`, and `completeShardedRun`
+ * all append the summary statement LAST and read it back through here. Returns
+ * `null` (never a spurious `undefined`) when the final statement produced no
+ * row, e.g. the run vanished between the ownership check and the batch.
  */
 export function summaryFromBatchResults(
   batchResults: readonly unknown[],
@@ -587,46 +717,6 @@ export function summaryFromBatchResults(
  * pipeline (the head-of-batch counterpart to `summaryFromBatchResults`).
  */
 export const statementChangedRows = changedRows;
-
-/**
- * Run a heterogeneous write batch whose LAST statement produces the broadcast
- * summary, and return that transactionally-consistent summary (or `null` if the
- * final statement returned no row).
- *
- * Owns the convention used by `appendRunResults`: append the summary-producing
- * statement last, run them all in one Postgres transaction (`runBatch`), then read
- * back the final result via `summaryFromBatchResults`. `summary` may be any
- * summary-producing statement — a `.returning()` UPDATE or a `.select()` — both
- * project `AGGREGATE_SUMMARY_COLUMNS`, so both yield `RunAggregateSummary[]`.
- * Concentrating the append-last + run + read-last positional contract here means
- * callers can't silently break the broadcast by inserting a trailing statement or
- * by counting array positions wrong.
- *
- * The terminal paths (`completeRun` / `finalizeStaleRun`) follow the same
- * append-summary-last convention but go through `reconcileAndBroadcast`, which
- * runs the transaction directly so it can ALSO read the head element (the status
- * flip's affected-row count) to suppress a no-op finalize's broadcast — a read
- * this summary-only helper doesn't surface.
- *
- * The batch is `PromiseLike<unknown>[]` for the same reason as
- * `buildResultInsertStatements`: a transaction runs a heterogeneous tuple of
- * query builders and expressing the union precisely fights the type system more
- * than it helps. `runBatch` (`@/lib/db-batch`), which this routes through, builds
- * every statement against the transaction executor (`tx`) — no cast — so the
- * statements enroll in the transaction.
- */
-export async function runBatchWithSummary(
-  build: (exec: BatchExecutor) => {
-    writes: PromiseLike<unknown>[];
-    summary: PromiseLike<unknown>;
-  },
-): Promise<RunAggregateSummary | null> {
-  const batchResults = await runBatch((tx) => {
-    const { writes, summary } = build(tx);
-    return [...writes, summary];
-  });
-  return summaryFromBatchResults(batchResults);
-}
 
 /**
  * The terminal reconcile-and-broadcast tail shared by `completeRun` and
@@ -757,6 +847,7 @@ export function buildChangedTests(
     status: r.status,
     durationMs: r.durationMs,
     retryCount: r.retryCount,
+    shardIndex: r.shardIndex ?? null,
   }));
 }
 
@@ -940,38 +1031,42 @@ export async function openRun(
   const plannedTests = payload.run.plannedTests ?? [];
 
   const runValues = buildRunInsertValues(runId, scope, payload, nowSeconds);
-  try {
-    // All-or-nothing: the run insert, the queued-test prefill, and the usage
-    // meter bump (run open) commit atomically in one `db.transaction` (see
-    // `runBatch`). Every statement is built against the passed executor so it
-    // enrolls in that boundary.
-    await runBatch((tx) => {
-      const usageBump = usageBumpStatement(
-        scope.teamId,
-        monthStartSeconds(nowSeconds),
-        { runs: 1 },
+  // All-or-nothing: the run insert, the queued-test prefill, the tests-catalog
+  // seed, and the usage meter bump (run open) commit atomically in one
+  // `db.transaction` (see `runBatch`). Every statement is built against the
+  // passed executor so it enrolls in that boundary. Extracted to a named builder
+  // so the FK-recovery path below can re-run the SAME batch after nulling a
+  // stale monitorId.
+  const buildOpenBatch: BatchBuilder = (tx) => {
+    const usageBump = usageBumpStatement(
+      scope.teamId,
+      monthStartSeconds(nowSeconds),
+      { runs: 1 },
+      nowSeconds,
+      tx,
+    );
+    return [
+      tx.insert(runs).values(runValues),
+      ...buildQueuePrefillStatements(
+        scope,
+        runId,
+        plannedTests,
         nowSeconds,
         tx,
-      );
-      return [
-        tx.insert(runs).values(runValues),
-        ...buildQueuePrefillStatements(
-          scope,
-          runId,
-          plannedTests,
-          nowSeconds,
-          tx,
-        ),
-        ...(usageBump ? [usageBump] : []),
-      ];
-    });
-  } catch (err) {
-    // Lost the SELECT-then-INSERT race: sharded suites share one
-    // idempotencyKey and open concurrently BY DESIGN, so the loser's insert
-    // hitting `runs_project_idempotency_key_idx` is the expected hot path, not
-    // a corner. Recover by re-reading the winner's row instead of bubbling a
-    // 500 the reporter would have to absorb via retry.
-    if (!isUniqueViolation(err)) throw err;
+        payload.shard?.index ?? null,
+      ),
+      // Seed the tests catalog from the planned set so a test is searchable the
+      // moment its run opens, before any result streams. Idempotent upsert, so
+      // a re-opened run (CI re-run) just refreshes lastSeenAt.
+      ...buildTestCatalogUpsertStatements(scope, plannedTests, nowSeconds, tx),
+      ...(usageBump ? [usageBump] : []),
+    ];
+  };
+
+  // Recover the winner of a lost (projectId, idempotencyKey) race: re-read its
+  // row and re-arm it for writes. Returns null when no winner exists (the unique
+  // violation was something else), so the caller rethrows the original error.
+  const recoverDuplicate = async (): Promise<OpenRunResult | null> => {
     const winner = await db
       .select({ id: runs.id })
       .from(runs)
@@ -982,7 +1077,7 @@ export async function openRun(
         ),
       )
       .limit(1);
-    if (!winner[0]) throw err;
+    if (!winner[0]) return null;
     await reopenRunForWrites(
       scope,
       winner[0].id,
@@ -990,6 +1085,49 @@ export async function openRun(
       payload.shard?.total,
     );
     return { runId: winner[0].id, duplicate: true };
+  };
+
+  try {
+    await runBatch(buildOpenBatch);
+  } catch (err) {
+    if (isForeignKeyViolation(err) && runValues.monitorId != null) {
+      // A synthetic run whose monitor was deleted between scheduling and open:
+      // the real `runs.monitorId` FK rejects the insert where the old logical FK
+      // tolerated a dangling id. Drop the link (exactly what `onDelete: set
+      // null` would have done) and retry the open ONCE. Gated on
+      // `monitorId != null` so a projectId/teamId FK violation (both NOT NULL,
+      // cascade parents) rethrows instead of looping on an unfixable cause.
+      logger.warn(
+        "synthetic run's monitor deleted mid-open; nulling monitorId",
+        {
+          runId,
+          monitorId: runValues.monitorId,
+        },
+      );
+      runValues.monitorId = null;
+      try {
+        await runBatch(buildOpenBatch);
+      } catch (retryErr) {
+        // The retry can still lose the (projectId, idempotencyKey) race to a
+        // sibling shard — recover that the same way the first attempt would.
+        if (!isUniqueViolation(retryErr)) throw retryErr;
+        const dup = await recoverDuplicate();
+        if (!dup) throw retryErr;
+        return dup;
+      }
+      // Retry succeeded → fall through to the post-open broadcast path below.
+    } else if (isUniqueViolation(err)) {
+      // Lost the SELECT-then-INSERT race: sharded suites share one
+      // idempotencyKey and open concurrently BY DESIGN, so the loser's insert
+      // hitting `runs_project_idempotency_key_idx` is the expected hot path, not
+      // a corner. Recover by re-reading the winner's row instead of bubbling a
+      // 500 the reporter would have to absorb via retry.
+      const dup = await recoverDuplicate();
+      if (!dup) throw err;
+      return dup;
+    } else {
+      throw err;
+    }
   }
   await bumpTeamActivity(scope.teamId, nowSeconds);
 
@@ -1144,12 +1282,25 @@ export function dedupeResultsByTestId(
 }
 
 /**
- * Append a batch of test results to a streaming run. Verifies the run
- * belongs to `scope.projectId` (404 otherwise), then runs the upsert /
- * tag-replace / annotation-replace / per-attempt-insert / aggregate-delta
- * statements in one transaction. The last statement is `.returning()` on the
- * delta UPDATE (or a SELECT when no delta) so the broadcast summary is
- * transactionally consistent with the per-test writes.
+ * Append a batch of test results to a streaming run. Verifies the run belongs to
+ * `scope.projectId` (404 otherwise), then in ONE transaction — guarded by a
+ * `FOR UPDATE` lock on the run row — resolves each test's prior status, computes
+ * the aggregate delta, and runs the upsert / tag-replace / annotation-replace /
+ * per-attempt-insert / aggregate-delta statements. The last statement is
+ * `.returning()` on the delta UPDATE (or the liveness bump when no delta) so the
+ * broadcast summary is transactionally consistent with the per-test writes.
+ *
+ * Why the lock (mirrors `completeShardedRun`): the prev-status read and the
+ * additive `runs.<counter> = col + delta` UPDATE must be consistent. Without it,
+ * two concurrent identical flushes — the reporter's 30s per-attempt timeout
+ * re-POSTs a batch while the first is still executing — each read the same
+ * prev-status under READ COMMITTED and BOTH add the delta, double-applying the
+ * live counters (it self-heals at /complete's recompute, but mid-run viewers see
+ * inflated passed/failed/…). Reading the ids under the lock ALSO keeps the upsert
+ * MAPPING race-safe: a serialized second flush sees the first's committed row, so
+ * `assignedIds` resolves the real id instead of a phantom fresh ULID that the
+ * `ON CONFLICT DO UPDATE` would discard (leaving the reporter's artifact PUTs
+ * pointed at a non-existent testResultId).
  */
 export async function appendRunResults(
   scope: TenantScope,
@@ -1167,17 +1318,10 @@ export async function appendRunResults(
 
   const results = dedupeResultsByTestId(payload.results);
   const testIds = results.map((r) => r.testId);
-  const { existingIds, assignedIds, prevStatusByTestId } =
-    await resolveTestResultIds(scope, runId, testIds);
-  const delta = computeAggregateDelta(results, prevStatusByTestId);
-  // The clientKey→testResultId map is produced while building the statements;
-  // capture it from inside the batch builder for the post-batch artifact step.
-  // runBatch invokes the builder synchronously at the head of the awaited
-  // transaction, so `mapping` is populated before this await resolves.
+  // Captured from inside the transaction for the post-commit artifact + broadcast
+  // steps (the clientKey→id map and the id assignment resolved under the lock).
   let mapping: ResultMapping[] = [];
-  // One atomic write: the per-test upsert/replace statements plus the
-  // summary-producing statement (LAST), built against the transaction executor
-  // so they enroll in the same `db.transaction`.
+  let assignedIds = new Map<string, string>();
   //
   // testResults usage is deliberately NOT metered here. It used to upsert the
   // single `usageCounters` (teamId, month) row inside THIS transaction, which
@@ -1187,28 +1331,52 @@ export async function appendRunResults(
   // `registerArtifacts` are), so its count is derived on read
   // (`countTeamTestResults` → `loadTeamUsage`) and re-based by the
   // `rollup-usage` cron — no live counter needed. See the 2026-06-22 worklog.
-  const summary = await runBatchWithSummary((tx) => {
+  const summary = await db.transaction(async (tx) => {
+    // Serialize concurrent /results flushes for THIS run (see the docstring).
+    // Scoped to the single run row via runByIdWhere (projectId + id), not a
+    // table lock; sibling runs and other projects are unaffected.
+    await tx
+      .select({ id: runs.id })
+      .from(runs)
+      .where(runByIdWhere(scope, runId))
+      .for("update");
+
+    // Read prior status UNDER the lock so the delta and the upsert id-assignment
+    // both see committed state — this is what closes the double-apply + phantom
+    // -id races. Built against `tx` so it enrolls in the locked transaction.
+    const resolved = await resolveTestResultIds(scope, runId, testIds, tx);
+    assignedIds = resolved.assignedIds;
+    const delta = computeAggregateDelta(results, resolved.prevStatusByTestId);
+
     const built = buildResultInsertStatements(
       scope,
       runId,
       results,
       nowSeconds,
-      existingIds,
-      assignedIds,
+      resolved.existingIds,
+      resolved.assignedIds,
       tx,
     );
     mapping = built.mapping;
-    // Both summary branches still advance `lastActivityAt`: the delta UPDATE
-    // sets it alongside the counters; the no-delta branch is a liveness-only
-    // UPDATE (not a read-only SELECT) so a zero-bucket-change flush still
-    // counts as activity for `staleRunFilter`.
+    // Sequential on purpose (like `runBatch`): one connection, ordered writes.
+    for (const stmt of built.statements) await stmt;
+    // Catalog the tests this flush touched (covers non-prefilled tests and shards
+    // 2..N, which stream results without re-running the openRun prefill).
+    for (const stmt of buildTestCatalogUpsertStatements(
+      scope,
+      results,
+      nowSeconds,
+      tx,
+    ))
+      await stmt;
+    // Summary statement LAST: the delta UPDATE (`.returning()` the summary), or
+    // the liveness-only bump when the delta nets to zero — a zero-bucket-change
+    // flush still advances `lastActivityAt` so `staleRunFilter` won't reap a
+    // suite that only re-sends already-counted results.
     const summaryStmt =
       aggregateDeltaStatement(scope, runId, delta, nowSeconds, tx) ??
       activityBumpStatement(scope, runId, nowSeconds, tx);
-    return {
-      writes: built.statements,
-      summary: summaryStmt,
-    };
+    return summaryFromBatchResults([await summaryStmt]);
   });
   // `bumpTeamActivity` runs only after the notFound guard below (origin/main's
   // review fix): a write that found no run must not record team activity.

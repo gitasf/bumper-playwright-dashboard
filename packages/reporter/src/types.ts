@@ -41,6 +41,14 @@ export interface TestResultPayload {
   errorMessage: string | null;
   errorStack: string | null;
   workerIndex: number;
+  /**
+   * Playwright shard that ran this test (`config.shard.current`, 1-based), or
+   * `null` for a non-sharded run. Unlike the run-level `shard` on open/complete
+   * (which is omitted when non-sharded), this is always present so the dashboard
+   * can group each test row by its shard. Mirrors the nullable `shardIndex` on
+   * `TestResultSchema` in apps/dashboard/src/lib/schemas.ts.
+   */
+  shardIndex: number | null;
   tags: string[];
   annotations: Array<{ type: string; description?: string }>;
   /** One entry per Playwright attempt. Always ≥ 1 — Playwright always runs at least once. */

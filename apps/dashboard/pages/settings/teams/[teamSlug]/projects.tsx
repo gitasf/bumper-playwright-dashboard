@@ -1,5 +1,5 @@
 import { FlaskConical, Plus } from "lucide-react";
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import { Button } from "@/components/ui/button";
 import {
   SettingsCard,

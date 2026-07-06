@@ -1,5 +1,5 @@
 import { Pencil, Trash2, Users } from "lucide-react";
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

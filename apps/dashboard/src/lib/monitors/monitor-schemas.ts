@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { checkUrlPolicy } from "@/lib/monitors/http/url-policy";
 import { checkTcpHostPolicy } from "@/lib/monitors/tcp/host-policy";
+import type { AlertTargets } from "@/lib/monitors/alert-targets";
 import type {
   AssertionResult,
   HttpResultDetail,
@@ -279,23 +280,17 @@ export const HttpMonitorConfigSchema = z
 export type HttpMonitorConfig = z.infer<typeof HttpMonitorConfigSchema>;
 
 /**
- * Parse + validate a stored `monitors.config` JSON string into an
+ * Validate a stored `monitors.config` jsonb value into an
  * {@link HttpMonitorConfig}, or `null` if it's absent / malformed / invalid.
  * The single read-path parser shared by the executor (`http-run.ts`) and the
  * detail display loader, so the three boundaries the plan calls out (write,
  * execute, display) all validate through the same schema.
  */
 export function parseHttpMonitorConfig(
-  config: string | null,
+  config: unknown,
 ): HttpMonitorConfig | null {
-  if (!config) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(config);
-  } catch {
-    return null;
-  }
-  const parsed = HttpMonitorConfigSchema.safeParse(raw);
+  if (config == null) return null;
+  const parsed = HttpMonitorConfigSchema.safeParse(config);
   return parsed.success ? parsed.data : null;
 }
 
@@ -335,22 +330,14 @@ export const HttpResultDetailSchema = z.object({
 }) satisfies z.ZodType<HttpResultDetail>;
 
 /**
- * Parse + validate a stored `monitorExecutions.resultDetail` JSON string into an
+ * Validate a stored `monitorExecutions.resultDetail` jsonb value into an
  * {@link HttpResultDetail}, or `null` if absent / malformed / structurally
  * invalid. The single read-path parser the detail page uses — the result-detail
  * twin of {@link parseHttpMonitorConfig} — so a bad row never crashes the render.
  */
-export function parseHttpResultDetail(
-  raw: string | null,
-): HttpResultDetail | null {
-  if (!raw) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  const result = HttpResultDetailSchema.safeParse(parsed);
+export function parseHttpResultDetail(raw: unknown): HttpResultDetail | null {
+  if (raw == null) return null;
+  const result = HttpResultDetailSchema.safeParse(raw);
   return result.success ? result.data : null;
 }
 
@@ -399,22 +386,16 @@ export const TcpMonitorConfigSchema = z.object({
 export type TcpMonitorConfig = z.infer<typeof TcpMonitorConfigSchema>;
 
 /**
- * Parse + validate a stored `monitors.config` JSON string into a
+ * Validate a stored `monitors.config` jsonb value into a
  * {@link TcpMonitorConfig}, or `null` if it's absent / malformed / invalid. The
  * single read-path parser shared by the executor (`tcp-run.ts`) and the detail
  * display loader — the tcp twin of {@link parseHttpMonitorConfig}.
  */
 export function parseTcpMonitorConfig(
-  config: string | null,
+  config: unknown,
 ): TcpMonitorConfig | null {
-  if (!config) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(config);
-  } catch {
-    return null;
-  }
-  const parsed = TcpMonitorConfigSchema.safeParse(raw);
+  if (config == null) return null;
+  const parsed = TcpMonitorConfigSchema.safeParse(config);
   return parsed.success ? parsed.data : null;
 }
 
@@ -433,22 +414,14 @@ export const TcpResultDetailSchema = z.object({
 }) satisfies z.ZodType<TcpResultDetail>;
 
 /**
- * Parse + validate a stored `monitorExecutions.resultDetail` JSON string into a
+ * Validate a stored `monitorExecutions.resultDetail` jsonb value into a
  * {@link TcpResultDetail}, or `null` if absent / malformed / structurally
  * invalid. The tcp twin of {@link parseHttpResultDetail} — a bad row degrades to
  * `null` instead of crashing the detail render.
  */
-export function parseTcpResultDetail(
-  raw: string | null,
-): TcpResultDetail | null {
-  if (!raw) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  const result = TcpResultDetailSchema.safeParse(parsed);
+export function parseTcpResultDetail(raw: unknown): TcpResultDetail | null {
+  if (raw == null) return null;
+  const result = TcpResultDetailSchema.safeParse(raw);
   return result.success ? result.data : null;
 }
 
@@ -554,8 +527,8 @@ export type UpdateTcpMonitorInput = z.infer<typeof UpdateTcpMonitorSchema>;
  *     correct combined type.
  *   - `config` — the http and tcp `config` shapes are DISJOINT objects, whose
  *     intersection would be an impossible "must be both" type. The repo stores it
- *     as a JSON string gated by the monitor's stored type, so the union is the
- *     correct combined type.
+ *     directly into the `jsonb` `config` column gated by the monitor's stored
+ *     type, so the union is the correct combined type.
  * Both are omitted from the per-type halves and re-added here.
  */
 export type UpdateMonitorInput = Omit<
@@ -566,4 +539,10 @@ export type UpdateMonitorInput = Omit<
   Omit<UpdateTcpMonitorInput, "intervalSeconds" | "config"> & {
     intervalSeconds?: number;
     config?: HttpMonitorConfig | TcpMonitorConfig;
+    // Not schema-derived — assembled from separate recipient form fields via
+    // `buildAlertTargets`, not a single validated field. `undefined` = leave
+    // untouched; `null` = all members; else the explicit `{ users, groups }`
+    // selection. The repo serializes it and writes it in the SAME UPDATE as the
+    // config, so the edit modal's config + recipients commit atomically.
+    alertTargets?: AlertTargets | null;
   };

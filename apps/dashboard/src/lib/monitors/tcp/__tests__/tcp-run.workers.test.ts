@@ -25,10 +25,12 @@ const BASE_CONFIG: TcpMonitorConfig = {
 function monitorWith(
   config: Partial<TcpMonitorConfig> | string | null,
 ): Monitor {
-  const configText =
+  // `config` is a jsonb column: store the OBJECT directly (no JSON.stringify).
+  // A string/null input models a non-object / absent stored value.
+  const configValue =
     typeof config === "string" || config === null
       ? config
-      : JSON.stringify({ ...BASE_CONFIG, ...config });
+      : { ...BASE_CONFIG, ...config };
   return {
     id: "m1",
     teamId: "team-1",
@@ -37,7 +39,7 @@ function monitorWith(
     type: "tcp",
     enabled: 1,
     source: null,
-    config: configText,
+    config: configValue,
     intervalSeconds: 60,
     schedulingStrategy: "round_robin",
     retryConfig: null,

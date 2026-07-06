@@ -1,4 +1,4 @@
-import { defineHandler, type InferProps } from "void";
+import { defer, defineHandler, type InferProps } from "void";
 import { and, asc, db, desc, eq } from "void/db";
 import {
   runs,
@@ -8,6 +8,7 @@ import {
   testTags,
 } from "@schema";
 import { loadQuarantineByTestId } from "@/lib/quarantine-repo";
+import { RUN_PUBLIC_COLUMNS } from "@/lib/run-columns";
 import {
   childByTestIdWhere,
   childByTestResultWhere,
@@ -57,7 +58,11 @@ export const loader = defineHandler(async (c) => {
         ),
       )
       .limit(1),
-    db.select().from(runs).where(runByIdWhere(scope, runId)).limit(1),
+    db
+      .select(RUN_PUBLIC_COLUMNS)
+      .from(runs)
+      .where(runByIdWhere(scope, runId))
+      .limit(1),
   ]);
   const result = resultRows[0];
   const run = runRows[0];
@@ -77,59 +82,43 @@ export const loader = defineHandler(async (c) => {
   // ownership-verified above: the project invariant is that EVERY query
   // against these tables is project-scoped, so a future refactor that loosens
   // the parent probe can't silently turn these into cross-tenant reads.
-  const [
-    tagRows,
-    annotationRows,
-    artifactGroupMap,
-    attemptRows,
-    historyRows,
-    quarantineRows,
-  ] = await Promise.all([
-    db
-      .select({ tag: testTags.tag })
-      .from(testTags)
-      .where(childByTestResultWhere(testTags, scope, testResultId)),
-    db
-      .select({
-        type: testAnnotations.type,
-        description: testAnnotations.description,
-      })
-      .from(testAnnotations)
-      .where(childByTestResultWhere(testAnnotations, scope, testResultId)),
-    // Server-owned artifact presentation: signed URLs + visual grouping +
-    // per-attempt ordering. Raw r2Key / tokens stay inside this call.
-    loadAttemptArtifactGroups(scope, testResultId, origin),
-    db
-      .select({
-        attempt: testResultAttempts.attempt,
-        status: testResultAttempts.status,
-        durationMs: testResultAttempts.durationMs,
-        errorMessage: testResultAttempts.errorMessage,
-        errorStack: testResultAttempts.errorStack,
-      })
-      .from(testResultAttempts)
-      .where(childByTestResultWhere(testResultAttempts, scope, testResultId))
-      .orderBy(asc(testResultAttempts.attempt)),
-    db
-      .select({
-        testResultId: testResults.id,
-        runId: testResults.runId,
-        status: testResults.status,
-        durationMs: testResults.durationMs,
-        createdAt: testResults.createdAt,
-        branch: runs.branch,
-        commitSha: runs.commitSha,
-      })
-      .from(testResults)
-      .innerJoin(runs, eq(runs.id, testResults.runId))
-      .where(childByTestIdWhere(testResults, scope, result.testId))
-      .orderBy(desc(testResults.createdAt))
-      .limit(HISTORY_LIMIT),
-    // Quarantine state for this test — drives the badge + owner-gated control
-    // in the page header. One testId, so at most one row.
-    loadQuarantineByTestId(project.id, [result.testId]),
-  ]);
+  //
+  // Eager batch: tags + annotations + per-attempt rows + quarantine state —
+  // all tiny point/index reads that drive the above-the-fold header, metadata,
+  // attempt tabs and error panels. The two costly reads (the bounded history
+  // strip and the per-row artifact-signing fan-out) defer below.
+  const [tagRows, annotationRows, attemptRows, quarantineRows] =
+    await Promise.all([
+      db
+        .select({ tag: testTags.tag })
+        .from(testTags)
+        .where(childByTestResultWhere(testTags, scope, testResultId)),
+      db
+        .select({
+          type: testAnnotations.type,
+          description: testAnnotations.description,
+        })
+        .from(testAnnotations)
+        .where(childByTestResultWhere(testAnnotations, scope, testResultId)),
+      db
+        .select({
+          attempt: testResultAttempts.attempt,
+          status: testResultAttempts.status,
+          durationMs: testResultAttempts.durationMs,
+          errorMessage: testResultAttempts.errorMessage,
+          errorStack: testResultAttempts.errorStack,
+        })
+        .from(testResultAttempts)
+        .where(childByTestResultWhere(testResultAttempts, scope, testResultId))
+        .orderBy(asc(testResultAttempts.attempt)),
+      // Quarantine state for this test — drives the badge + owner-gated control
+      // in the page header. One testId, so at most one row.
+      loadQuarantineByTestId(project.id, [result.testId]),
+    ]);
 
+  // A deferred loader streams a variant-specific body — set no-store so the
+  // browser can't replay the wrong (NDJSON vs HTML) variant.
+  c.header("Cache-Control", "private, no-store");
   return {
     kind: "ok" as const,
     project: {
@@ -153,13 +142,42 @@ export const loader = defineHandler(async (c) => {
     quarantineError: url.searchParams.get("quarantineError"),
     tags: tagRows,
     annotations: annotationRows,
-    // Serialize the Map<attempt, group> as an array for the wire; the page
-    // rebuilds the lookup. `maxObservedAttempt` lets the page size the attempt
-    // list without re-deriving it from raw artifact rows it no longer receives.
-    artifactGroups: Array.from(artifactGroupMap.values()),
-    maxObservedAttempt:
-      artifactGroupMap.size > 0 ? Math.max(...artifactGroupMap.keys()) : -1,
     attempts: attemptRows,
-    history: historyRows,
+
+    // Below-the-fold duration-history strip — a bounded 30-row testId scan,
+    // deferred behind the shared RunHistoryChart skeleton.
+    history: defer(async () =>
+      db
+        .select({
+          testResultId: testResults.id,
+          runId: testResults.runId,
+          status: testResults.status,
+          durationMs: testResults.durationMs,
+          createdAt: testResults.createdAt,
+          branch: runs.branch,
+          commitSha: runs.commitSha,
+        })
+        .from(testResults)
+        .innerJoin(runs, eq(runs.id, testResults.runId))
+        .where(childByTestIdWhere(testResults, scope, result.testId))
+        .orderBy(desc(testResults.createdAt))
+        .limit(HISTORY_LIMIT),
+    ),
+
+    // Server-owned artifact presentation for the right rail: signed URLs +
+    // visual grouping + per-attempt ordering. This is the per-row token-signing
+    // / SigV4 presign FAN-OUT — the page's most expensive read — so it streams
+    // behind the rail skeleton. Raw r2Key / tokens stay inside this call; the
+    // page receives finished, serializable AttemptArtifactGroups (Map → array).
+    // (Note: dropping the old `maxObservedAttempt` term keeps the eager attempt
+    // tab count on `retryCount + 1`, so the left column never reads this.)
+    artifacts: defer(async () => {
+      const artifactGroupMap = await loadAttemptArtifactGroups(
+        scope,
+        testResultId,
+        origin,
+      );
+      return { artifactGroups: Array.from(artifactGroupMap.values()) };
+    }),
   };
 });

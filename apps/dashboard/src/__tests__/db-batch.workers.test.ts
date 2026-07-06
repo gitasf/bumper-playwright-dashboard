@@ -22,7 +22,7 @@ vi.mock("void/db", () => ({
   db: { transaction: transactionSpy },
 }));
 
-const { runBatch } = await import("@/lib/db-batch");
+const { runBatch, isForeignKeyViolation } = await import("@/lib/db-batch");
 
 describe("runBatch", () => {
   it("runs the builder's statements in a transaction, returning results in order", async () => {
@@ -49,5 +49,26 @@ describe("runBatch", () => {
   it("handles an empty batch", async () => {
     const results = await runBatch(() => []);
     expect(results).toEqual([]);
+  });
+});
+
+describe("isForeignKeyViolation", () => {
+  it("detects SQLSTATE 23503 by code, by message, or a cause hop down", () => {
+    expect(isForeignKeyViolation({ code: "23503" })).toBe(true);
+    expect(
+      isForeignKeyViolation(
+        new Error(
+          'insert or update on table "runs" violates foreign key constraint "runs_monitorId_monitors_id_fk"',
+        ),
+      ),
+    ).toBe(true);
+    // Drizzle wraps the driver error, so the code can sit a `.cause` hop down.
+    expect(isForeignKeyViolation({ cause: { code: "23503" } })).toBe(true);
+  });
+
+  it("is false for a unique violation and for unrelated errors", () => {
+    expect(isForeignKeyViolation({ code: "23505" })).toBe(false);
+    expect(isForeignKeyViolation(new Error("connection reset"))).toBe(false);
+    expect(isForeignKeyViolation(null)).toBe(false);
   });
 });

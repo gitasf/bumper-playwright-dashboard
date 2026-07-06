@@ -57,25 +57,49 @@ export function changedRows(result: unknown): number {
 }
 
 /**
+ * Whether a thrown error carries a Postgres SQLSTATE `code` (or the matching
+ * message fragment) anywhere in its cause chain. Drizzle wraps driver errors (a
+ * `DrizzleQueryError` whose `.cause` is the pg/pglite error), so the
+ * SQLSTATE/message can be one or more `.cause` hops down rather than on the
+ * top-level error.
+ */
+function hasDbErrorCode(
+  err: unknown,
+  code: string,
+  messageFragment: string,
+): boolean {
+  let e: unknown = err;
+  for (let i = 0; e != null && i < 8; i++) {
+    if ((e as { code?: unknown }).code === code) return true;
+    const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+    if (msg.includes(messageFragment)) return true;
+    const next = (e as { cause?: unknown }).cause;
+    if (next === e) break;
+    e = next;
+  }
+  return false;
+}
+
+/**
  * Whether a thrown error is a UNIQUE / primary-key constraint violation. Used by
  * the lost-the-race recovery paths (`openRun`, `registerArtifacts`) and the
  * settings mutations' friendly duplicate-slug messages. Postgres surfaces a
  * structured SQLSTATE — `23505` is unique_violation.
  */
 export function isUniqueViolation(err: unknown): boolean {
-  // Walk the cause chain: Drizzle wraps driver errors (a `DrizzleQueryError`
-  // whose `.cause` is the pg/pglite error), so the SQLSTATE/message can be one
-  // or more `.cause` hops down rather than on the top-level error.
-  let e: unknown = err;
-  for (let i = 0; e != null && i < 8; i++) {
-    if ((e as { code?: unknown }).code === "23505") return true;
-    const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "";
-    if (msg.includes("duplicate key value violates unique constraint")) {
-      return true;
-    }
-    const next = (e as { cause?: unknown }).cause;
-    if (next === e) break;
-    e = next;
-  }
-  return false;
+  return hasDbErrorCode(
+    err,
+    "23505",
+    "duplicate key value violates unique constraint",
+  );
+}
+
+/**
+ * Whether a thrown error is a FOREIGN KEY constraint violation (SQLSTATE
+ * `23503`). `openRun` uses it to recover a synthetic run whose `monitorId`
+ * points at a monitor deleted between scheduling and open: it nulls the link
+ * (exactly what the FK's `onDelete: "set null"` would have done) and retries.
+ */
+export function isForeignKeyViolation(err: unknown): boolean {
+  return hasDbErrorCode(err, "23503", "violates foreign key constraint");
 }

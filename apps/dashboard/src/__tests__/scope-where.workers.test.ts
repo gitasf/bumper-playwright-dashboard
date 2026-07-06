@@ -260,12 +260,6 @@ describe("makeTenantScope", () => {
  * the exact predicate the helper emits.
  */
 describe("staleRunFilter", () => {
-  type RecordedSql = {
-    __op: string;
-    strings: TemplateStringsArray;
-    args: readonly unknown[];
-  };
-
   /** The `eq`/`lt` children of the top-level `and(...)`, by operator name. */
   function readStaleChildren(node: unknown) {
     const op = node as RecordedOp;
@@ -289,25 +283,15 @@ describe("staleRunFilter", () => {
   it("compares the lastActivityAt liveness signal (not createdAt) against the cutoff", () => {
     const cutoff = 1_700_000_000;
     const children = readStaleChildren(staleRunFilter(cutoff));
-    // The temporal half is an `lt(<sql coalesce(...)>, cutoff)`.
+    // The temporal half is `lt(lastActivityAt, cutoff)` — the column directly,
+    // NOT createdAt, and no `coalesce` fallback (the column is now NOT NULL, so
+    // every writer sets it; see schema-rework-plan Phase 4).
     expect(children.lt).toBeDefined();
     const [lhs, rhs] = children.lt.args;
     expect(rhs).toBe(cutoff);
-    // The left operand is a coalesce SQL fragment that references BOTH
-    // lastActivityAt (the liveness column) AND createdAt (the NULL fallback),
-    // never createdAt alone — that is the entire correctness of the finding.
-    const fragment = lhs as RecordedSql;
-    expect(fragment.__op).toBe("sql");
-    const columnNames = fragment.args.map(
-      (a) => (a as { name?: unknown })?.name,
-    );
-    expect(columnNames).toContain("lastActivityAt");
-    expect(columnNames).toContain("createdAt");
-    // The liveness column is the primary operand; createdAt is only the
-    // coalesce fallback (i.e. lastActivityAt comes first).
-    expect(columnNames.indexOf("lastActivityAt")).toBeLessThan(
-      columnNames.indexOf("createdAt"),
-    );
+    // The left operand is the lastActivityAt column itself (not a coalesce SQL
+    // fragment, and never createdAt).
+    expect((lhs as { name?: unknown })?.name).toBe("lastActivityAt");
   });
 
   it("ANDs exactly two predicates — the status guard and the staleness compare", () => {

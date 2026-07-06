@@ -115,6 +115,10 @@ const TestResultSchema = z.object({
   errorMessage: truncatedText(MAX.MESSAGE),
   errorStack: truncatedText(MAX.STACK),
   workerIndex: z.number().int().min(0).optional(),
+  // 1-based Playwright shard that ran this test; null on a non-sharded run.
+  // Lets the run-detail Tests tab group rows by shard. `.optional()` keeps
+  // pre-shard-aware reporters (which omit it) parsing clean.
+  shardIndex: z.number().int().min(1).nullable().optional(),
   tags: z.array(z.string().min(1).max(MAX.TAG)).max(MAX_TAGS).default([]),
   annotations: z
     .array(

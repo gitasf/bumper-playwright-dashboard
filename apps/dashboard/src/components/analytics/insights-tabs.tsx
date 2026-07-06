@@ -1,4 +1,4 @@
-import { Link } from "@void/react";
+import { Link, PREFETCH_STABLE } from "@/components/ui/link";
 import { cn } from "@/lib/cn";
 
 export type InsightsTabKey =
@@ -58,6 +58,7 @@ export function InsightsTabs({
     <div className="-mb-px flex items-center gap-1 border-b border-line-1 bg-background px-6">
       {tabs.map((t) => (
         <Link
+          cacheFor={PREFETCH_STABLE}
           className={cn(
             "relative -mb-px px-3 py-2 text-[13px] transition-colors",
             active === t.key

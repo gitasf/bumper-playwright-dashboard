@@ -1,25 +1,5 @@
 import type { RunProgressTest } from "@/realtime/run-progress";
-import {
-  statusGroupKey,
-  statusSortKey,
-  type StatusGroupKey,
-} from "@/lib/status";
-
-/**
- * Worst-status-first severity (lower = worse). Drives both group ordering and
- * within-group row ordering. Delegates to the shared status registry
- * (`statusSortKey`) for outcome statuses; `queued` is a live-progress in-flight
- * state (not a Playwright outcome, so absent from the registry) and ranks just
- * below `flaky` / above `skipped`, between the registry's `flaky` (2) and
- * `skipped` (4) slots.
- *
- * Exported so the run-detail Tests island can order rows by the same scale it
- * groups by, instead of keeping a parallel copy of the `queued` special-case.
- */
-export function severityOf(status: string): number {
-  if (status === "queued") return 3;
-  return statusSortKey(status);
-}
+import { statusGroupKey, type StatusGroupKey } from "@/lib/status";
 
 /**
  * Strip the `projectName` and `file` prefixes that Playwright's
@@ -45,63 +25,110 @@ export function parseTitleSegments(
   return { describeChain, testTitle };
 }
 
-// --- Run-detail Tests-tab engine -------------------------------------------
+// --- Run-detail Tests-tab helpers ------------------------------------------
 //
-// The run-detail Tests island folds live test rows through one pipeline:
-// filter (status + search) → group (by file or Playwright project, worst-first)
-// → count (4-bucket collapse) → pick which groups to auto-expand. These pure
-// stages live here so the island shrinks to state + presentation, and so the
-// filter/group/count/auto-expand rules are unit-testable without rendering the
-// island and feeding it live events.
+// The Tests tab groups + counts + orders a run's rows SERVER-side
+// (`loadRunGroupSkeleton`) and paginates each group's rows lazily. These pure
+// client helpers cover the pieces the island still owns: the status/search
+// filter applied to the live overlay, the group-by axis type, and the
+// raw-key ↔ identity ↔ label contract that ties a streamed row to its
+// server-built header.
 
-/** Status filter chip values — `"all"` plus the four collapsed buckets. */
-export type StatusFilter = "all" | StatusGroupKey;
+/**
+ * A named (non-`"all"`) status filter. `"recommended"` is the action-oriented
+ * default: the tests that need review = the failed ∪ flaky buckets.
+ */
+export type StatusFilterValue = "recommended" | StatusGroupKey;
 
-/** Group-by axis for the Tests tab: file path or Playwright project name. */
-export type GroupByAxis = "file" | "project";
+/** Status filter chip values — `"all"` plus `"recommended"` + the four buckets. */
+export type StatusFilter = "all" | StatusFilterValue;
 
-/** Per-bucket counts after the `timedout → failed` / `interrupted → flaky` collapse. */
-export type StatusGroupCounts = Record<StatusGroupKey, number>;
-
-export interface GroupAndSortOptions {
-  /** Free-text needle matched against title + file (case-insensitive). */
-  search: string;
-  /** Active status chip; `"all"` disables status filtering. */
-  statusFilter: StatusFilter;
-  /** Group rows by file path or by Playwright project. */
-  groupBy: GroupByAxis;
+/**
+ * Whether a test row passes the active named status filter. `"recommended"`
+ * matches the failed OR flaky bucket; the others match their own bucket. The
+ * client-side counterpart of the server's `statusFilterMembers`.
+ */
+export function matchesStatusFilter(
+  status: string,
+  filter: StatusFilterValue,
+): boolean {
+  const bucket = statusGroupKey(status);
+  if (filter === "recommended")
+    return bucket === "failed" || bucket === "flaky";
+  return bucket === filter;
 }
 
-export interface GroupAndSortResult {
-  /** `[groupKey, tests]` pairs, worst-group-first, rows worst-status-first. */
-  groups: [string, RunProgressTest[]][];
-  /** Counts over the *unfiltered* input (so the chips never hide their own bucket). */
-  statusCounts: StatusGroupCounts;
-  /** Group keys to expand on first paint (see `selectDefaultExpandedKeys`). */
-  suggestedExpanded: Set<string>;
+/**
+ * Row order within the Recommended view: failed-bucket rows first, then flaky.
+ * (Other views are a single bucket, so this only reorders `recommended`.)
+ */
+export function recommendedRank(status: string): number {
+  return statusGroupKey(status) === "failed" ? 0 : 1;
 }
+
+/** Group-by axis for the Tests tab: file path, Playwright project, or shard. */
+export type GroupByAxis = "file" | "project" | "shard";
 
 const FILE_FALLBACK_KEY = "Other";
 const PROJECT_FALLBACK_KEY = "default";
+const SHARD_FALLBACK_KEY = "Unsharded";
 
 /**
- * Count tests into the four user-facing buckets, applying the registry's
- * collapse rules (`timedout → failed`, `interrupted → flaky`). Pure.
+ * The RAW grouping value for a row under the active axis — matching the group
+ * SKELETON's `key` (`loadRunGroupSkeleton`), so a live-streamed row folds into
+ * the right server-built header. Returns the canonical value the row query
+ * filters on: the `file` string (empty → `""`, never null since the column is
+ * NOT NULL), `projectName` (nullable), or `shardIndex` as a decimal string
+ * (nullable). See `groupLabel` for the display form.
  */
-export function countByStatusGroup(
-  tests: readonly RunProgressTest[],
-): StatusGroupCounts {
-  const counts: StatusGroupCounts = {
-    passed: 0,
-    failed: 0,
-    flaky: 0,
-    skipped: 0,
-  };
-  for (const test of tests) {
-    const bucket = statusGroupKey(test.status);
-    if (bucket) counts[bucket] += 1;
+export function rawGroupKey(
+  test: RunProgressTest,
+  groupBy: GroupByAxis,
+): string | null {
+  if (groupBy === "file") return test.file;
+  if (groupBy === "project") return test.projectName ?? null;
+  return test.shardIndex != null ? String(test.shardIndex) : null;
+}
+
+/**
+ * A stable, collision-free client identity for a raw group key (which may be
+ * `null` for a fallback group). Used as the React key and the `expanded` Set
+ * member. The sentinel can't collide with a real key: `null` only occurs on
+ * the nullable project/shard axes, whose real keys are project names / decimal
+ * strings.
+ */
+export function groupKeyId(key: string | null): string {
+  return key ?? " __null__";
+}
+
+/** The human label for a raw group key under an axis (fallbacks included). */
+export function groupLabel(axis: GroupByAxis, key: string | null): string {
+  if (axis === "file") return key && key.length > 0 ? key : FILE_FALLBACK_KEY;
+  if (axis === "project") return key ?? PROJECT_FALLBACK_KEY;
+  return key === null ? SHARD_FALLBACK_KEY : `Shard ${key}`;
+}
+
+/** Per-bucket test counts for a single group (see `worstStatusInGroup`). */
+export type StatusGroupCounts = Record<StatusGroupKey, number>;
+
+/**
+ * The worst-status bucket present in a group's counts, for the group-header
+ * status glyph — the single-glyph "how did this file / project / shard do"
+ * summary. Order is `failed` → `flaky` → `passed` → `skipped`. This
+ * deliberately ranks `skipped` *below* `passed` (unlike the app-wide
+ * `statusSortKey`, where skipped outranks passed): a group with even one real
+ * result should read as that result, not "skipped", so skipped only wins when
+ * the group is entirely skipped. Returns null only when every bucket is zero
+ * (e.g. a group of only in-flight `queued` rows). Pure.
+ */
+export function worstStatusInGroup(
+  counts: StatusGroupCounts,
+): StatusGroupKey | null {
+  const worstFirst: StatusGroupKey[] = ["failed", "flaky", "passed", "skipped"];
+  for (const bucket of worstFirst) {
+    if (counts[bucket] > 0) return bucket;
   }
-  return counts;
+  return null;
 }
 
 /**
@@ -109,6 +136,10 @@ export function countByStatusGroup(
  * when its collapsed bucket matches the chip (or the chip is `"all"`) AND its
  * title or file contains the needle (case-insensitive; empty needle matches
  * everything). Pure — preserves input order.
+ *
+ * Applied client-side to the live `byId` overlay so it matches the active view
+ * — the server already applies the equivalent status/search filter to the rows
+ * it paginates in (see `loadRunResultsPage`).
  */
 export function filterTests(
   tests: readonly RunProgressTest[],
@@ -117,9 +148,8 @@ export function filterTests(
   const needle = opts.search.trim().toLowerCase();
   return tests.filter((test) => {
     if (opts.statusFilter !== "all") {
-      const bucket = statusGroupKey(test.status);
-      // null bucket (e.g. "queued") is excluded from every named filter
-      if (bucket !== opts.statusFilter) return false;
+      // null bucket (e.g. "queued") matches no named filter → excluded.
+      if (!matchesStatusFilter(test.status, opts.statusFilter)) return false;
     }
     if (
       needle &&
@@ -133,83 +163,68 @@ export function filterTests(
 }
 
 /**
- * Worst-group-first ordering score for a bucket of rows: `failed`-bucket rows
- * weigh 4, `flaky`-bucket rows weigh 2, everything else 0. Higher = worse =
- * earlier. Mirrors the design's "groups with the most damage float to the top",
- * which is intentionally different from single worst-status ordering (a file
- * with ten failures outranks one with a single failure).
- */
-function groupSeverityScore(rows: readonly RunProgressTest[]): number {
-  let score = 0;
-  for (const test of rows) {
-    const bucket = statusGroupKey(test.status); // null for queued — skip
-    if (bucket === "failed") score += 4;
-    else if (bucket === "flaky") score += 2;
-  }
-  return score;
-}
-
-/**
- * The run-detail Tests-tab engine: filter → group → order. Returns the ordered
- * `[key, rows]` groups (rows sorted worst-status-first), the 4-bucket counts
- * over the *unfiltered* input, and the default-expanded key set. Pure — safe to
- * call inside a `useMemo`.
+ * Merge a group's server-paginated rows with its live `byId` overlay into the
+ * display list. `fetched` was already status/search-filtered server-side;
+ * `liveRows` are the raw overlay rows for this group, so they're filtered here
+ * to the active view. Merge is existing-id-wins keyed by id (a test finishing
+ * mid-view replaces its fetched row), then ordered to match the server page:
  *
- * Grouping key is the file path (empty → "Other") or the Playwright project
- * name (null → "default"). Groups order worst-first by `groupSeverityScore`;
- * within a group rows order worst-first by `severityOf`.
+ *   - `id` descending (a ULID is monotonic with insert time, so this equals the
+ *     server's `(createdAt DESC, id DESC)` cursor order — a newly-loaded page
+ *     never reorders rows above the scroll position);
+ *   - for the `"recommended"` view, failed-bucket rows sort before flaky first
+ *     (matching the server's leading bucket rank), then `id`-desc within a rank.
+ *
+ * Pure — takes plain arrays, returns a new array; no query/React coupling.
  */
-export function groupAndSortTests(
-  tests: readonly RunProgressTest[],
-  opts: GroupAndSortOptions,
-): GroupAndSortResult {
-  const statusCounts = countByStatusGroup(tests);
-  const filtered = filterTests(tests, opts);
-
-  const map = new Map<string, RunProgressTest[]>();
-  for (const test of filtered) {
-    const key =
-      opts.groupBy === "file"
-        ? test.file || FILE_FALLBACK_KEY
-        : (test.projectName ?? PROJECT_FALLBACK_KEY);
-    const bucket = map.get(key);
-    if (bucket) bucket.push(test);
-    else map.set(key, [test]);
+export function mergeGroupRows(
+  fetched: readonly RunProgressTest[],
+  liveRows: readonly RunProgressTest[],
+  opts: { search: string; statusFilter: StatusFilter },
+): RunProgressTest[] {
+  const live = filterTests(liveRows, opts);
+  const map = new Map<string, RunProgressTest>();
+  for (const r of fetched) map.set(r.id, r);
+  // A live event replaces its server-fetched row by id, but live rows can't
+  // carry `hasTrace` (artifacts register after the results flush), so carry the
+  // server-derived flag forward — otherwise a mid-view live update would drop
+  // the row's "Test Replay" button until the next reload.
+  for (const r of live) {
+    const prev = map.get(r.id);
+    map.set(
+      r.id,
+      prev?.hasTrace && r.hasTrace === undefined ? { ...r, hasTrace: true } : r,
+    );
   }
-
-  const groups = Array.from(map.entries());
-  groups.sort((a, b) => groupSeverityScore(b[1]) - groupSeverityScore(a[1]));
-  for (const [, rows] of groups) {
-    rows.sort((a, b) => severityOf(a.status) - severityOf(b.status));
-  }
-
-  return {
-    groups,
-    statusCounts,
-    suggestedExpanded: selectDefaultExpandedKeys(groups),
-  };
+  return [...map.values()].sort((a, b) => {
+    if (opts.statusFilter === "recommended") {
+      const rank = recommendedRank(a.status) - recommendedRank(b.status);
+      if (rank !== 0) return rank;
+    }
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
 }
 
 /**
- * Pick the group keys to expand on first paint: among the worst-six groups,
- * any group containing a `failed`- or `flaky`-bucket test. If none qualify,
- * fall back to expanding the single worst group so the list is never fully
- * collapsed. Pure. Expects `groups` already ordered worst-first.
+ * Flatten paginated group-skeleton pages into one worst-first header list,
+ * deduping by group identity ({@link groupKeyId}). A live run's severity
+ * ordering mutates, so a group can momentarily land on two pages across
+ * refetches — existing-wins keeps it once (a shifted-rank group re-sorts on the
+ * next full refetch). Generic over the header shape so it needn't import the
+ * server row type. Pure.
  */
-export function selectDefaultExpandedKeys(
-  groups: readonly [string, readonly RunProgressTest[]][],
-): Set<string> {
-  const expanded = new Set<string>();
-  for (const [key, rows] of groups.slice(0, 6)) {
-    if (
-      rows.some((test) => {
-        const bucket = statusGroupKey(test.status); // null for queued — skip
-        return bucket === "failed" || bucket === "flaky";
-      })
-    ) {
-      expanded.add(key);
+export function dedupeGroups<G extends { key: string | null }>(
+  pages: readonly { groups: readonly G[] }[],
+): G[] {
+  const seen = new Set<string>();
+  const out: G[] = [];
+  for (const page of pages) {
+    for (const g of page.groups) {
+      const id = groupKeyId(g.key);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(g);
     }
   }
-  if (expanded.size === 0 && groups[0]) expanded.add(groups[0][0]);
-  return expanded;
+  return out;
 }

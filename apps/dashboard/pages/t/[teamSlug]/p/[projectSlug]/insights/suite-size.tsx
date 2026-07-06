@@ -1,3 +1,4 @@
+import { use } from "react";
 import { AnalyticsButtonGroup } from "@/components/analytics/button-group";
 import { InsightsTabs } from "@/components/analytics/insights-tabs";
 import { AnalyticsKpiCard } from "@/components/analytics/kpi-card";
@@ -6,10 +7,17 @@ import {
   type LineChartBucket,
   type LineChartSeries,
 } from "@/components/analytics/line-chart";
+import { DeferredSection } from "@/components/defer-error-boundary";
 import { PageHeader } from "@/components/page-header";
 import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
 import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import {
+  ChartSkeleton,
+  KpiCardSkeleton,
+  TextLineSkeleton,
+} from "@/components/skeletons";
 import { Card, CardPanel } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { alignBuckets } from "@/lib/analytics/bucketing";
 import { cn } from "@/lib/cn";
 import { makeHrefBuilder } from "@/lib/page-links";
@@ -21,9 +29,11 @@ const COUNT_SERIES: LineChartSeries[] = [
 ];
 
 /**
- * Suite Size analytics page. Trend chart (peak suite size per bucket) plus
- * KPIs (total tests, tests added in last 30d), distribution by spec file,
- * and top tags.
+ * Suite Size analytics page. The header, tabs, and filters paint immediately
+ * from the cheap eager `branches` list; the three heavy regions — the trend
+ * cluster (chart + "Total tests"/"Net change" KPIs), the "Tests added" scan,
+ * and the spec-file/tag distribution — each stream in behind their own skeleton
+ * via `defer()`. See the server module for the query split.
  */
 export default function SuiteSizePage({
   project,
@@ -33,61 +43,22 @@ export default function SuiteSizePage({
   shellStartSec,
   branchParam,
   branches,
-  trendRows,
+  trend,
   testsAdded,
   addedLookbackDays,
-  peakOverall,
-  kpis,
-  fileRows,
-  tagRows,
+  distribution,
   pathname,
   ranges,
 }: Props) {
-  const buckets: LineChartBucket[] = alignBuckets(
-    segment,
-    shellStartSec,
-    nowSec,
-    trendRows,
-  ).map((s) => {
-    // Empty buckets — bucket data hasn't been recorded — render as gaps in
-    // the line. `null` skips that segment instead of pulling the line down
-    // to zero, which would falsely imply "all tests were deleted".
-    const peak = s.row?.peak;
-    return {
-      key: s.key,
-      label: s.label,
-      values: [peak ?? null],
-      tooltip: (
-        <>
-          <div className="mb-1 border-b border-border/50 pb-1 font-mono text-[10px] text-muted-foreground">
-            {s.label}
-          </div>
-          <div className="font-mono text-xs">
-            {peak == null ? (
-              <span className="text-muted-foreground">No data</span>
-            ) : (
-              <>
-                <span className="text-foreground">{peak.toLocaleString()}</span>{" "}
-                <span className="text-muted-foreground">tests</span>
-              </>
-            )}
-          </div>
-        </>
-      ),
-    };
-  });
-
-  const fileTotal = fileRows.reduce((acc, r) => acc + r.tests, 0);
-
-  // "Total tests" KPI numbers (peak sparkline + net change / growth) are
-  // assembled in the loader; the page just renders them.
-  const { peakSpark, firstPeak, lastPeak, netChange, growthPct } = kpis;
-
   const { with: hrefWith } = makeHrefBuilder(pathname, {
     range,
     segment,
     branch: branchParam,
   });
+
+  // A deferred region that fails latches its error boundary; clear it when the
+  // filters change so the SPA-nav re-fetch re-attempts the region.
+  const resetKey = `${range}:${branchParam ?? ""}:${segment}`;
 
   return (
     <>
@@ -118,23 +89,18 @@ export default function SuiteSizePage({
 
       <div className="flex-1 overflow-y-auto min-h-0 px-6 py-6 pb-12 space-y-[18px]">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <AnalyticsKpiCard
-            footnote="Peak suite size observed in the window"
-            label="Total tests"
-            spark={peakSpark}
-            value={peakOverall.toLocaleString()}
-          />
-          <AnalyticsKpiCard
-            footnote="Tests whose first-ever run is in the window"
-            label={`Tests added (${addedLookbackDays}d)`}
-            value={testsAdded.toLocaleString()}
-          />
-          <AnalyticsKpiCard
-            delta={Math.round(growthPct * 10) / 10}
-            footnote={`From ${firstPeak.toLocaleString()} → ${lastPeak.toLocaleString()}`}
-            label="Net change"
-            value={`${netChange >= 0 ? "+" : ""}${netChange.toLocaleString()}`}
-          />
+          <DeferredSection resetKey={resetKey} skeleton={<KpiCardSkeleton />}>
+            <TotalTestsKpi trend={trend} />
+          </DeferredSection>
+          <DeferredSection resetKey={resetKey} skeleton={<KpiCardSkeleton />}>
+            <TestsAddedKpi
+              addedLookbackDays={addedLookbackDays}
+              testsAdded={testsAdded}
+            />
+          </DeferredSection>
+          <DeferredSection resetKey={resetKey} skeleton={<KpiCardSkeleton />}>
+            <NetChangeKpi trend={trend} />
+          </DeferredSection>
         </div>
 
         <Card className="overflow-hidden rounded-[9px] border-line-1">
@@ -148,78 +114,248 @@ export default function SuiteSizePage({
             </p>
           </div>
           <CardPanel className="px-[18px] py-4">
-            <AnalyticsLineChart
-              ariaLabel={`Suite size trend across ${buckets.length} buckets`}
-              buckets={buckets}
-              emptyState="No runs in this window."
-              formatYTick={(v) => Math.round(v).toLocaleString()}
-              height={320}
-              series={COUNT_SERIES}
-            />
+            <DeferredSection
+              resetKey={resetKey}
+              skeleton={<ChartSkeleton height={320} />}
+            >
+              <TrendChart
+                nowSec={nowSec}
+                segment={segment}
+                shellStartSec={shellStartSec}
+                trend={trend}
+              />
+            </DeferredSection>
           </CardPanel>
         </Card>
 
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-          <Card className="overflow-hidden rounded-[9px] border-line-1 lg:col-span-2">
-            <div className="border-b border-line-1 px-[18px] py-3">
-              <h2 className="text-[13px] font-semibold tracking-tight">
-                Distribution by spec file
-              </h2>
-              <p className="mt-0.5 text-[11.5px] text-fg-3">
-                Top {fileRows.length} files by distinct test count.
-              </p>
-            </div>
-            <CardPanel className="px-[18px] py-3">
-              {fileRows.length === 0 ? (
-                <EmptyRow>No tests in this window.</EmptyRow>
-              ) : (
-                <ul className="space-y-2.5">
-                  {fileRows.map((r) => (
-                    <DistributionRow
-                      key={r.file}
-                      label={r.file}
-                      total={fileTotal}
-                      value={r.tests}
-                    />
-                  ))}
-                </ul>
-              )}
-            </CardPanel>
-          </Card>
-
-          <Card className="overflow-hidden rounded-[9px] border-line-1">
-            <div className="border-b border-line-1 px-[18px] py-3">
-              <h2 className="text-[13px] font-semibold tracking-tight">
-                Top tags
-              </h2>
-              <p className="mt-0.5 text-[11.5px] text-fg-3">
-                Distinct tests per tag.
-              </p>
-            </div>
-            <CardPanel className="px-[18px] py-3">
-              {tagRows.length === 0 ? (
-                <EmptyRow>No tagged tests.</EmptyRow>
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {tagRows.map((r) => (
-                    <span
-                      className="inline-flex items-center gap-1.5 rounded-full border border-line-1 bg-bg-2 px-2 py-px font-mono text-[11.5px] text-fg-2"
-                      key={r.tag}
-                      style={{ lineHeight: "18px" }}
-                    >
-                      <span style={{ color: "var(--running)" }}>{r.tag}</span>
-                      <span className="text-fg-4">
-                        {r.tests.toLocaleString()}
-                      </span>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </CardPanel>
-          </Card>
-        </div>
+        <DeferredSection
+          resetKey={resetKey}
+          skeleton={<DistributionSkeleton />}
+        >
+          <DistributionSection distribution={distribution} />
+        </DeferredSection>
       </div>
     </>
+  );
+}
+
+function TotalTestsKpi({ trend }: { trend: Props["trend"] }) {
+  const { peakOverall, kpis } = use(trend);
+  return (
+    <AnalyticsKpiCard
+      footnote="Peak suite size observed in the window"
+      label="Total tests"
+      spark={kpis.peakSpark}
+      value={peakOverall.toLocaleString()}
+    />
+  );
+}
+
+function TestsAddedKpi({
+  testsAdded,
+  addedLookbackDays,
+}: {
+  testsAdded: Props["testsAdded"];
+  addedLookbackDays: number;
+}) {
+  const value = use(testsAdded);
+  return (
+    <AnalyticsKpiCard
+      footnote="Tests whose first-ever run is in the window"
+      label={`Tests added (${addedLookbackDays}d)`}
+      value={value.toLocaleString()}
+    />
+  );
+}
+
+function NetChangeKpi({ trend }: { trend: Props["trend"] }) {
+  const { firstPeak, lastPeak, netChange, growthPct } = use(trend).kpis;
+  return (
+    <AnalyticsKpiCard
+      delta={Math.round(growthPct * 10) / 10}
+      footnote={`From ${firstPeak.toLocaleString()} → ${lastPeak.toLocaleString()}`}
+      label="Net change"
+      value={`${netChange >= 0 ? "+" : ""}${netChange.toLocaleString()}`}
+    />
+  );
+}
+
+function TrendChart({
+  trend,
+  segment,
+  shellStartSec,
+  nowSec,
+}: {
+  trend: Props["trend"];
+  segment: Props["segment"];
+  shellStartSec: number;
+  nowSec: number;
+}) {
+  const { trendRows } = use(trend);
+  const buckets: LineChartBucket[] = alignBuckets(
+    segment,
+    shellStartSec,
+    nowSec,
+    trendRows,
+  ).map((s) => {
+    // Empty buckets render as gaps in the line (`null` skips the segment
+    // rather than pulling it to zero, which would falsely imply deletions).
+    const peak = s.row?.peak;
+    return {
+      key: s.key,
+      label: s.label,
+      values: [peak ?? null],
+      tooltip: (
+        <>
+          <div className="mb-1 border-b border-border/50 pb-1 font-mono text-[10px] text-muted-foreground">
+            {s.label}
+          </div>
+          <div className="font-mono text-xs">
+            {peak == null ? (
+              <span className="text-muted-foreground">No data</span>
+            ) : (
+              <>
+                <span className="text-foreground">{peak.toLocaleString()}</span>{" "}
+                <span className="text-muted-foreground">tests</span>
+              </>
+            )}
+          </div>
+        </>
+      ),
+    };
+  });
+
+  return (
+    <AnalyticsLineChart
+      ariaLabel={`Suite size trend across ${buckets.length} buckets`}
+      buckets={buckets}
+      emptyState="No runs in this window."
+      formatYTick={(v) => Math.round(v).toLocaleString()}
+      height={320}
+      series={COUNT_SERIES}
+    />
+  );
+}
+
+function DistributionSection({
+  distribution,
+}: {
+  distribution: Props["distribution"];
+}) {
+  const { fileRows, tagRows, fileTotal } = use(distribution);
+  return (
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <Card className="overflow-hidden rounded-[9px] border-line-1 lg:col-span-2">
+        <div className="border-b border-line-1 px-[18px] py-3">
+          <h2 className="text-[13px] font-semibold tracking-tight">
+            Distribution by spec file
+          </h2>
+          <p className="mt-0.5 text-[11.5px] text-fg-3">
+            Top {fileRows.length} files by distinct test count.
+          </p>
+        </div>
+        <CardPanel className="px-[18px] py-3">
+          {fileRows.length === 0 ? (
+            <EmptyRow>No tests in this window.</EmptyRow>
+          ) : (
+            <ul className="space-y-2.5">
+              {fileRows.map((r) => (
+                <DistributionRow
+                  key={r.file}
+                  label={r.file}
+                  total={fileTotal}
+                  value={r.tests}
+                />
+              ))}
+            </ul>
+          )}
+        </CardPanel>
+      </Card>
+
+      <Card className="overflow-hidden rounded-[9px] border-line-1">
+        <div className="border-b border-line-1 px-[18px] py-3">
+          <h2 className="text-[13px] font-semibold tracking-tight">Top tags</h2>
+          <p className="mt-0.5 text-[11.5px] text-fg-3">
+            Distinct tests per tag.
+          </p>
+        </div>
+        <CardPanel className="px-[18px] py-3">
+          {tagRows.length === 0 ? (
+            <EmptyRow>No tagged tests.</EmptyRow>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {tagRows.map((r) => (
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full border border-line-1 bg-bg-2 px-2 py-px font-mono text-[11.5px] text-fg-2"
+                  key={r.tag}
+                  style={{ lineHeight: "18px" }}
+                >
+                  <span style={{ color: "var(--running)" }}>{r.tag}</span>
+                  <span className="text-fg-4">{r.tests.toLocaleString()}</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </CardPanel>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * Suspense fallback matching the two-card distribution layout. Boxes mirror
+ * `DistributionSection`: headers reserve the real `text-[13px]`/`text-[11.5px]`
+ * line boxes (with the same `mt-0.5`), each file row is 26px (a `text-xs` label
+ * line + `mt-1` + the `h-1.5` bar, like `DistributionRow`), and tag pills are
+ * 22px (18px inline line box + `py-px` + 1px borders). The row/pill counts are
+ * representative rather than exact — the real counts are only known once the
+ * deferred query resolves, and this is the last card on the page, so a resolved
+ * count above/below the placeholder resizes this card in place without shifting
+ * anything else.
+ */
+function DistributionSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <Card className="overflow-hidden rounded-[9px] border-line-1 lg:col-span-2">
+        <div className="border-b border-line-1 px-[18px] py-3">
+          <TextLineSkeleton className="w-40" text="text-[13px]" />
+          <TextLineSkeleton className="mt-0.5 w-56" text="text-[11.5px]" />
+        </div>
+        <CardPanel className="px-[18px] py-3">
+          <ul className="space-y-2.5">
+            {Array.from({ length: 6 }, (_, i) => (
+              <li className="flex items-center gap-4" key={i}>
+                <div className="min-w-0 flex-1">
+                  <TextLineSkeleton className="w-3/4" text="text-xs" />
+                  <Skeleton className="mt-1 h-1.5 w-full" />
+                </div>
+                <Skeleton className="h-4 w-16" />
+              </li>
+            ))}
+          </ul>
+        </CardPanel>
+      </Card>
+
+      <Card className="overflow-hidden rounded-[9px] border-line-1">
+        <div className="border-b border-line-1 px-[18px] py-3">
+          <TextLineSkeleton className="w-20" text="text-[13px]" />
+          <TextLineSkeleton className="mt-0.5 w-36" text="text-[11.5px]" />
+        </div>
+        <CardPanel className="px-[18px] py-3">
+          <div className="flex flex-wrap gap-1.5">
+            {Array.from({ length: 8 }, (_, i) => (
+              <Skeleton
+                className={cn(
+                  "h-[22px] rounded-full",
+                  ["w-12", "w-16", "w-20"][i % 3],
+                )}
+                key={i}
+              />
+            ))}
+          </div>
+        </CardPanel>
+      </Card>
+    </div>
   );
 }
 

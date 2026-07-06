@@ -1,5 +1,5 @@
 import { Users } from "lucide-react";
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";

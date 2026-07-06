@@ -1,3 +1,4 @@
+import { use } from "react";
 import {
   ArrowRight,
   Bell,
@@ -10,12 +11,13 @@ import {
   Settings,
   X as XIcon,
 } from "lucide-react";
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import {
   AnalyticsLineChart,
   type LineChartBucket,
   type LineChartSeries,
 } from "@/components/analytics/line-chart";
+import { DeferredSection } from "@/components/defer-error-boundary";
 import {
   MonBadge,
   MonGlyph,
@@ -23,10 +25,12 @@ import {
   MonTypeGlyph,
 } from "@/components/monitors/monitor-status";
 import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
+import { ChartSkeleton } from "@/components/skeletons";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardPanel } from "@/components/ui/card";
 import { CodeEditor } from "@/components/ui/code-editor";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/cn";
 import {
   parseHttpResultDetail,
@@ -35,7 +39,9 @@ import {
 import type { HttpResultDetail, TcpResultDetail } from "@/lib/monitors/types";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
 import type { MonitorExecution } from "@schema";
+import { AlertRecipientsFields } from "../alert-recipients-fields";
 import { HttpMonitorForm } from "../http-monitor-form";
+import { MonitorEditDialog } from "../monitor-edit-dialog";
 import { MonitorForm } from "../monitor-form";
 import { TcpMonitorForm } from "../tcp-monitor-form";
 import { humanizeInterval, monitorTypeLabel } from "../monitors-ui.shared";
@@ -43,6 +49,10 @@ import type { Props } from "./index.server";
 
 type CreateProps = Extract<Props, { mode: "create" }>;
 type DetailProps = Extract<Props, { mode: "detail" }>;
+/** The resolved shape of the deferred `detail` payload (executions, analytics,
+ *  alert-recipient picker data), unwrapped from its `Deferred<…>` wrapper so the
+ *  `use()`-reading child components can name its members. */
+type DetailData = Awaited<DetailProps["detail"]>;
 
 /**
  * Serves two surfaces from one route (see `index.server.ts` — Void's matcher
@@ -182,40 +192,50 @@ function TypeCard({
 function MonitorDetailView({
   project,
   monitor,
-  executions,
   httpConfig,
   tcpConfig,
-  uptimeWindows,
-  responseTrend,
-  uptime,
   nextRunAt,
   editing,
   formError,
   dangerError,
-  members,
-  groups,
   alertTargets,
+  detail,
 }: DetailProps) {
   const base = `/t/${project.teamSlug}/p/${project.slug}`;
   const monitorsBase = `${base}/monitors`;
   const here = `${monitorsBase}/${monitor.id}`;
   const enabled = monitor.enabled === 1;
   const alertsOn = monitor.alertsEnabled === 1;
-  // Current alert-recipient selection (null = all members) for the picker.
-  const selectedUsers = new Set(alertTargets?.users ?? []);
-  const selectedGroups = new Set(alertTargets?.groups ?? []);
   const status = monitorDisplayStatus(monitor);
   const isHttp = monitor.type === "http";
   const isTcp = monitor.type === "tcp" || monitor.type === "ping";
   // Members get a read-only detail view; only owners can edit/pause/delete (the
   // actions are owner-gated server-side). `editingOpen` also defends against a
-  // member hand-typing `?edit=1`: the edit section stays hidden AND the
-  // read-only definition still shows (it keys off `!editingOpen`, not `!editing`).
+  // member hand-typing `?edit=1`: the edit modal is only rendered for owners,
+  // so a non-owner can't open it regardless of the URL flag.
   const isOwner = project.role === "owner";
   const editingOpen = isOwner && editing;
-  // For http + tcp, the header "Uptime 24h" shows the real time-based 24h
-  // number; for browser it shows the count-based window uptime.
-  const headerUptime = isHttp || isTcp ? (uptimeWindows?.d1 ?? null) : uptime;
+  // Alert-recipient fields, rendered as a slot inside whichever edit form the
+  // modal shows (see `AlertRecipientsFields`). The member/group lists come from
+  // the deferred `detail` payload, so the fields stream in behind a skeleton
+  // once the picker data resolves. The modal that consumes this is owner-gated.
+  const recipientsFields = (
+    <DeferredSection skeleton={<RecipientsFieldsSkeleton />}>
+      <RecipientsFieldsRegion
+        alertTargets={alertTargets}
+        detail={detail}
+        teamSlug={project.teamSlug}
+      />
+    </DeferredSection>
+  );
+  // The read-only config sections (Request / Connection / Test definition) all
+  // carry the same owner-only "Edit" affordance opening the modal via `?edit=1`.
+  const editSectionButton = isOwner ? (
+    <Button render={<Link href={`${here}?edit=1`} />} size="xs" variant="ghost">
+      <Settings className="size-[11px]" />
+      Edit
+    </Button>
+  ) : null;
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
@@ -279,14 +299,15 @@ function MonitorDetailView({
                 </Button>
               </form>
 
-              {/* Edit toggle — flips `?edit=1` (server-rendered, no island). */}
+              {/* Edit — flips `?edit=1`, which the edit modal keys its open
+                  state off of (see `MonitorEditDialog`). */}
               <Button
-                render={<Link href={editing ? here : `${here}?edit=1`} />}
+                render={<Link href={`${here}?edit=1`} />}
                 size="sm"
                 variant="outline"
               >
                 <Settings className="size-3.5" />
-                {editing ? "Close editor" : "Edit"}
+                Edit
               </Button>
             </>
           )}
@@ -333,295 +354,107 @@ function MonitorDetailView({
           <MetaItem
             label="Uptime 24h"
             last
-            value={<UptimePct value={headerUptime} />}
+            value={
+              <DeferredSection
+                skeleton={
+                  <Skeleton className="inline-block h-[15px] w-12 align-middle" />
+                }
+              >
+                <HeaderUptime detail={detail} isHttpOrTcp={isHttp || isTcp} />
+              </DeferredSection>
+            }
           />
         </div>
 
         <div className="mx-auto flex max-w-[980px] flex-col gap-[18px] px-6 pt-5 pb-16">
-          {/* Edit section. */}
-          {editingOpen && (
-            <section className="overflow-hidden rounded-[9px] border border-line-1 bg-bg-1">
-              <div className="border-b border-line-1 px-[18px] py-3">
-                <h3 className="text-[13.5px] font-semibold">Edit monitor</h3>
-                <p className="mt-0.5 text-[12px] text-fg-3">
-                  Changes take effect on the next scheduled run.
-                </p>
-              </div>
-              <div className="px-[18px] py-4">
-                {isHttp ? (
-                  <HttpMonitorForm
-                    action={`${here}?updateMonitor`}
-                    cancelHref={here}
-                    defaultConfig={httpConfig ?? undefined}
-                    defaultEnabled={enabled}
-                    defaultIntervalSeconds={monitor.intervalSeconds}
-                    defaultName={monitor.name}
-                    error={formError}
-                    submitLabel="Save changes"
-                  />
-                ) : isTcp ? (
-                  <TcpMonitorForm
-                    action={`${here}?updateMonitor`}
-                    cancelHref={here}
-                    defaultConfig={tcpConfig ?? undefined}
-                    defaultEnabled={enabled}
-                    defaultIntervalSeconds={monitor.intervalSeconds}
-                    defaultName={monitor.name}
-                    error={formError}
-                    submitLabel="Save changes"
-                  />
-                ) : (
-                  <MonitorForm
-                    action={`${here}?updateMonitor`}
-                    cancelHref={here}
-                    defaultEnabled={enabled}
-                    defaultIntervalSeconds={monitor.intervalSeconds}
-                    defaultName={monitor.name}
-                    defaultSource={monitor.source ?? ""}
-                    error={formError}
-                    submitLabel="Save changes"
-                  />
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* Alert recipients (owner-only). Edge-triggered down/recovery
-              emails go to these people; "All team members" stores null so new
-              members are auto-included. Server-rendered, no island. */}
+          {/* Edit surface (owner-only), a modal driven by `?edit=1`. The
+              per-type config form and the alert-recipient fields share one
+              `<form>`, so a single "Save changes" persists both. */}
           {isOwner && (
-            <section className="overflow-hidden rounded-[9px] border border-line-1 bg-bg-1">
-              <div className="border-b border-line-1 px-[18px] py-3">
-                <h3 className="text-[13.5px] font-semibold">
-                  Alert recipients
-                </h3>
-                <p className="mt-0.5 text-[12px] text-fg-3">
-                  Who gets the down/recovery emails for this monitor.{" "}
-                  <Link
-                    className="underline"
-                    href={`/settings/teams/${project.teamSlug}/groups`}
-                  >
-                    Manage groups
-                  </Link>
-                  .
-                </p>
-              </div>
-              <form
-                action={`${here}?setAlertRecipients`}
-                className="m-0 px-[18px] py-4"
-                method="post"
-              >
-                <div className="mb-4 flex flex-col gap-1.5 text-[13px]">
-                  <label className="flex items-center gap-2">
-                    <input
-                      defaultChecked={alertTargets === null}
-                      name="recipientMode"
-                      type="radio"
-                      value="all"
-                    />
-                    All team members
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      defaultChecked={alertTargets !== null}
-                      name="recipientMode"
-                      type="radio"
-                      value="specific"
-                    />
-                    Specific members or groups
-                  </label>
-                </div>
-
-                {groups.length > 0 && (
-                  <div className="mb-3.5">
-                    <div className="mb-1.5 text-[11.5px] font-medium uppercase tracking-wider text-fg-3">
-                      Groups
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      {groups.map((g) => (
-                        <label
-                          key={g.id}
-                          className="flex items-center gap-2 text-[13px]"
-                        >
-                          <input
-                            defaultChecked={selectedGroups.has(g.id)}
-                            name="group"
-                            type="checkbox"
-                            value={g.id}
-                          />
-                          {g.name}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="mb-4">
-                  <div className="mb-1.5 text-[11.5px] font-medium uppercase tracking-wider text-fg-3">
-                    Members
-                  </div>
-                  {members.length === 0 ? (
-                    <p className="text-[13px] text-fg-3">No members.</p>
-                  ) : (
-                    <div className="flex flex-col gap-1.5">
-                      {members.map((m) => (
-                        <label
-                          key={m.userId}
-                          className="flex items-center gap-2 text-[13px]"
-                        >
-                          <input
-                            defaultChecked={selectedUsers.has(m.userId)}
-                            name="user"
-                            type="checkbox"
-                            value={m.userId}
-                          />
-                          <span className="font-medium">{m.name}</span>
-                          <span className="text-fg-3">{m.email}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <Button size="sm" type="submit">
-                  Save recipients
-                </Button>
-              </form>
-            </section>
-          )}
-
-          {/* http + tcp: time-based uptime (both); response-time trend (http). */}
-          {(isHttp || isTcp) && uptimeWindows && (
-            <section className="grid grid-cols-3 gap-3">
-              <UptimeStat label="Uptime · 24h" value={uptimeWindows.d1} />
-              <UptimeStat label="Uptime · 7d" value={uptimeWindows.d7} />
-              <UptimeStat label="Uptime · 30d" value={uptimeWindows.d30} />
-            </section>
-          )}
-          {isHttp && responseTrend && (
-            <ResponseTimeCard trend={responseTrend} />
-          )}
-
-          {/* Execution timeline. */}
-          <section>
-            <SectionTitle
-              right={
-                executions.length > 0 ? (
-                  <span className="text-[11.5px] text-fg-3">
-                    {executions.length} recent · newest first
-                  </span>
-                ) : null
-              }
-              title="Executions"
-            />
-            <div className="overflow-hidden rounded-[9px] border border-line-1 bg-bg-1">
-              {executions.length === 0 ? (
-                <div className="px-6 py-10 text-center">
-                  <div className="mb-2.5 inline-flex size-10 items-center justify-center rounded-[10px] border border-line-1 bg-bg-2 text-fg-3">
-                    <Clock className="size-[18px]" />
-                  </div>
-                  <div className="text-[14px] font-medium">
-                    No executions yet
-                  </div>
-                  <div className="mx-auto mt-1 max-w-[360px] text-[12.5px] leading-relaxed text-fg-3">
-                    {enabled
-                      ? "The first execution will appear here once the scheduler picks this monitor up — usually within a minute."
-                      : "This monitor is paused. Resume it to start collecting executions."}
-                  </div>
-                </div>
+            <MonitorEditDialog closeHref={here} open={editingOpen}>
+              {/* No `cancelHref` in the modal: the dialog's ✕ / Escape /
+                  backdrop close it instantly (a Cancel <Link> would instead lag
+                  a loader round-trip, out of step with those affordances). */}
+              {isHttp ? (
+                <HttpMonitorForm
+                  action={`${here}?updateMonitor`}
+                  defaultConfig={httpConfig ?? undefined}
+                  defaultEnabled={enabled}
+                  defaultIntervalSeconds={monitor.intervalSeconds}
+                  defaultName={monitor.name}
+                  error={formError}
+                  recipients={recipientsFields}
+                  submitLabel="Save changes"
+                />
+              ) : isTcp ? (
+                <TcpMonitorForm
+                  action={`${here}?updateMonitor`}
+                  defaultConfig={tcpConfig ?? undefined}
+                  defaultEnabled={enabled}
+                  defaultIntervalSeconds={monitor.intervalSeconds}
+                  defaultName={monitor.name}
+                  error={formError}
+                  recipients={recipientsFields}
+                  submitLabel="Save changes"
+                />
               ) : (
-                executions.map((ex, i) =>
-                  isHttp ? (
-                    <HttpExecRow
-                      exec={ex}
-                      key={ex.id}
-                      last={i === executions.length - 1}
-                    />
-                  ) : isTcp ? (
-                    <TcpExecRow
-                      exec={ex}
-                      key={ex.id}
-                      last={i === executions.length - 1}
-                    />
-                  ) : (
-                    <ExecRow
-                      base={base}
-                      exec={ex}
-                      key={ex.id}
-                      last={i === executions.length - 1}
-                    />
-                  ),
-                )
+                <MonitorForm
+                  action={`${here}?updateMonitor`}
+                  defaultEnabled={enabled}
+                  defaultIntervalSeconds={monitor.intervalSeconds}
+                  defaultName={monitor.name}
+                  defaultSource={monitor.source ?? ""}
+                  error={formError}
+                  recipients={recipientsFields}
+                  submitLabel="Save changes"
+                />
               )}
-            </div>
-          </section>
+            </MonitorEditDialog>
+          )}
 
-          {/* Definition / config (read-only when not editing). */}
-          {!editingOpen &&
-            (isHttp ? (
-              <section>
-                <SectionTitle
-                  right={
-                    isOwner ? (
-                      <Button
-                        render={<Link href={`${here}?edit=1`} />}
-                        size="xs"
-                        variant="ghost"
-                      >
-                        <Settings className="size-[11px]" />
-                        Edit
-                      </Button>
-                    ) : null
-                  }
-                  title="Request"
-                />
-                <HttpConfigSummary config={httpConfig} />
-              </section>
-            ) : isTcp ? (
-              <section>
-                <SectionTitle
-                  right={
-                    isOwner ? (
-                      <Button
-                        render={<Link href={`${here}?edit=1`} />}
-                        size="xs"
-                        variant="ghost"
-                      >
-                        <Settings className="size-[11px]" />
-                        Edit
-                      </Button>
-                    ) : null
-                  }
-                  title="Connection"
-                />
-                <TcpConfigSummary config={tcpConfig} />
-              </section>
-            ) : (
-              <section>
-                <SectionTitle
-                  right={
-                    isOwner ? (
-                      <Button
-                        render={<Link href={`${here}?edit=1`} />}
-                        size="xs"
-                        variant="ghost"
-                      >
-                        <Settings className="size-[11px]" />
-                        Edit
-                      </Button>
-                    ) : null
-                  }
-                  title="Test definition"
-                />
-                <CodeEditor
-                  aria-label="Monitor test definition"
-                  height={220}
-                  onValueChange={NOOP}
-                  readOnly
-                  value={monitor.source ?? ""}
-                />
-              </section>
-            ))}
+          {/* Analytics (time-based uptime tiles + response-time trend) and the
+              execution timeline all read the deferred `detail` payload, so they
+              stream in together behind a skeleton while the header + config
+              summary paint immediately. */}
+          <DeferredSection
+            skeleton={
+              <AnalyticsAndExecutionsSkeleton isHttp={isHttp} isTcp={isTcp} />
+            }
+          >
+            <AnalyticsAndExecutions
+              base={base}
+              detail={detail}
+              enabled={enabled}
+              isHttp={isHttp}
+              isTcp={isTcp}
+            />
+          </DeferredSection>
+
+          {/* Definition / config (read-only). Editing happens in the modal
+              overlay, so this stays rendered behind it; its "Edit" button
+              opens that modal via `?edit=1`. */}
+          {isHttp ? (
+            <section>
+              <SectionTitle right={editSectionButton} title="Request" />
+              <HttpConfigSummary config={httpConfig} />
+            </section>
+          ) : isTcp ? (
+            <section>
+              <SectionTitle right={editSectionButton} title="Connection" />
+              <TcpConfigSummary config={tcpConfig} />
+            </section>
+          ) : (
+            <section>
+              <SectionTitle right={editSectionButton} title="Test definition" />
+              <CodeEditor
+                aria-label="Monitor test definition"
+                height={220}
+                onValueChange={NOOP}
+                readOnly
+                value={monitor.source ?? ""}
+              />
+            </section>
+          )}
 
           {/* Danger zone (owner-only). */}
           {isOwner && (
@@ -669,6 +502,219 @@ function MonitorDetailView({
   );
 }
 
+/**
+ * Header "Uptime 24h" value — reads the deferred `detail` payload. For http +
+ * tcp it shows the real time-based 24h number (`uptimeWindows.d1`); for browser
+ * it shows the count-based window uptime.
+ */
+function HeaderUptime({
+  detail,
+  isHttpOrTcp,
+}: {
+  detail: DetailProps["detail"];
+  isHttpOrTcp: boolean;
+}) {
+  const { uptimeWindows, uptime } = use(detail);
+  const value = isHttpOrTcp ? (uptimeWindows?.d1 ?? null) : uptime;
+  return <UptimePct value={value} />;
+}
+
+/**
+ * The analytics tiles + response-time chart + execution timeline — all read the
+ * deferred `detail` payload via `use()`. Rendered inside a `DeferredSection` so
+ * a pending resolver shows the matching skeleton and a rejected one degrades to
+ * a scoped error card.
+ */
+function AnalyticsAndExecutions({
+  detail,
+  base,
+  isHttp,
+  isTcp,
+  enabled,
+}: {
+  detail: DetailProps["detail"];
+  base: string;
+  isHttp: boolean;
+  isTcp: boolean;
+  enabled: boolean;
+}) {
+  const { executions, uptimeWindows, responseTrend } = use(detail);
+
+  return (
+    <>
+      {/* http + tcp: time-based uptime (both); response-time trend (http). */}
+      {(isHttp || isTcp) && uptimeWindows && (
+        <section className="grid grid-cols-3 gap-3">
+          <UptimeStat label="Uptime · 24h" value={uptimeWindows.d1} />
+          <UptimeStat label="Uptime · 7d" value={uptimeWindows.d7} />
+          <UptimeStat label="Uptime · 30d" value={uptimeWindows.d30} />
+        </section>
+      )}
+      {isHttp && responseTrend && <ResponseTimeCard trend={responseTrend} />}
+
+      {/* Execution timeline. */}
+      <section>
+        <SectionTitle
+          right={
+            executions.length > 0 ? (
+              <span className="text-[11.5px] text-fg-3">
+                {executions.length} recent · newest first
+              </span>
+            ) : null
+          }
+          title="Executions"
+        />
+        <div className="overflow-hidden rounded-[9px] border border-line-1 bg-bg-1">
+          {executions.length === 0 ? (
+            <div className="px-6 py-10 text-center">
+              <div className="mb-2.5 inline-flex size-10 items-center justify-center rounded-[10px] border border-line-1 bg-bg-2 text-fg-3">
+                <Clock className="size-[18px]" />
+              </div>
+              <div className="text-[14px] font-medium">No executions yet</div>
+              <div className="mx-auto mt-1 max-w-[360px] text-[12.5px] leading-relaxed text-fg-3">
+                {enabled
+                  ? "The first execution will appear here once the scheduler picks this monitor up — usually within a minute."
+                  : "This monitor is paused. Resume it to start collecting executions."}
+              </div>
+            </div>
+          ) : (
+            executions.map((ex, i) =>
+              isHttp ? (
+                <HttpExecRow
+                  exec={ex}
+                  key={ex.id}
+                  last={i === executions.length - 1}
+                />
+              ) : isTcp ? (
+                <TcpExecRow
+                  exec={ex}
+                  key={ex.id}
+                  last={i === executions.length - 1}
+                />
+              ) : (
+                <ExecRow
+                  base={base}
+                  exec={ex}
+                  key={ex.id}
+                  last={i === executions.length - 1}
+                />
+              ),
+            )
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+/**
+ * Fallback matching {@link AnalyticsAndExecutions}: the uptime-tile row (http +
+ * tcp), the response-time chart (http), and the executions list. Row heights
+ * track the real content so the deferred data lands without layout shift.
+ */
+function AnalyticsAndExecutionsSkeleton({
+  isHttp,
+  isTcp,
+}: {
+  isHttp: boolean;
+  isTcp: boolean;
+}) {
+  return (
+    <>
+      {(isHttp || isTcp) && (
+        <section className="grid grid-cols-3 gap-3">
+          {Array.from({ length: 3 }, (_, i) => (
+            <div
+              className="rounded-[9px] border border-line-1 bg-bg-1 px-4 py-3"
+              key={i}
+            >
+              <Skeleton className="h-[13px] w-16" />
+              <Skeleton className="mt-1.5 h-[18px] w-14" />
+            </div>
+          ))}
+        </section>
+      )}
+      {isHttp && (
+        <Card className="overflow-hidden rounded-[9px] border-line-1">
+          <div className="border-b border-line-1 px-[18px] py-3">
+            <Skeleton className="h-[15px] w-28" />
+            <Skeleton className="mt-1.5 h-[13px] w-56" />
+          </div>
+          <CardPanel className="px-[18px] py-4">
+            <ChartSkeleton height={260} />
+          </CardPanel>
+        </Card>
+      )}
+      <section>
+        <SectionTitle title="Executions" />
+        <div className="overflow-hidden rounded-[9px] border border-line-1 bg-bg-1">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div
+              className={cn(
+                "flex items-center gap-3 px-[18px] py-[11px]",
+                i < 5 && "border-b border-b-line-1",
+              )}
+              key={i}
+            >
+              <Skeleton className="size-3.5 shrink-0 rounded-full" />
+              <Skeleton className="h-4 w-[92px] shrink-0 rounded-full" />
+              <Skeleton className="h-3 flex-1" />
+              <Skeleton className="h-3 w-[70px] shrink-0" />
+              <Skeleton className="h-3 w-[96px] shrink-0" />
+            </div>
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
+/**
+ * The alert-recipient picker fields for the edit modal — reads the deferred
+ * `detail` payload for the member/group lists, then renders
+ * {@link AlertRecipientsFields}. Owner-only (the modal that consumes it is
+ * owner-gated), so `members`/`groups` are non-empty here.
+ */
+function RecipientsFieldsRegion({
+  detail,
+  alertTargets,
+  teamSlug,
+}: {
+  detail: DetailProps["detail"];
+  alertTargets: DetailProps["alertTargets"];
+  teamSlug: string;
+}) {
+  const { members, groups } = use(detail);
+  return (
+    <AlertRecipientsFields
+      alertTargets={alertTargets}
+      groups={groups}
+      members={members}
+      teamSlug={teamSlug}
+    />
+  );
+}
+
+/** Fallback for the alert-recipient picker while the member/group lists load. */
+function RecipientsFieldsSkeleton() {
+  return (
+    <div className="border-t border-line-1 pt-4">
+      <Skeleton className="mb-1 h-[15px] w-28" />
+      <Skeleton className="mb-3.5 h-[15px] w-64" />
+      <div className="mb-4 flex flex-col gap-1.5">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-4 w-52" />
+      </div>
+      <Skeleton className="mb-1.5 h-[13px] w-20" />
+      <div className="flex flex-col gap-1.5">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton className="h-4 w-56" key={i} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** No-op change handler for the read-only definition editor. */
 function NOOP() {}
 
@@ -704,7 +750,7 @@ function UptimeStat({ label, value }: { label: string; value: number | null }) {
 function ResponseTimeCard({
   trend,
 }: {
-  trend: NonNullable<DetailProps["responseTrend"]>;
+  trend: NonNullable<DetailData["responseTrend"]>;
 }) {
   const series: LineChartSeries[] = [
     { key: "p50", label: "p50", color: "var(--color-foreground)" },

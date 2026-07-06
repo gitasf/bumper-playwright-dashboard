@@ -358,3 +358,147 @@ export function generateHistory(opts = {}) {
   runs.sort((a, b) => a.createdAt - b.createdAt);
   return { runs, catalog, incidents };
 }
+
+/**
+ * @typedef {{
+ *   shard: { index: number, total: number },
+ *   openPayload: unknown,
+ *   resultsPayload: { results: unknown[] },
+ *   completePayload: { status: string, durationMs: number, shard: { index: number, total: number } },
+ * }} ShardPayloads
+ */
+
+/**
+ * Build ONE genuinely-sharded run: `tests` synthetic tests distributed
+ * round-robin across `shards` Playwright shards. Every shard shares one
+ * `idempotencyKey` (so the dashboard merges them into a single run) and carries
+ * `shard {index,total}` on both open and complete, and every test result also
+ * carries its 1-based `shardIndex`. Driving these through `ingestShardedRun`
+ * exercises the REAL path — `expectedShards`, one `runShards` row per shard, and
+ * deferred worst-status finalize — not just tagging rows, so the run-detail
+ * Tests tab can group by shard at scale.
+ *
+ * Tests are also spread across ~40 fake spec files so grouping-by-file stays
+ * meaningful on the same run. Deliberately NOT backdated: the run lands at "now"
+ * and surfaces at the top of the runs list for eyeballing. Pure.
+ *
+ * @param {{ tests?: number, shards?: number, seed?: string }} [opts]
+ * @returns {{ idempotencyKey: string, shards: number, tests: number, perShard: ShardPayloads[] }}
+ */
+export function buildShardedRun(opts = {}) {
+  const tests = opts.tests ?? 1000;
+  const shards = Math.max(1, opts.shards ?? 8);
+  const seed = opts.seed ?? "sharded-seed-1";
+  const rand = makePrng(seed);
+  const idempotencyKey = `sharded-${seed}-${tests}x${shards}`;
+  const commitSha = sha40(rand);
+  const commitMessage = pick(rand, COMMIT_MESSAGES);
+  const actor = pick(rand, ACTORS);
+  const ciBuildId = `gha-${randInt(rand, 1_000_000, 9_999_999)}`;
+
+  const FILE_COUNT = 40;
+  /** @type {Array<{ planned: unknown[], results: unknown[], durationMs: number, failed: number }>} */
+  const buckets = Array.from({ length: shards }, () => ({
+    planned: [],
+    results: [],
+    durationMs: 0,
+    failed: 0,
+  }));
+
+  for (let n = 0; n < tests; n++) {
+    const shardIndex = (n % shards) + 1; // 1-based, round-robin across shards
+    const bucket = buckets[shardIndex - 1];
+    const file = `tests/suite-${String(n % FILE_COUNT).padStart(2, "0")}.spec.ts`;
+    const testId = `${file}|seeded test ${n}`;
+    const title = `${file} > seeded test ${n}`;
+    const durationMs = randInt(rand, 40, 2_500);
+
+    const roll = rand();
+    let status;
+    let attempts;
+    let errorMessage = null;
+    let errorStack = null;
+    if (roll < 0.82) {
+      status = "passed";
+      attempts = [{ attempt: 0, status: "passed", durationMs }];
+    } else if (roll < 0.9) {
+      status = "failed";
+      errorMessage = "Expected 200, got 500.";
+      errorStack = `Error: expected 200, got 500\n    at ${file}:17:3`;
+      attempts = [
+        { attempt: 0, status: "failed", durationMs, errorMessage, errorStack },
+      ];
+      bucket.failed += 1;
+    } else if (roll < 0.96) {
+      status = "flaky";
+      errorMessage = "flaked once, passed on retry";
+      errorStack = `Error: flaked once\n    at ${file}:9:1`;
+      attempts = [
+        {
+          attempt: 0,
+          status: "failed",
+          durationMs: Math.floor(durationMs / 2),
+          errorMessage,
+          errorStack,
+        },
+        { attempt: 1, status: "passed", durationMs: Math.ceil(durationMs / 2) },
+      ];
+    } else {
+      status = "skipped";
+      attempts = [{ attempt: 0, status: "skipped", durationMs: 0 }];
+    }
+
+    bucket.results.push(
+      buildResult(
+        {
+          testId,
+          title,
+          file,
+          projectName: null,
+          status,
+          durationMs,
+          errorMessage,
+          errorStack,
+          shardIndex,
+        },
+        attempts,
+      ),
+    );
+    bucket.planned.push({ testId, title, file, projectName: null });
+    bucket.durationMs += durationMs;
+  }
+
+  const perShard = buckets.map((b, i) => {
+    const shard = { index: i + 1, total: shards };
+    const openPayload = buildOpenRunPayload(
+      {
+        idempotencyKey,
+        ciProvider: "github",
+        ciBuildId,
+        branch: "main",
+        environment: "ci",
+        commitSha,
+        commitMessage,
+        repo: "wrightful/example-shop",
+        actor,
+        reporterVersion: "0.1.0",
+        playwrightVersion: "1.59.1",
+        shard,
+      },
+      b.planned,
+    );
+    // Wall-clock ≈ this shard's serial time with a little parallelism + jitter.
+    const durationMs =
+      Math.floor(b.durationMs / 2) + randInt(rand, 1_000, 5_000);
+    const status = b.failed > 0 ? "failed" : "passed";
+    const completePayload = buildCompleteRunPayload(status, durationMs, shard);
+    return {
+      shard,
+      openPayload,
+      resultsPayload: { results: b.results },
+      completePayload,
+    };
+  });
+
+  return { idempotencyKey, shards, tests, perShard };
+}

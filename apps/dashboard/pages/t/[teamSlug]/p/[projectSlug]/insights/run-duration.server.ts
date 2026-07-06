@@ -1,4 +1,4 @@
-import { defineHandler, type InferProps } from "void";
+import { defer, defineHandler, type InferProps } from "void";
 import { sql } from "void/db";
 import {
   parseSegment,
@@ -72,57 +72,12 @@ export const loader = defineHandler(async (c) => {
   const branches = await loadProjectBranches(scope);
   const branchSql = branchFragment(branchFilter);
 
-  const perBucket = await runRows<PerBucketDurationRow>(sql`
-    with ranked as (
-      select
-        ${expr} as bucket,
-        runs."durationMs" as duration,
-        row_number() over (partition by ${expr} order by runs."durationMs") as rn,
-        count(*) over (partition by ${expr}) as cnt
-      from runs
-      ${ciRunsScopeRawWhere(scope)}
-        and runs."durationMs" > 0
-        and runs."createdAt" >= ${windowStartSec}
-        ${branchSql}
-    )
-    select
-      bucket,
-      cast(max(cnt) as integer) as cnt,
-      ${percentilePick(0.5)} as p50,
-      ${percentilePick(0.9)} as p90,
-      ${percentilePick(0.95)} as p95
-    from ranked
-    group by bucket
-  `);
-
-  const overall: OverallDurationStats = (await runRow<OverallDurationStats>(sql`
-    with ranked as (
-      select
-        runs."durationMs" as duration,
-        row_number() over (order by runs."durationMs") as rn,
-        count(*) over () as cnt
-      from runs
-      ${ciRunsScopeRawWhere(scope)}
-        and runs."durationMs" > 0
-        and runs."createdAt" >= ${windowStartSec}
-        ${branchSql}
-    )
-    select
-      cast(max(cnt) as integer) as cnt,
-      ${percentilePick(0.5)} as p50,
-      ${percentilePick(0.9)} as p90,
-      ${percentilePick(0.95)} as p95
-    from ranked
-  `)) ?? {
-    cnt: 0,
-    p50: null,
-    p90: null,
-    p95: null,
-  };
-
-  // Staleness-tolerant analytics: cache privately with SWR (see worklog §4).
-  // `private` keeps tenant-scoped data out of shared/edge caches.
-  c.header("Cache-Control", "private, max-age=300, stale-while-revalidate=900");
+  // A deferred loader streams a variant-specific body (NDJSON on SPA nav /
+  // chunked HTML on document load, keyed by `Vary: X-VoidPages`); SWR/max-age
+  // caching would let the browser replay the wrong variant. Deferred pages must
+  // not be stored — the perceived-load win comes from streaming, not the cache.
+  // (Was `private, max-age=300, stale-while-revalidate=900`.)
+  c.header("Cache-Control", "private, no-store");
   return {
     project: {
       id: project.id,
@@ -138,10 +93,60 @@ export const loader = defineHandler(async (c) => {
     windowStartSec,
     branchParam,
     branches,
-    perBucket,
-    overall,
     pathname: url.pathname,
     segments: SEGMENTS as readonly string[],
     ranges: RANGES,
+
+    // Both percentile passes stream behind skeletons. Grouped in ONE resolver
+    // so the KPI values (`overall`) and their per-bucket sparklines + the chart
+    // (`perBucket`) can't tear. Returns plain rows only — the chart builds its
+    // JSX (buckets + tooltips) in the client child that reads this via `use()`.
+    duration: defer(async () => {
+      const perBucket = await runRows<PerBucketDurationRow>(sql`
+        with ranked as (
+          select
+            ${expr} as bucket,
+            runs."durationMs" as duration,
+            row_number() over (partition by ${expr} order by runs."durationMs") as rn,
+            count(*) over (partition by ${expr}) as cnt
+          from runs
+          ${ciRunsScopeRawWhere(scope)}
+            and runs."durationMs" > 0
+            and runs."createdAt" >= ${windowStartSec}
+            ${branchSql}
+        )
+        select
+          bucket,
+          cast(max(cnt) as integer) as cnt,
+          ${percentilePick(0.5)} as p50,
+          ${percentilePick(0.9)} as p90,
+          ${percentilePick(0.95)} as p95
+        from ranked
+        group by bucket
+      `);
+
+      const overall: OverallDurationStats =
+        (await runRow<OverallDurationStats>(sql`
+        with ranked as (
+          select
+            runs."durationMs" as duration,
+            row_number() over (order by runs."durationMs") as rn,
+            count(*) over () as cnt
+          from runs
+          ${ciRunsScopeRawWhere(scope)}
+            and runs."durationMs" > 0
+            and runs."createdAt" >= ${windowStartSec}
+            ${branchSql}
+        )
+        select
+          cast(max(cnt) as integer) as cnt,
+          ${percentilePick(0.5)} as p50,
+          ${percentilePick(0.9)} as p90,
+          ${percentilePick(0.95)} as p95
+        from ranked
+      `)) ?? { cnt: 0, p50: null, p90: null, p95: null };
+
+      return { perBucket, overall };
+    }),
   };
 });

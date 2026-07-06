@@ -52,8 +52,10 @@ test.describe("Test detail page", () => {
     const runId = await runsListPage.firstRunId();
     await runDetailPage.goto(runId);
 
-    // The failures run holds tests across multiple files; navigate to the
-    // visual-regression test specifically rather than the first row.
+    // The failures run holds tests across multiple files; expand the (paginated)
+    // groups, then navigate to the visual-regression test specifically rather
+    // than the first row.
+    await runDetailPage.expandTestGroups();
     const visualTestLink = page.getByRole("link", {
       name: /hero copy.*pricing match baseline/i,
     });

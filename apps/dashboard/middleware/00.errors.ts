@@ -75,6 +75,21 @@ export default defineMiddleware(async (c, next) => {
     }
     if (alreadyErrorPage) throw err;
 
+    // Mirror the post-next() arm's static-asset guard: a throw while serving an
+    // asset must NOT become the HTML /oops page — a 500 HTML body for a `.js`
+    // request surfaces as "Failed to fetch dynamically imported module" and
+    // breaks client-side nav. Pass a thrown Response through as-is; else log +
+    // 503 (never HTML). Reachable because `run_worker_first: ["/**"]` runs this
+    // whole stack for every /assets/* request.
+    if (looksLikeStaticAsset(path)) {
+      if (err instanceof Response) return err;
+      logger.error("unhandled error serving static asset", {
+        path,
+        ...describeError(err),
+      });
+      return new Response(null, { status: 503 });
+    }
+
     const outcome = mapErrorOutcome(extractStatus(err));
     // A thrown Response we don't transform — a 3xx redirect (the logged-out
     // `/` → /login redirect is a thrown 302) or an intentional 4xx — must be

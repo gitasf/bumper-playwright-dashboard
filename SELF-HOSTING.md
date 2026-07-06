@@ -254,11 +254,33 @@ Posts a check run on a PR's head commit reflecting the run outcome. **All-or-not
 
 Two independent axes (artifact bytes vs. test-result rows) swept by the `sweep-retention` cron. These are instance-wide defaults; a team can override its own windows in team settings. **Invariant:** `WRIGHTFUL_RETENTION_ARTIFACT_DAYS` ≤ `WRIGHTFUL_RETENTION_TEST_RESULTS_DAYS`.
 
-| Name                                    | Default | Purpose                                                                                  |
-| --------------------------------------- | ------- | ---------------------------------------------------------------------------------------- |
-| `WRIGHTFUL_RETENTION_ARTIFACT_DAYS`     | 30      | Age after which artifact R2 objects + rows are swept.                                    |
-| `WRIGHTFUL_RETENTION_TEST_RESULTS_DAYS` | 90      | Age after which `testResults` rows (+ cascaded children) are swept (run summaries kept). |
-| `WRIGHTFUL_RETENTION_SWEEP_BATCH_SIZE`  | 200     | Max rows per axis per project per cron pass (drains across passes).                      |
+| Name                                    | Default | Purpose                                                                                                                                                      |
+| --------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WRIGHTFUL_RETENTION_ARTIFACT_DAYS`     | 30      | Age after which artifact R2 objects + rows are swept.                                                                                                        |
+| `WRIGHTFUL_RETENTION_TEST_RESULTS_DAYS` | 90      | Age after which `testResults` rows (+ cascaded children) are swept (run summaries kept).                                                                     |
+| `WRIGHTFUL_RETENTION_SWEEP_BATCH_SIZE`  | 1000    | Rows of **each** axis deleted per project **per drain iteration** — the chunk size, not a per-invocation cap.                                                |
+| `WRIGHTFUL_RETENTION_SWEEP_BUDGET_MS`   | 20000   | Wall-clock budget (ms) for one `sweep-retention` invocation; the drain keeps deleting chunks (round-robin, randomized project order) until this elapses.     |
+| `WRIGHTFUL_RETENTION_SWEEP_MAX_CHUNKS`  | 120     | Hard backstop on **productive** drain chunks per invocation (idle projects don't count). Bounds a massive backlog; wall-clock is normally the binding limit. |
+
+### Usage quotas & billing (optional, Polar)
+
+**Off by default — every team is UNLIMITED.** When `POLAR_ACCESS_TOKEN` + `POLAR_WEBHOOK_SECRET` are both **unset** (the self-host default), `billingEnabled()` is false: there are no quota ceilings, no paywall UI, and the `reconcile-billing` cron + Polar webhook are inert. Only turn this on if you're running a paid hosted instance. Design rationale: [`docs/adr/0002-capability-flagged-billing-provider.md`](./docs/adr/0002-capability-flagged-billing-provider.md).
+
+With billing **on**, the `free` tier reads the `WRIGHTFUL_FREE_*` ceilings and every paid/trial tier reads the (finite) `WRIGHTFUL_PRO_*` ceilings; both are enforced by the same soft-warn-then-block machinery (`checkQuota`). The `WRIGHTFUL_FREE_*` / `WRIGHTFUL_QUOTA_SOFT_WARN_PCT` keys are harmless when billing is off (nothing reads them).
+
+| Name                                  | Required?   | Secret? | Default | Purpose                                                                  |
+| ------------------------------------- | ----------- | ------- | ------- | ------------------------------------------------------------------------ |
+| `POLAR_ACCESS_TOKEN`                  | For billing | Yes     | —       | Polar API token. Set with `POLAR_WEBHOOK_SECRET` to turn billing on.     |
+| `POLAR_WEBHOOK_SECRET`                | For billing | Yes     | —       | Verifies inbound Polar subscription/order webhooks.                      |
+| `POLAR_MODE`                          | No          | No      | sandbox | `sandbox` or `production` — which Polar environment to talk to.          |
+| `POLAR_PRO_PRODUCT_ID`                | For billing | No      | —       | The Polar product id mapped to the Pro tier.                             |
+| `WRIGHTFUL_FREE_MONTHLY_RUNS`         | No          | No      | —       | Free-tier monthly run cap (billing on).                                  |
+| `WRIGHTFUL_FREE_MONTHLY_TEST_RESULTS` | No          | No      | —       | Free-tier monthly test-result cap.                                       |
+| `WRIGHTFUL_FREE_ARTIFACT_BYTES`       | No          | No      | —       | Free-tier artifact-byte cap.                                             |
+| `WRIGHTFUL_PRO_MONTHLY_RUNS`          | No          | No      | 25000   | Pro-tier monthly run cap (finite, not unlimited).                        |
+| `WRIGHTFUL_PRO_MONTHLY_TEST_RESULTS`  | No          | No      | 5000000 | Pro-tier monthly test-result cap.                                        |
+| `WRIGHTFUL_PRO_ARTIFACT_BYTES`        | No          | No      | 100 GiB | Pro-tier artifact-byte cap.                                              |
+| `WRIGHTFUL_QUOTA_SOFT_WARN_PCT`       | No          | No      | 90      | Percent of a limit at which the UI starts warning before the hard block. |
 
 ### Data export / query API
 

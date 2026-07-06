@@ -1,4 +1,4 @@
-import { defineHandler, type InferProps } from "void";
+import { defer, defineHandler, type InferProps } from "void";
 import { and, db, eq, gte, sql } from "void/db";
 import { runs } from "@schema";
 import { parseSegment, SEGMENTS } from "@/lib/analytics/bucketing";
@@ -113,24 +113,12 @@ export const loader = defineHandler(async (c) => {
 
   // Drizzle's groupBy accepts an SQL fragment; we reuse the same `expr`
   // both in the SELECT (aliased "bucket") and the GROUP BY.
-  const aggRows: OutcomeAggRow[] = await db
-    .select({
-      bucket: expr,
-      passed: numericSql(sql`sum(passed)`),
-      failed: numericSql(sql`sum(failed)`),
-      flaky: numericSql(sql`sum(flaky)`),
-      skipped: numericSql(sql`sum(skipped)`),
-      runs: numericSql(sql`count(*)`),
-    })
-    .from(runs)
-    .where(and(...aggConditions))
-    .groupBy(expr);
-
-  const kpis = summarizeInsightsKpis(aggRows, days);
-
-  // Staleness-tolerant analytics: cache privately with SWR (see worklog §4).
-  // `private` keeps tenant-scoped data out of shared/edge caches.
-  c.header("Cache-Control", "private, max-age=300, stale-while-revalidate=900");
+  // A deferred loader streams a variant-specific body (NDJSON on SPA nav /
+  // chunked HTML on document load, keyed by `Vary: X-VoidPages`); SWR/max-age
+  // caching would let the browser replay the wrong variant. Deferred pages must
+  // not be stored — the perceived-load win comes from streaming, not the cache.
+  // (Was `private, max-age=300, stale-while-revalidate=900`.)
+  c.header("Cache-Control", "private, no-store");
   return {
     project: {
       id: project.id,
@@ -147,9 +135,28 @@ export const loader = defineHandler(async (c) => {
     branchParam,
     branches,
     pathname: url.pathname,
-    aggRows,
-    kpis,
     segments: SEGMENTS as readonly string[],
     ranges: RANGES,
+
+    // Outcomes cluster (3 KPI cards + stacked bar chart) — one GROUP BY pass,
+    // deferred as a group so the KPI numbers can't tear from the chart they
+    // summarize. `kpis` assembly stays server-side (one testable place); the
+    // chart builds its bucket JSX + tooltips in the client child. Plain data only.
+    outcomes: defer(async () => {
+      const aggRows: OutcomeAggRow[] = await db
+        .select({
+          bucket: expr,
+          passed: numericSql(sql`sum(passed)`),
+          failed: numericSql(sql`sum(failed)`),
+          flaky: numericSql(sql`sum(flaky)`),
+          skipped: numericSql(sql`sum(skipped)`),
+          runs: numericSql(sql`count(*)`),
+        })
+        .from(runs)
+        .where(and(...aggConditions))
+        .groupBy(expr);
+      const kpis = summarizeInsightsKpis(aggRows, days);
+      return { aggRows, kpis };
+    }),
   };
 });

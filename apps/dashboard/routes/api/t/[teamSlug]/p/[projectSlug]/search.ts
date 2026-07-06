@@ -1,7 +1,7 @@
 import { defineHandler } from "void";
-import { db, desc, max, sql } from "void/db";
+import { db, desc } from "void/db";
 import { z } from "zod";
-import { runs, testResults } from "@schema";
+import { runs, tests } from "@schema";
 import {
   buildRecentRunsWhere,
   buildTestSearchWhere,
@@ -71,19 +71,20 @@ export const GET = defineHandler.withValidator({
       .where(buildRecentRunsWhere(scope))
       .orderBy(desc(runs.createdAt))
       .limit(RUNS_LIMIT),
-    // Tests are written once per result; group by testId so a test appears once,
-    // pick the most-recent title/file via `max(createdAt)` ordering.
+    // One row per test straight from the catalog (identity table) — no GROUP BY
+    // to collapse per-run fact rows. Recent-first via `lastSeenAt`.
     db
       .select({
-        testId: testResults.testId,
-        title: testResults.title,
-        file: testResults.file,
-        lastSeen: max(testResults.createdAt),
+        testId: tests.testId,
+        title: tests.title,
+        file: tests.file,
       })
-      .from(testResults)
+      .from(tests)
       .where(buildTestSearchWhere(scope, q))
-      .groupBy(testResults.testId, testResults.title, testResults.file)
-      .orderBy(desc(sql`max(${testResults.createdAt})`))
+      // `testId` breaks lastSeenAt ties deterministically — openRun's prefill
+      // seeds a whole suite with one identical lastSeenAt, so without it the
+      // top-N tied subset is arbitrary and unstable across requests.
+      .orderBy(desc(tests.lastSeenAt), tests.testId)
       .limit(TESTS_LIMIT),
   ]);
 

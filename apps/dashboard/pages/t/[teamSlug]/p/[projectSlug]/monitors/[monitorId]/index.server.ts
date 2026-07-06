@@ -1,5 +1,6 @@
+import { all } from "better-all";
 import type { Context } from "hono";
-import { defineHandler, type InferProps } from "void";
+import { defer, defineHandler, type InferProps } from "void";
 import { requireAuth } from "void/auth";
 import { env } from "void/env";
 import { mutationErrorMessage } from "@/lib/action-errors";
@@ -9,7 +10,6 @@ import { listGroups } from "@/lib/member-groups";
 import {
   buildAlertTargets,
   parseAlertTargets,
-  serializeAlertTargets,
 } from "@/lib/monitors/alert-targets";
 import {
   CreateMonitorSchema,
@@ -35,7 +35,6 @@ import {
   getMonitor,
   listExecutions,
   setMonitorAlertsEnabled,
-  setMonitorAlertTargets,
   setMonitorEnabled,
   updateMonitor,
 } from "@/lib/monitors/monitors-repo";
@@ -105,117 +104,141 @@ export const loader = defineHandler(async (c) => {
     };
   }
 
+  // Detail mode. The `monitor` row is the EAGER 404 gate — the header + config
+  // summary read its name/type/config/nextRunAt/source synchronously at the top
+  // level, so it must resolve before the page renders. `getMonitor` returns null
+  // for missing and cross-tenant alike, so a 404 here leaks nothing.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const nowHour = Math.floor(nowSec / 3600);
+  const windowStartSec = (nowHour - 23) * 3600;
+  const isOwner = project.role === "owner";
+
   const monitor = await getMonitor(scope, monitorId);
   if (!monitor) throw new Response("Not Found", { status: 404 });
 
-  const executions = await listExecutions(scope, monitorId, EXECUTIONS_LIMIT);
-
-  // HTTP monitors carry inline config + their own analytics (SQL-computed,
-  // time-based uptime + a response-time trend). TCP monitors carry inline config
-  // too, and reuse the SAME time-based uptime windows (a tcp execution settles to
-  // the same pass/fail states), but have no response-time-vs-status trend — a tcp
-  // check has no status code. Browser monitors carry none of these (their detail
-  // lives in the linked run reports).
+  // HTTP monitors carry inline config; TCP/ping carry their own. Browser monitors
+  // carry none (their detail lives in the linked run reports). Cheap synchronous
+  // parse of `monitor.config`, so it stays eager alongside the header.
   const isHttp = monitor.type === "http";
   const isTcp = monitor.type === "tcp" || monitor.type === "ping";
   const httpConfig = isHttp ? parseHttpMonitorConfig(monitor.config) : null;
   const tcpConfig = isTcp ? parseTcpMonitorConfig(monitor.config) : null;
 
-  let uptimeWindows: {
-    d1: number | null;
-    d7: number | null;
-    d30: number | null;
-  } | null = null;
-  let responseTrend: Array<{
-    key: string;
-    label: string;
-    p50: number | null;
-    p95: number | null;
-  }> | null = null;
-
-  // Both http AND tcp settle to the same pass/degraded/fail/error states, so the
-  // time-based uptime windows (`httpUptimeWindows`, which keys off `state`, not
-  // any http-only column) serve both. The response-time TREND is http-only: it
-  // requires `statusCode is not null`, and a tcp check has no status code — so
-  // tcp gets the uptime windows but no trend chart.
-  if (isHttp || isTcp) {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const windows = await httpUptimeWindows({ scope, monitorId, nowSec });
-    uptimeWindows = {
-      d1: windowPct(windows.d1),
-      d7: windowPct(windows.d7),
-      d30: windowPct(windows.d30),
-    };
-
-    if (isHttp) {
-      // 24 hourly slots ending at the current hour.
-      const nowHour = Math.floor(nowSec / 3600);
-      const windowStartSec = (nowHour - 23) * 3600;
-      const rows = await httpResponseTimeBuckets({
-        scope,
-        monitorId,
-        windowStartSec,
-      });
-      // left-join the SQL rows onto the continuous skeleton so empty hours render
-      // as gaps in the chart.
-      const byBucket = new Map(rows.map((r) => [r.bucket, r]));
-      responseTrend = Array.from({ length: 24 }, (_, i) => {
-        const slot = nowHour - 23 + i;
-        const r = byBucket.get(slot);
-        const hour = new Date(slot * 3600 * 1000).getUTCHours();
-        return {
-          key: String(slot),
-          label: `${String(hour).padStart(2, "0")}:00`,
-          p50: r?.p50 ?? null,
-          p95: r?.p95 ?? null,
-        };
-      });
-    }
-  }
-
-  // Alert-recipient picker data — owner-only (viewers can't edit recipients,
-  // so skip the reads for them). `members` + `groups` populate the checkboxes;
-  // `alertTargets` is the monitor's current selection (null = all members).
-  const isOwner = project.role === "owner";
-  const [members, groups] = isOwner
-    ? await Promise.all([
-        listTeamMembers(monitor.teamId),
-        listGroups(monitor.teamId),
-      ])
-    : [[], []];
+  // A deferred loader streams a variant-specific body — set no-store so the
+  // browser can't replay the wrong (NDJSON vs HTML) variant.
+  c.header("Cache-Control", "private, no-store");
 
   return {
     mode: "detail" as const,
     project: projectProps,
     monitor,
-    executions,
     httpConfig,
     // Parsed tcp host/port/timeout config for tcp/ping; null otherwise.
     tcpConfig,
-    // Alert recipients: team members + groups for the picker, and the monitor's
-    // current selection (`null` = all members). Empty for non-owners.
-    members,
-    groups: groups.map((g) => ({ id: g.id, name: g.name })),
     alertTargets: parseAlertTargets(monitor.alertTargets),
-    // Real time-based uptime (24h/7d/30d) for http + tcp; null for browser
-    // (which uses the count-based `uptime` below). Each is a % or null when
-    // nothing countable yet.
-    uptimeWindows,
-    // 24-slot hourly response-time trend (p50/p95) for http; null for tcp/browser.
-    responseTrend,
-    // Count-based uptime over the loaded window (null until there's something
-    // countable). The page colors it by the same >99 / >95 thresholds as the
-    // design's meta row.
-    uptime: uptimeFromExecutions(executions),
     // `nextRunAt` (epoch seconds, null when paused / never armed) lives on the
     // monitor row — the page renders it for enabled monitors and "paused"/
     // "queued" otherwise.
     nextRunAt: monitor.nextRunAt,
-    // Whether the edit form is open. Toggled via `?edit=1` so the section is
-    // server-rendered (no client island) and survives a no-JS round trip.
+    // Whether the edit modal is open. Kept in the URL (`?edit=1`) so the
+    // client `MonitorEditDialog` island keys its open state off it and a
+    // `?formError=` redirect re-opens it — the modal itself needs JS (it's a
+    // portal), so editing is unavailable on the no-JS path.
     editing: url.searchParams.get("edit") === "1",
     formError: url.searchParams.get("formError"),
     dangerError: url.searchParams.get("dangerError"),
+
+    // Everything below the header/config summary streams behind skeletons: the
+    // executions table, the analytics (time-based uptime windows + response-time
+    // trend + count-based uptime), and the owner-only alert-recipient picker
+    // data. Batched dependency-aware via better-all inside the resolver — the
+    // `windows`/`responseRows`/`members`/`groups` reads all depend on the
+    // already-resolved eager `monitor` (its type/teamId), so they fan out in
+    // parallel. Deferring is safe here: every mutation on this page redirects
+    // (fresh GET), so none of these props ride over a mutation response.
+    detail: defer(async () => {
+      const { executions, windows, responseRows, members, groups } = await all({
+        async executions() {
+          return listExecutions(scope, monitorId, EXECUTIONS_LIMIT);
+        },
+        // Both http AND tcp settle to the same pass/degraded/fail/error states,
+        // so the time-based uptime windows (`httpUptimeWindows`, keyed off
+        // `state`, not any http-only column) serve both. Browser monitors get
+        // none.
+        async windows() {
+          return isHttp || isTcp
+            ? httpUptimeWindows({ scope, monitorId, nowSec })
+            : null;
+        },
+        // Response-time TREND is http-only: it requires `statusCode is not
+        // null`, and a tcp/ping check has no status code.
+        async responseRows() {
+          return isHttp
+            ? httpResponseTimeBuckets({ scope, monitorId, windowStartSec })
+            : null;
+        },
+        // Alert-recipient picker data is owner-only (viewers can't edit
+        // recipients, so skip the reads for them).
+        async members() {
+          return isOwner ? listTeamMembers(monitor.teamId) : [];
+        },
+        async groups() {
+          return isOwner ? listGroups(monitor.teamId) : [];
+        },
+      });
+
+      const uptimeWindows = windows
+        ? {
+            d1: windowPct(windows.d1),
+            d7: windowPct(windows.d7),
+            d30: windowPct(windows.d30),
+          }
+        : null;
+
+      let responseTrend: Array<{
+        key: string;
+        label: string;
+        p50: number | null;
+        p95: number | null;
+      }> | null = null;
+      if (responseRows) {
+        // left-join the SQL rows onto the continuous 24-hour skeleton (24
+        // hourly slots ending at the current hour) so empty hours render as
+        // gaps in the chart.
+        const byBucket = new Map(responseRows.map((r) => [r.bucket, r]));
+        responseTrend = Array.from({ length: 24 }, (_, i) => {
+          const slot = nowHour - 23 + i;
+          const r = byBucket.get(slot);
+          const hour = new Date(slot * 3600 * 1000).getUTCHours();
+          return {
+            key: String(slot),
+            label: `${String(hour).padStart(2, "0")}:00`,
+            p50: r?.p50 ?? null,
+            p95: r?.p95 ?? null,
+          };
+        });
+      }
+
+      return {
+        executions,
+        // Alert recipients: team members + groups for the picker, and the
+        // monitor's current selection (`null` = all members). Empty for
+        // non-owners.
+        members,
+        groups: groups.map((g) => ({ id: g.id, name: g.name })),
+        // Real time-based uptime (24h/7d/30d) for http + tcp; null for browser
+        // (which uses the count-based `uptime` below). Each is a % or null when
+        // nothing countable yet.
+        uptimeWindows,
+        // 24-slot hourly response-time trend (p50/p95) for http; null for
+        // tcp/browser.
+        responseTrend,
+        // Count-based uptime over the loaded window (null until there's
+        // something countable). The page colors it by the same >99 / >95
+        // thresholds as the design's meta row.
+        uptime: uptimeFromExecutions(executions),
+      };
+    }),
   };
 });
 
@@ -368,12 +391,35 @@ export const actions = {
       return fail(firstIssueMessage(parsed.error, "Invalid monitor."));
     }
 
+    // Alert recipients ride along in the same edit form (they moved off the
+    // detail page and into the edit modal), so persist them in this submit —
+    // in the SAME update statement as the config so both commit atomically.
+    // `recipientMode=all` ⇒ all members (stored null); `specific` ⇒ the checked
+    // members (`user`) + groups (`group`). The targets are re-intersected with
+    // live members at send time, so storing an id that later leaves the team is
+    // harmless.
+    //
+    // Gated on the `recipientFields` hidden marker that `AlertRecipientsFields`
+    // emits: absent ⇒ leave targets untouched (`undefined`), so a future
+    // `updateMonitor` caller that omits the picker can't silently reset every
+    // monitor to "all members". "All" is a deliberate empty selection, not a
+    // missing field.
+    const asStrings = (key: string): string[] =>
+      form.getAll(key).filter((v): v is string => typeof v === "string");
+    const alertTargets = readField(form, "recipientFields")
+      ? buildAlertTargets(
+          readField(form, "recipientMode") || "all",
+          asStrings("user"),
+          asStrings("group"),
+        )
+      : undefined;
+
     const now = Math.floor(Date.now() / 1000);
     try {
       const updated = await updateMonitor(
         scope,
         monitorId,
-        parsed.data,
+        { ...parsed.data, alertTargets },
         now,
         existing,
       );
@@ -416,37 +462,6 @@ export const actions = {
     const alertsEnabled = form.get("alertsEnabled") === "true";
     const now = Math.floor(Date.now() / 1000);
     await setMonitorAlertsEnabled(scope, monitorId, alertsEnabled, now);
-
-    return c.redirect(here);
-  }),
-
-  /**
-   * Set who the monitor alerts. `recipientMode=all` ⇒ all members (stored
-   * null); `specific` ⇒ the checked members (`user`) + groups (`group`). The
-   * targets are re-intersected with live members at send time, so storing an
-   * id that later leaves the team is harmless.
-   */
-  setAlertRecipients: defineHandler(async (c) => {
-    const { project, scope } = requireOwnerTenantContext(c);
-    const monitorId = requireMonitorId(c);
-    const here = `/t/${project.teamSlug}/p/${project.slug}/monitors/${monitorId}`;
-
-    const form = await c.req.formData();
-    const asStrings = (key: string): string[] =>
-      form.getAll(key).filter((v): v is string => typeof v === "string");
-    const mode = readField(form, "recipientMode") || "all";
-    const targets = buildAlertTargets(
-      mode,
-      asStrings("user"),
-      asStrings("group"),
-    );
-    const now = Math.floor(Date.now() / 1000);
-    await setMonitorAlertTargets(
-      scope,
-      monitorId,
-      serializeAlertTargets(targets),
-      now,
-    );
 
     return c.redirect(here);
   }),

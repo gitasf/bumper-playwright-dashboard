@@ -1,4 +1,4 @@
-import { defineHandler, type InferProps } from "void";
+import { defer, defineHandler, type InferProps } from "void";
 import { and, db, desc, eq, gte, sql } from "void/db";
 import { runs, testResults, testTags } from "@schema";
 import {
@@ -110,6 +110,10 @@ export const loader = defineHandler(async (c) => {
   );
 
   const { nowSec, windowStartSec, rangeSec } = resolveAnalyticsWindow(range);
+  // This page's ranges are all bounded (7d/14d/30d/90d) — never "all" — so the
+  // window always has a concrete lower bound and there is no earliest-run
+  // lookup to run. `resolveAnalyticsWindow` documents this invariant.
+  const shellStartSec = windowStartSec;
   const expr = bucketExpr(segment);
 
   // ciRunsScopeWhere: tenant pair + `origin <> 'synthetic'` — suite-size
@@ -129,16 +133,6 @@ export const loader = defineHandler(async (c) => {
     .from(runs)
     .where(and(...trendConditions))
     .groupBy(expr);
-
-  // For "all", find the earliest run so shells don't stretch back to 1970.
-  // CI runs only, matching the trend query — the shells frame CI history.
-  const earliestQuery =
-    rangeSec === null
-      ? db
-          .select({ first: sql<number | null>`min(${runs.createdAt})` })
-          .from(runs)
-          .where(ciRunsScopeWhere(scope))
-      : null;
 
   const addedLookbackSec = nowSec - ADDED_LOOKBACK_DAYS * DAY_SEC;
   // "Tests added in the lookback" = tests that appear in the window AND never
@@ -206,35 +200,21 @@ export const loader = defineHandler(async (c) => {
     .orderBy(desc(sql`count(distinct ${testResults.testId})`))
     .limit(TAG_LIMIT);
 
-  // All five passes (plus the branch list) are independent — run in parallel.
-  const [branches, trendRows, earliestRows, testsAddedRow, fileRows, tagRows] =
-    await Promise.all([
-      loadProjectBranches(scope),
-      trendQuery,
-      earliestQuery ?? Promise.resolve(null),
-      testsAddedQuery,
-      fileQuery,
-      tagQuery,
-    ]);
+  // Shell data: the branch filter list is cheap (index-covered DISTINCT) and
+  // drives the always-visible header control, so it stays eager. Every heavy
+  // pass below is deferred behind its own Suspense boundary on the page, so the
+  // header/tabs/filters paint immediately and each region streams in.
+  const branches = await loadProjectBranches(scope);
 
-  const shellStartSec =
-    rangeSec === null ? (earliestRows?.[0]?.first ?? nowSec) : windowStartSec;
-  const testsAdded = testsAddedRow?.added ?? 0;
-
-  const peakOverall = Math.max(0, ...trendRows.map((r) => r.peak ?? 0));
-
-  const trend: TrendRow[] = trendRows.map((r) => ({
-    bucket: r.bucket,
-    peak: r.peak ?? 0,
-  }));
-  // KPI assembly lives here (not the page) so the "Total tests" sparkline + net
-  // change / growth share the loader's alignment window and the same `rate()`
-  // policy as the other insights pages. The page just renders this shape.
-  const kpis = summarizeSuiteSizeKpis(segment, shellStartSec, nowSec, trend);
-
-  // Staleness-tolerant analytics: cache privately with SWR (see worklog §4).
-  // `private` keeps tenant-scoped data out of shared/edge caches.
-  c.header("Cache-Control", "private, max-age=300, stale-while-revalidate=900");
+  // A deferred loader streams its body — NDJSON on SPA nav, chunked HTML on a
+  // document load — and Void keys the two variants with `Vary: X-VoidPages`.
+  // SWR/max-age caching of that streamed, variant-specific response lets the
+  // browser replay the wrong variant: a cached NDJSON payload served for a
+  // top-level navigation downloads as a file instead of rendering. Deferred
+  // pages must not be stored; the perceived-load win now comes from streaming,
+  // not from the cache. (Was `private, max-age=300, stale-while-revalidate=900`
+  // when this loader returned a single non-streamed response — see worklog §4.)
+  c.header("Cache-Control", "private, no-store");
   return {
     project: {
       id: project.id,
@@ -250,15 +230,41 @@ export const loader = defineHandler(async (c) => {
     shellStartSec,
     branchParam,
     branches,
-    trendRows: trend,
-    testsAdded,
     addedLookbackDays: ADDED_LOOKBACK_DAYS,
-    peakOverall,
-    kpis,
-    fileRows,
-    tagRows,
     pathname: url.pathname,
     segments: SEGMENTS as readonly string[],
     ranges: RANGES,
+
+    // Trend cluster (chart + "Total tests" / "Net change" KPIs) — one query,
+    // grouped so the derived KPI shape can't tear from the rows it summarizes.
+    // KPI assembly stays server-side (as before) so the metric definition lives
+    // in one testable place; the page just renders the resolved shape.
+    trend: defer(async () => {
+      const rows = await trendQuery;
+      const trendRows: TrendRow[] = rows.map((r) => ({
+        bucket: r.bucket,
+        peak: r.peak ?? 0,
+      }));
+      const peakOverall = Math.max(0, ...trendRows.map((r) => r.peak));
+      const kpis = summarizeSuiteSizeKpis(
+        segment,
+        shellStartSec,
+        nowSec,
+        trendRows,
+      );
+      return { trendRows, peakOverall, kpis };
+    }),
+
+    // "Tests added" — the heaviest pass (distinct scan + project-wide
+    // NOT EXISTS). Its own boundary so it never gates the lighter trend cluster.
+    testsAdded: defer(async () => (await testsAddedQuery)?.added ?? 0),
+
+    // Bottom-of-page distribution cards — grouped: two independent counts run
+    // in parallel inside one resolver, one skeleton for the whole section.
+    distribution: defer(async () => {
+      const [fileRows, tagRows] = await Promise.all([fileQuery, tagQuery]);
+      const fileTotal = fileRows.reduce((acc, r) => acc + r.tests, 0);
+      return { fileRows, tagRows, fileTotal };
+    }),
   };
 });

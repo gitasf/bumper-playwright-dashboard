@@ -1,8 +1,11 @@
-import { Link } from "@void/react";
+import { Link, PREFETCH_REALTIME } from "@/components/ui/link";
 import type React from "react";
+import { use } from "react";
+import { DeferredSection } from "@/components/defer-error-boundary";
 import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
 import { StatusGlyph } from "@/components/status-glyph";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Empty,
   EmptyDescription,
@@ -37,8 +40,7 @@ export default function RunDiffPage({
   project,
   head,
   base,
-  diff,
-  counts,
+  comparison,
   baseCandidates,
 }: Props) {
   const runsBase = `/t/${project.teamSlug}/p/${project.slug}/runs`;
@@ -54,8 +56,12 @@ export default function RunDiffPage({
         <DetailHeaderBar className="gap-1.5 border-b border-border">
           <HeaderCrumbs
             items={[
-              { label: "Runs", href: runsBase },
-              { label: `#${headShort}`, href: `${runsBase}/${head.id}` },
+              { label: "Runs", href: runsBase, cacheFor: PREFETCH_REALTIME },
+              {
+                label: `#${headShort}`,
+                href: `${runsBase}/${head.id}`,
+                cacheFor: PREFETCH_REALTIME,
+              },
             ]}
           />
           <h1 className="text-[17px] font-semibold tracking-[-0.2px]">
@@ -92,66 +98,13 @@ export default function RunDiffPage({
           ) : null}
         </div>
 
-        {diff && counts && base ? (
-          <div className="px-6 py-4">
-            <div className="mb-4 flex flex-wrap gap-2">
-              <CountPill
-                accent="var(--fail)"
-                count={counts.newlyFailed}
-                label="Newly failed"
-              />
-              <CountPill
-                accent="var(--pass)"
-                count={counts.newlyPassed}
-                label="Newly passed"
-              />
-              <CountPill count={counts.stillFailing} label="Still failing" />
-              <CountPill count={counts.flakyDeltas} label="Flaky changes" />
-              <CountPill count={counts.addedTests} label="Added" />
-              <CountPill count={counts.removedTests} label="Removed" />
-            </div>
-
-            {counts.newlyFailed +
-              counts.newlyPassed +
-              counts.stillFailing +
-              counts.flakyDeltas +
-              counts.addedTests +
-              counts.removedTests ===
-            0 ? (
-              <div className="flex min-h-[40vh] items-center justify-center p-10">
-                <Empty>
-                  <EmptyHeader>
-                    <EmptyTitle>No differences</EmptyTitle>
-                    <EmptyDescription>
-                      These two runs have identical test outcomes — same
-                      pass/fail state, retries, and test set.
-                    </EmptyDescription>
-                  </EmptyHeader>
-                </Empty>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-6">
-                <StatusChangeSection
-                  rows={diff.newlyFailed}
-                  title="Newly failed"
-                />
-                <StatusChangeSection
-                  rows={diff.newlyPassed}
-                  title="Newly passed"
-                />
-                <StatusChangeSection
-                  rows={diff.stillFailing}
-                  title="Still failing"
-                />
-                <FlakyDeltaSection rows={diff.flakyDeltas} />
-                <PresenceSection rows={diff.addedTests} title="Added tests" />
-                <PresenceSection
-                  rows={diff.removedTests}
-                  title="Removed tests"
-                />
-              </div>
-            )}
-          </div>
+        {base ? (
+          <DeferredSection
+            resetKey={`${head.id}:${base.id}`}
+            skeleton={<DiffBodySkeleton />}
+          >
+            <DiffBody comparison={comparison} />
+          </DeferredSection>
         ) : (
           <div className="flex min-h-[40vh] items-center justify-center p-10">
             <Empty>
@@ -171,6 +124,96 @@ export default function RunDiffPage({
         )}
       </div>
     </>
+  );
+}
+
+/** The deferred diff body: the CountPill summary row + either the "No
+ *  differences" empty state or the six bucket tables. Reads the deferred
+ *  `comparison` ({ diff, counts }); the caller only renders this when `base`
+ *  (eager) exists, so `diff`/`counts` are non-null here. */
+function DiffBody({
+  comparison,
+}: {
+  comparison: Props["comparison"];
+}): React.ReactElement | null {
+  const { diff, counts } = use(comparison);
+  if (!diff || !counts) return null;
+  const total =
+    counts.newlyFailed +
+    counts.newlyPassed +
+    counts.stillFailing +
+    counts.flakyDeltas +
+    counts.addedTests +
+    counts.removedTests;
+  return (
+    <div className="px-6 py-4">
+      <div className="mb-4 flex flex-wrap gap-2">
+        <CountPill
+          accent="var(--fail)"
+          count={counts.newlyFailed}
+          label="Newly failed"
+        />
+        <CountPill
+          accent="var(--pass)"
+          count={counts.newlyPassed}
+          label="Newly passed"
+        />
+        <CountPill count={counts.stillFailing} label="Still failing" />
+        <CountPill count={counts.flakyDeltas} label="Flaky changes" />
+        <CountPill count={counts.addedTests} label="Added" />
+        <CountPill count={counts.removedTests} label="Removed" />
+      </div>
+
+      {total === 0 ? (
+        <div className="flex min-h-[40vh] items-center justify-center p-10">
+          <Empty>
+            <EmptyHeader>
+              <EmptyTitle>No differences</EmptyTitle>
+              <EmptyDescription>
+                These two runs have identical test outcomes — same pass/fail
+                state, retries, and test set.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-6">
+          <StatusChangeSection rows={diff.newlyFailed} title="Newly failed" />
+          <StatusChangeSection rows={diff.newlyPassed} title="Newly passed" />
+          <StatusChangeSection rows={diff.stillFailing} title="Still failing" />
+          <FlakyDeltaSection rows={diff.flakyDeltas} />
+          <PresenceSection rows={diff.addedTests} title="Added tests" />
+          <PresenceSection rows={diff.removedTests} title="Removed tests" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Fallback for the deferred diff body: the 6-pill summary row + a couple of
+ *  bucket-table placeholders. The real section count/sizes are only known
+ *  post-scan, and this is the terminal, below-the-fold region, so a fixed
+ *  plausible shape resizes in place without shifting anything above. */
+function DiffBodySkeleton(): React.ReactElement {
+  const bucketRows = Array.from({ length: 4 }, (_, r) => (
+    <Skeleton className="h-9 w-full" key={r} />
+  ));
+  return (
+    <div className="px-6 py-4">
+      <div className="mb-4 flex flex-wrap gap-2">
+        {Array.from({ length: 6 }, (_, i) => (
+          <Skeleton className="h-[28px] w-28 rounded-md" key={i} />
+        ))}
+      </div>
+      <div className="flex flex-col gap-6">
+        {Array.from({ length: 2 }, (_, s) => (
+          <div key={s}>
+            <Skeleton className="mb-2 h-5 w-40" />
+            <div className="space-y-2">{bucketRows}</div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

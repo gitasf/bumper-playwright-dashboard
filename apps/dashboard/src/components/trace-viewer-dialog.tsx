@@ -139,9 +139,9 @@ export function TraceViewerDialog({
  * Per-row "Test Replay" button for the run's live test list (`RunProgress`).
  * That list carries only minimal per-test rows, so this lazily fetches the
  * signed viewer URL from the replay endpoint on first click, then opens the
- * dialog. Rendered only for tests known to have a trace (the loader's
- * `tracedTestIds`), so the fetch is expected to succeed; a transient failure
- * just leaves the dialog closed.
+ * dialog. Rendered only for tests known to have a trace (the row page's
+ * `hasTrace`, set via `loadRunResultsPage`'s `includeTraceFlags`), so the fetch
+ * is expected to succeed; a transient failure just leaves the dialog closed.
  */
 export function TestReplayButton({
   teamSlug,

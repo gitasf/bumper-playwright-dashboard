@@ -1,9 +1,9 @@
 import { Activity, ExternalLink, Plus } from "lucide-react";
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import { ExecStrip, MonGlyph } from "@/components/monitors/monitor-status";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
-import { DEFAULT_MONITOR_SPEC } from "./monitor-form";
+import { DEFAULT_MONITOR_SPEC } from "./monitors-ui.shared";
 import { MonitorsList } from "./monitors-list.client";
 import type { Props } from "./index.server";
 

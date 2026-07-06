@@ -1,0 +1,44 @@
+diff --git a/dist/runtime/pages-client.mjs b/dist/runtime/pages-client.mjs
+index c4d6ee9bbdb9432a791956c4f137bd861ae6b84e..6095dc6e464a61a62b8ed62d2fce5e090de80800 100644
+--- a/dist/runtime/pages-client.mjs
++++ b/dist/runtime/pages-client.mjs
+@@ -428,9 +428,19 @@ async function startReactPages(config) {
+ 		router,
+ 		viewTransitions: config.viewTransitions
+ 	});
++	// Deferred pages are server-rendered as <Fragment>{page}<template id=SHELL_END/></Fragment>
++	// (page = child 0 of 2), which forks React's useId tree-context and adds bits
++	// to every id in the page. Mirror that exact root shape here when the marker
++	// survived into #app, so client useId matches the server and Base UI ids don't
++	// mismatch on hydration. Non-deferred pages have no marker -> bare hydrate.
++	// (Only the hydrateRoot path needs this; the data-void-ssr="false" branch is a
++	// fresh client render with no server HTML to match.)
++	const hydrateTree = appEl.querySelector("template#__VOID_DEFERRED_SHELL_END__")
++		? React.createElement(React.Fragment, null, app, React.createElement("template", { id: "__VOID_DEFERRED_SHELL_END__" }))
++		: app;
+ 	startTransition(() => {
+ 		if (appEl.getAttribute("data-void-ssr") === "false") createRoot(appEl).render(app);
+-		else hydrateRoot(appEl, app);
++		else hydrateRoot(appEl, hydrateTree);
+ 	});
+ 	appEl.setAttribute("data-hydrated", "true");
+ 	engine.start();
+diff --git a/dist/runtime/pages-server.mjs b/dist/runtime/pages-server.mjs
+index ab47f335743f81d9d8bbaa0ecc60526848fdf64c..e32a3dda1e2835ab2581355e1d23ea3041047538 100644
+--- a/dist/runtime/pages-server.mjs
++++ b/dist/runtime/pages-server.mjs
+@@ -62,7 +62,13 @@ function readDeferredShell(stream) {
+ 				buffer += decoder.decode(value, { stream: true });
+ 				const markerIndex = buffer.indexOf(DEFERRED_SHELL_END_MARKER);
+ 				if (markerIndex !== -1) {
+-					flush(buffer.slice(0, markerIndex));
++					// Keep the shell-end <template> marker in the emitted HTML. The
++					// deferred page is rendered as <Fragment>{page}<template/></Fragment>
++					// (page = child 0 of 2), which shifts every useId in the tree. The
++					// client must reproduce that same root shape to keep useId stable
++					// across hydration (Base UI ids desync otherwise); it detects the
++					// marker in #app to do so, so it has to survive into the HTML.
++					flush(buffer.slice(0, markerIndex + DEFERRED_SHELL_END_MARKER.length));
+ 					await reader.cancel(DEFERRED_SHELL_CANCEL_REASON);
+ 					break;
+ 				}

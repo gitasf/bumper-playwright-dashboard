@@ -1,4 +1,4 @@
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import type { Props } from "./index.server";
 
 /**

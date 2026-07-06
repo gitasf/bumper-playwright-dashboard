@@ -21,7 +21,7 @@ Browser ────────SSR pages (Inertia)────▶ Worker (/t/:t
 
 Cron (every 1m / 5m / 6h / daily) ─────▶ Worker (scheduled)
                                         ├─ sweep due monitors → Queues (monitors / uptime) → executor → run ingest
-                                        └─ sweep stale runs · retention · synthetic-key + execution reapers · usage rollup
+                                        └─ sweep stale runs · retention · synthetic-key + execution reapers · usage rollup · billing reconcile
 ```
 
 The dashboard is the `@wrightful/dashboard` app in `apps/dashboard`, built on [Void](https://void.cloud) (a fullstack Vite plugin + deploy platform for Cloudflare). `void deploy` is the entire deploy pipeline; it provisions the Postgres database (over Hyperdrive), R2 bucket, the `monitors` / `uptime` Queue consumers, the Sandbox container (browser monitors), and any KV bindings.
@@ -34,7 +34,7 @@ One **Postgres database** — over Cloudflare Hyperdrive in production, a direct
 - **Tenant tables.** `runs` (carries `origin`, `monitorId`, `githubCheckRunId`, `lastActivityAt`, `expectedTotalTests`), `testResults`, `testResultAttempts`, `testTags`, `testAnnotations`, `artifacts`, plus the test-management tables `quarantinedTests`, `testOwners`, and the synthetic-monitoring tables `monitors` + `monitorExecutions`. Every run-scoped child carries denormalized `teamId` (on `runs`) and `projectId` so scope is enforced without joining through `runs`. Reached only through the auth-checked `TenantScope` from `src/lib/scope.ts` / `src/lib/tenant-context.ts`.
 - **`auditLog`.** Team-scoped audit trail (member/key/config/project mutations); `actorUserId` is a logical FK (no DB constraint), like `memberships.userId`. `projectId` is `set null` so a row survives a project delete.
 - **Better Auth tables** (`user`, `session`, `account`, `verification`) are owned by `void/auth` — bootstrapped idempotently against the same database and intentionally not declared in the schema. Cross-table joins use raw SQL.
-- **R2.** Artifact bytes only. Both directions are **worker-proxied** — the worker is on the byte path. Upload: the reporter PUTs to a relative worker route (`/api/artifacts/:id/upload`) returned by `register`, which streams the body into R2 via `storage.put`. Download: a worker route (`/api/artifacts/:id/download`) authorized by a signed HMAC token that carries the R2 key (so GETs don't touch the DB), which then `storage.get`s and streams the bytes back. There is no S3-style presigned R2 URL today; offloading bytes off the worker would be a separate, deliberate change.
+- **R2.** Artifact bytes only. **Worker-proxied by default** — the worker is on the byte path. Upload: the reporter PUTs to a relative worker route (`/api/artifacts/:id/upload`) returned by `register`, which streams the body into R2 via `storage.put`. Download: a worker route (`/api/artifacts/:id/download`) authorized by a signed HMAC token that carries the R2 key (so GETs don't touch the DB), which then `storage.get`s and streams the bytes back. **Optional direct-R2 path:** when the four R2 S3-API credentials (`R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET`) are all set, `r2DirectEnabled()` (`src/lib/config.ts`) takes the worker off the byte path — `register` returns a SigV4-presigned PUT URL and download `302`s to a presigned GET (the trace viewer embeds one directly). Unset (the default) keeps everything worker-proxied. See [ADR-0003](./adr/0003-direct-r2-artifact-byte-path.md) and the "Direct-R2 artifact serving" section of [`SELF-HOSTING.md`](../SELF-HOSTING.md).
 - **Realtime.** `void/ws` rooms are the only realtime transport (SSE / `void/live` was deleted — see [ADR-0001](./adr/0001-realtime-websocket-rooms.md)). Two hibernatable rooms — `routes/ws/run/[runId].ws.ts` (per-test deltas) and `routes/ws/project/[projectId].ws.ts` (run-list lifecycle). Ingest publishes via `broadcastRunRoom` / `broadcastProjectRoom` (`src/realtime/publish.ts`) after each batch write (a non-fatal, internal DO-to-DO POST gated by a build-baked secret); clients subscribe with `useRunRoom` / `useProjectRoom`. No event replay (connect-before-broadcast; SSR seed + id-dedupe cover the gap), 256-connection cap per room.
 
 **Tenant isolation is logical, not physical.** There is no per-team Durable Object boundary — every query against a run-scoped table must filter by `projectId` (and `teamId` where present). The branded `AuthorizedProjectId` / `AuthorizedTeamId` on `TenantScope` force the auth-checked ids through the type system so a query can't silently cross tenants.
@@ -66,13 +66,14 @@ Cross-cutting middleware: `00.errors` (error → page/redirect), `01.context` (t
 
 ## Background work (crons + queues)
 
-Six Void crons (each a unique cron expression, dispatched via `switch(controller.cron)`):
+Seven Void crons (each a unique cron expression — the 5-minute reaper family is offset `*/5` / `2-59/5` / `4-59/5` so `switch(controller.cron)` never collides):
 
 - `sweep-monitors` (every 1m) — arms due monitors' `nextRunAt`, enqueues them to the `monitors` (browser) / `uptime` (http·tcp) Queues.
 - `sweep-stuck-runs` (every 5m) — finalizes runs stuck at `running` past `WRIGHTFUL_RUN_STALE_MINUTES`.
 - `sweep-stuck-executions` / `sweep-synthetic-keys` (every 5m, offset) — reap non-terminal monitor executions + orphaned per-run ingest keys.
 - `sweep-retention` (every 6h) — two-axis sweep (R2 artifact bytes, then `testResults` rows) per the team/instance retention windows.
-- `rollup-usage` (daily) — rolls per-team-month meters into `usageCounters`.
+- `rollup-usage` (daily 03:00 UTC) — rolls per-team-month meters into `usageCounters`.
+- `reconcile-billing` (daily 04:30 UTC) — reconciles each team's billing state against Polar; a clean no-op when billing is off (the OSS default).
 
 **Monitor execution** is the schedule→queue→execute pipeline: the `monitors` / `uptime` Queue consumers (`createMonitorConsumer`, `src/lib/monitors/queue-consumer.ts`) run the pure `runMonitorJob` against the resolved `MonitorExecutor` — `sandbox` (Void Sandbox container running the user's Playwright) or `stub` (in-process, for dev/CI), selected by `WRIGHTFUL_MONITOR_EXECUTOR` — and stream the outcome through the normal run ingest path.
 
@@ -86,7 +87,7 @@ Six Void crons (each a unique cron expression, dispatched via `switch(controller
 
 ## Configuration
 
-Every env key is declared (with docs + defaults) in `apps/dashboard/env.ts` — the authoritative source. Only `WRIGHTFUL_PUBLIC_URL` + `BETTER_AUTH_SECRET` are required; the rest are optional/defaulted, grouped as: GitHub OAuth (`AUTH_GITHUB_*`), GitHub App / Checks (`GITHUB_APP_*`), usage quotas (`WRIGHTFUL_FREE_*`, `WRIGHTFUL_QUOTA_SOFT_WARN_PCT`), retention (`WRIGHTFUL_RETENTION_*`), export (`WRIGHTFUL_EXPORT_MAX_ROWS`), synthetic monitors (`WRIGHTFUL_MONITOR_*`, `WRIGHTFUL_HTTP_MONITOR_*`, `WRIGHTFUL_TCP_MONITOR_*`, `WRIGHTFUL_HTTP_CHECK_MAX_BODY_BYTES`), artifacts/watchdog, and the realtime internal secret. The self-host env table is in [`SELF-HOSTING.md`](../SELF-HOSTING.md).
+Every env key is declared (with docs + defaults) in `apps/dashboard/env.ts` — the authoritative source. Only `WRIGHTFUL_PUBLIC_URL` + `BETTER_AUTH_SECRET` are required; the rest are optional/defaulted, grouped as: GitHub OAuth (`AUTH_GITHUB_*`), GitHub App / Checks (`GITHUB_APP_*`), usage quotas (`WRIGHTFUL_FREE_*`, `WRIGHTFUL_QUOTA_SOFT_WARN_PCT`), optional Polar billing (`POLAR_*` + the paid-tier caps `WRIGHTFUL_PRO_*`; unset ⇒ `billingEnabled()` false ⇒ every team UNLIMITED — the OSS default; see [ADR-0002](./adr/0002-capability-flagged-billing-provider.md)), retention (`WRIGHTFUL_RETENTION_*`), export (`WRIGHTFUL_EXPORT_MAX_ROWS`), synthetic monitors (`WRIGHTFUL_MONITOR_*`, `WRIGHTFUL_HTTP_MONITOR_*`, `WRIGHTFUL_TCP_MONITOR_*`, `WRIGHTFUL_HTTP_CHECK_MAX_BODY_BYTES`), the optional direct-R2 credentials (`R2_*`), artifacts/watchdog, and the realtime internal secret. The self-host env table is in [`SELF-HOSTING.md`](../SELF-HOSTING.md).
 
 ## Tooling
 

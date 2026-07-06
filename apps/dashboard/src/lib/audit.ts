@@ -10,8 +10,8 @@ import { auditLog } from "@schema";
  *
  * `recordAudit` writes ONE row per privileged mutation. It is the single seam
  * the instrumented actions call so the action-string vocabulary, the actor
- * resolution, the metadata serialization, and the best-effort failure handling
- * all live in one place.
+ * resolution, the metadata bag (stored as jsonb), and the best-effort failure
+ * handling all live in one place.
  *
  * **A failed audit write must NEVER break the action it records.** The insert is
  * wrapped in try/catch and a failure is `logger.error`-ed and swallowed — an
@@ -66,31 +66,14 @@ export interface RecordAuditInput {
   targetType?: AuditTargetType;
   /** Human-readable identity of the target (email/login, key label, slug, …). */
   targetId?: string | null;
-  /** Extra structured context; serialized to a JSON string in one place here. */
+  /** Extra structured context; stored directly into the `jsonb` column. */
   metadata?: Record<string, unknown> | null;
 }
 
 /**
- * Serialize the optional metadata bag to a JSON string (or null). Kept here so
- * every call site stores metadata the same way and the viewer can parse it back
- * with a single assumption. A serialization failure degrades to null rather
- * than throwing — consistent with the best-effort contract.
- */
-function serializeMetadata(
-  metadata: Record<string, unknown> | null | undefined,
-): string | null {
-  if (metadata == null) return null;
-  try {
-    return JSON.stringify(metadata);
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Build the row `recordAudit` would insert from the resolved actor + input.
- * PURE (no I/O) so the row shape — id/createdAt generation, metadata
- * serialization, the projectId/targetType/targetId defaults — is unit-testable
+ * PURE (no I/O) so the row shape — id/createdAt generation, the metadata bag,
+ * the projectId/targetType/targetId defaults — is unit-testable
  * without a DB or a request context.
  */
 export function buildAuditRow(
@@ -106,7 +89,8 @@ export function buildAuditRow(
     action: input.action,
     targetType: input.targetType ?? null,
     targetId: input.targetId ?? null,
-    metadata: serializeMetadata(input.metadata),
+    // jsonb column — store the metadata bag directly (drizzle serializes it).
+    metadata: input.metadata ?? null,
     createdAt: now,
   };
 }

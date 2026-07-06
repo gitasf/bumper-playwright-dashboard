@@ -71,6 +71,7 @@ const dbMock = {
   transaction: transactionSpy,
   select: () => makeBuilder("select"),
   insert: () => makeBuilder("insert"),
+  update: () => makeBuilder("update"),
 };
 
 vi.mock("void/db", () => ({
@@ -378,6 +379,8 @@ describe("planArtifactRegistration", () => {
           attempt: 0,
           role: null,
           r2Key: "reused/key.png",
+          sizeBytes: 100,
+          contentType: "image/png",
         },
       ],
       scope,
@@ -386,6 +389,9 @@ describe("planArtifactRegistration", () => {
       mintId: seqMinter(),
     });
     expect(plan.rowsToInsert).toHaveLength(0);
+    // Same stored size/type → nothing to refresh.
+    expect(plan.rowsToUpdate).toEqual([]);
+    expect(plan.updateBytesDelta).toBe(0);
     expect(plan.uploads).toEqual([
       {
         artifactId: "existing-art",
@@ -395,6 +401,78 @@ describe("planArtifactRegistration", () => {
         sizeBytes: 100,
       },
     ]);
+  });
+
+  it("refreshes a reused row whose bytes/type changed on a re-run (CI re-run with fresh trace)", () => {
+    // A CI re-run shares the run's idempotency key, so the trace re-registers
+    // under the SAME identity — but the new bytes almost never match the old
+    // size. The row must be refreshed so the upload guard accepts the new
+    // Content-Length; the byte delta is surfaced for metering/quota.
+    const plan = planArtifactRegistration({
+      requestedArtifacts: [
+        artifact({ sizeBytes: 250, contentType: "application/zip" }),
+      ],
+      existingRows: [
+        {
+          id: "existing-art",
+          testResultId: "tr-1",
+          type: "screenshot",
+          name: "shot.png",
+          attempt: 0,
+          role: null,
+          r2Key: "reused/key.png",
+          sizeBytes: 100,
+          contentType: "image/png",
+        },
+      ],
+      scope,
+      runId: "run-1",
+      nowSeconds: NOW,
+      mintId: seqMinter(),
+    });
+    expect(plan.rowsToInsert).toHaveLength(0);
+    expect(plan.rowsToUpdate).toEqual([
+      { id: "existing-art", sizeBytes: 250, contentType: "application/zip" },
+    ]);
+    expect(plan.updateBytesDelta).toBe(150); // 250 - 100
+    // The upload still overwrites the SAME R2 object, now with the new size/type.
+    expect(plan.uploads[0]).toMatchObject({
+      artifactId: "existing-art",
+      r2Key: "reused/key.png",
+      sizeBytes: 250,
+      contentType: "application/zip",
+    });
+  });
+
+  it("does not double-count the delta for a within-request duplicate of a changed identity", () => {
+    // Two entries share the identity of a stored row whose size changed; the
+    // refresh must collapse to ONE update keyed by id, not two, and the delta is
+    // counted once.
+    const plan = planArtifactRegistration({
+      requestedArtifacts: [
+        artifact({ sizeBytes: 250 }),
+        artifact({ sizeBytes: 250 }),
+      ],
+      existingRows: [
+        {
+          id: "existing-art",
+          testResultId: "tr-1",
+          type: "screenshot",
+          name: "shot.png",
+          attempt: 0,
+          role: null,
+          r2Key: "reused/key.png",
+          sizeBytes: 100,
+          contentType: "image/png",
+        },
+      ],
+      scope,
+      runId: "run-1",
+      nowSeconds: NOW,
+      mintId: seqMinter(),
+    });
+    expect(plan.rowsToUpdate).toHaveLength(1);
+    expect(plan.updateBytesDelta).toBe(150);
   });
 
   it("matches an existing row whose stored role is null against a requested undefined role", () => {
@@ -411,6 +489,8 @@ describe("planArtifactRegistration", () => {
           attempt: 0,
           role: null,
           r2Key: "reused/key.png",
+          sizeBytes: 100,
+          contentType: "image/png",
         },
       ],
       scope,
@@ -530,6 +610,8 @@ describe("registerArtifacts", () => {
           attempt: 0,
           role: null,
           r2Key: "reused/key.png",
+          sizeBytes: 100,
+          contentType: "image/png",
         },
       ],
     ];
@@ -551,6 +633,56 @@ describe("registerArtifacts", () => {
     expect(transactionSpy).not.toHaveBeenCalled();
   });
 
+  it("refreshes a reused row's size/type on a re-run (fresh trace bytes accepted)", async () => {
+    // [0] ownerRun found; [1] testResults validation → tr-1 valid;
+    // [2] existing-artifacts SELECT → identity match at the OLD size;
+    // [3] usage-quota SELECT (net-positive delta → a quota check runs).
+    awaitResults = [
+      [{ id: "run-1" }],
+      [{ id: "tr-1" }],
+      [
+        {
+          id: "existing-art",
+          testResultId: "tr-1",
+          type: "screenshot",
+          name: "shot.png",
+          attempt: 0,
+          role: null,
+          r2Key: "reused/key.png",
+          sizeBytes: 100,
+          contentType: "image/png",
+        },
+      ],
+      [
+        {
+          tier: "free",
+          currentPeriodEnd: null,
+          runsCount: 0,
+          artifactBytes: 0,
+        },
+      ],
+    ];
+    const payload: RegisterArtifactsPayload = {
+      runId: "run-1",
+      artifacts: [artifact({ sizeBytes: 250, contentType: "application/zip" })],
+    };
+    const result = await registerArtifacts(scope, payload, 1_000_000, NOW);
+    expect(result).toEqual({
+      kind: "ok",
+      uploads: [
+        {
+          artifactId: "existing-art",
+          uploadUrl: "/api/artifacts/existing-art/upload",
+          r2Key: "reused/key.png",
+        },
+      ],
+    });
+    // Unlike a pure idempotent reuse (no transaction), a size/type refresh runs
+    // the batch (UPDATE + usage bump) so the stored sizeBytes matches the new
+    // upload's Content-Length.
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("inserts a fresh row with a tenant-prefixed key and returns its upload", async () => {
     // [0] ownerRun found; [1] testResults validation → tr-1 valid;
     // [2] existing-artifacts SELECT → none; [3] usage-quota SELECT → free, unused.
@@ -558,7 +690,7 @@ describe("registerArtifacts", () => {
       [{ id: "run-1" }],
       [{ id: "tr-1" }],
       [],
-      [{ tier: "free", runsCount: 0, testResultsCount: 0, artifactBytes: 0 }],
+      [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
     ];
     const payload: RegisterArtifactsPayload = {
       runId: "run-1",
@@ -584,7 +716,7 @@ describe("registerArtifacts", () => {
       [{ id: "run-1" }],
       [{ id: "tr-1" }],
       [],
-      [{ tier: "free", runsCount: 0, testResultsCount: 0, artifactBytes: 0 }],
+      [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
     ];
     const signPut = vi.fn(
       async (
@@ -636,6 +768,8 @@ describe("registerArtifacts", () => {
           attempt: 0,
           role: null,
           r2Key: "reused/key.png",
+          sizeBytes: 100,
+          contentType: "image/png",
         },
       ],
     ];
@@ -676,7 +810,7 @@ describe("registerArtifacts", () => {
       [{ id: "run-1" }],
       [{ id: "tr-1" }],
       [],
-      [{ tier: "free", runsCount: 0, testResultsCount: 0, artifactBytes: 0 }],
+      [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
     ];
     const signPut = vi.fn(async () => "https://r2/url");
     const payload: RegisterArtifactsPayload = {
@@ -704,7 +838,7 @@ describe("registerArtifacts", () => {
       [{ id: "run-1" }],
       [{ id: "tr-1" }],
       [],
-      [{ tier: "free", runsCount: 0, testResultsCount: 0, artifactBytes: 0 }],
+      [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
     ];
     const payload: RegisterArtifactsPayload = {
       runId: "run-1",

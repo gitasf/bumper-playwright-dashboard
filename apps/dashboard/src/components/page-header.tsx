@@ -1,4 +1,4 @@
-import { Link } from "@void/react";
+import { Link } from "@/components/ui/link";
 import { Fragment } from "react";
 import type React from "react";
 import { cn } from "@/lib/cn";
@@ -7,6 +7,13 @@ export interface Crumb {
   label: string;
   /** Internal route this crumb links to. Omit on the current (last) crumb. */
   href?: string;
+  /**
+   * Override the hover-prefetch reuse window for this crumb's `<Link>`. Set
+   * `PREFETCH_REALTIME` on crumbs that point at a realtime-seeded page (runs
+   * list, run detail, monitors list) so a click can't commit a stale room seed;
+   * omit to inherit the wrapper's 30s default.
+   */
+  cacheFor?: string | [string, string];
 }
 
 interface PageHeaderProps {
@@ -89,6 +96,7 @@ export function HeaderCrumbs({
         <Fragment key={`${item.href ?? ""}-${item.label}-${i}`}>
           {item.href ? (
             <Link
+              cacheFor={item.cacheFor}
               className="max-w-[280px] shrink-0 truncate text-[17px] font-semibold tracking-[-0.2px] text-fg-3 transition-colors hover:text-foreground"
               href={item.href}
               title={item.label}

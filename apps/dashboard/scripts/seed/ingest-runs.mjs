@@ -24,7 +24,7 @@
  *     runId: string,
  *     status: string,
  *     durationMs: number,
- *     options?: { completedAt?: number },
+ *     options?: { completedAt?: number, shard?: { index: number, total: number } },
  *   ) => Promise<void>,
  * }} IngestClient
  */
@@ -37,6 +37,20 @@
  *   resultsPayload: { results: unknown[] },
  *   completePayload: { status: string, durationMs: number, completedAt?: number },
  * }} SeedRun
+ */
+
+/**
+ * One sharded run produced by generator.mjs's `buildShardedRun`: N shards that
+ * share one idempotencyKey and each carry `shard {index,total}` on open+complete.
+ *
+ * @typedef {{
+ *   perShard: Array<{
+ *     shard: { index: number, total: number },
+ *     openPayload: unknown,
+ *     resultsPayload: { results: unknown[] },
+ *     completePayload: { status: string, durationMs: number, shard: { index: number, total: number } },
+ *   }>,
+ * }} ShardedSeedRun
  */
 
 /** Per-batch append size. D1 batches statements ≤99 params; 50 stays clear. */
@@ -87,6 +101,42 @@ export async function ingestRun(client, run, options = {}) {
     run.completePayload.durationMs,
     { completedAt: run.completePayload.completedAt },
   );
+  return runId;
+}
+
+/**
+ * Drive ONE sharded run to completion: for each shard, open (every shard shares
+ * the run's idempotencyKey, so the dashboard merges them into one run), append
+ * that shard's results, then complete WITH the shard coordinates. Completing per
+ * shard is what makes the dashboard record a `runShards` row and defer the run's
+ * terminal status until every shard has reported — this drives the real sharded
+ * ingest path, exactly as N CI shards hitting the API would.
+ *
+ * @param {IngestClient} client
+ * @param {ShardedSeedRun} run
+ * @param {{
+ *   batchSize?: number,
+ *   onShard?: (index: number, total: number) => void,
+ * }} [options]
+ * @returns {Promise<string>} the merged run id
+ */
+export async function ingestShardedRun(client, run, options = {}) {
+  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  let runId = "";
+  for (const shard of run.perShard) {
+    const opened = await client.openRun(shard.openPayload);
+    runId = opened.runId;
+    for (const batch of chunk(shard.resultsPayload.results, batchSize)) {
+      await client.appendResults(runId, batch);
+    }
+    await client.completeRun(
+      runId,
+      shard.completePayload.status,
+      shard.completePayload.durationMs,
+      { shard: shard.completePayload.shard },
+    );
+    options.onShard?.(shard.shard.index, run.perShard.length);
+  }
   return runId;
 }
 

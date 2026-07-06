@@ -3,6 +3,12 @@
 // hand-written declaration lets the `src/__tests__` test import the loop with
 // real types instead of an implicit `any`.
 
+/** Playwright shard coordinates carried on open + complete. */
+export interface ShardCoords {
+  index: number;
+  total: number;
+}
+
 /** The ingest surface this loop drives; the reporter's StreamClient satisfies it. */
 export interface IngestClient {
   openRun(payload: unknown): Promise<{ runId: string }>;
@@ -11,7 +17,7 @@ export interface IngestClient {
     runId: string,
     status: string,
     durationMs: number,
-    options?: { completedAt?: number },
+    options?: { completedAt?: number; shard?: ShardCoords },
   ): Promise<void>;
 }
 
@@ -20,6 +26,16 @@ export interface SeedRun {
   openPayload: unknown;
   resultsPayload: { results: unknown[] };
   completePayload: { status: string; durationMs: number; completedAt?: number };
+}
+
+/** One sharded run as produced by generator.mjs's `buildShardedRun`. */
+export interface ShardedSeedRun {
+  perShard: Array<{
+    shard: ShardCoords;
+    openPayload: unknown;
+    resultsPayload: { results: unknown[] };
+    completePayload: { status: string; durationMs: number; shard: ShardCoords };
+  }>;
 }
 
 export const DEFAULT_BATCH_SIZE: number;
@@ -40,3 +56,12 @@ export function ingestRuns(
     onError?: (error: unknown, index: number) => void;
   },
 ): Promise<{ completed: number; failed: number }>;
+
+export function ingestShardedRun(
+  client: IngestClient,
+  run: ShardedSeedRun,
+  options?: {
+    batchSize?: number;
+    onShard?: (index: number, total: number) => void;
+  },
+): Promise<string>;

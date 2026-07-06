@@ -9,7 +9,10 @@ import {
   DEFAULT_BATCH_SIZE,
   ingestRun,
   ingestRuns,
+  ingestShardedRun,
 } from "../../scripts/seed/ingest-runs.mjs";
+
+type ShardCoords = { index: number; total: number };
 
 function makeRun(resultCount: number, completedAt = 1_700_000_000) {
   return {
@@ -29,15 +32,22 @@ function makeClient() {
       runId: string;
       status: string;
       durationMs: number;
-      options?: { completedAt?: number };
+      options?: { completedAt?: number; shard?: ShardCoords };
     }>;
   } = { open: [], append: [], complete: [] };
   let n = 0;
+  // Mirror the server's idempotency: a repeat idempotencyKey re-opens the SAME
+  // run (how a sharded suite's shards 2..N converge onto one run).
+  const byKey = new Map<string, string>();
   return {
     calls,
     openRun: vi.fn(async (payload: unknown) => {
       calls.open.push(payload);
-      return { runId: `run_${++n}` };
+      const key = (payload as { idempotencyKey?: string }).idempotencyKey;
+      if (key && byKey.has(key)) return { runId: byKey.get(key)! };
+      const runId = `run_${++n}`;
+      if (key) byKey.set(key, runId);
+      return { runId };
     }),
     appendResults: vi.fn(async (runId: string, results: unknown[]) => {
       calls.append.push({ runId, results });
@@ -48,11 +58,29 @@ function makeClient() {
         runId: string,
         status: string,
         durationMs: number,
-        options?: { completedAt?: number },
+        options?: { completedAt?: number; shard?: ShardCoords },
       ) => {
         calls.complete.push({ runId, status, durationMs, options });
       },
     ),
+  };
+}
+
+function makeShardedRun(shards: number, resultsPerShard: number) {
+  return {
+    perShard: Array.from({ length: shards }, (_, i) => {
+      const shard: ShardCoords = { index: i + 1, total: shards };
+      return {
+        shard,
+        openPayload: { idempotencyKey: "shared-key", shard },
+        resultsPayload: {
+          results: Array.from({ length: resultsPerShard }, (_, r) => ({
+            id: `s${i + 1}-r${r}`,
+          })),
+        },
+        completePayload: { status: "passed", durationMs: 1000 + i, shard },
+      };
+    }),
   };
 }
 
@@ -134,5 +162,57 @@ describe("ingestRuns", () => {
     expect(onError.mock.calls[0][1]).toBe(0); // index of the failed run
     // The second run still completed despite the first throwing.
     expect(client.completeRun).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ingestShardedRun", () => {
+  it("opens/appends/completes once per shard, all attaching to one run", async () => {
+    const client = makeClient();
+    const runId = await ingestShardedRun(client, makeShardedRun(3, 120), {
+      batchSize: 50,
+    });
+
+    // One open + one complete per shard; all share the idempotencyKey so every
+    // call targets the single merged run.
+    expect(client.openRun).toHaveBeenCalledTimes(3);
+    expect(client.completeRun).toHaveBeenCalledTimes(3);
+    expect(runId).toBe("run_1");
+    expect(client.calls.append.every((a) => a.runId === "run_1")).toBe(true);
+    expect(client.calls.complete.every((c) => c.runId === "run_1")).toBe(true);
+  });
+
+  it("completes each shard with its own shard coordinates", async () => {
+    const client = makeClient();
+    await ingestShardedRun(client, makeShardedRun(3, 1));
+
+    expect(client.calls.complete.map((c) => c.options?.shard)).toEqual([
+      { index: 1, total: 3 },
+      { index: 2, total: 3 },
+      { index: 3, total: 3 },
+    ]);
+  });
+
+  it("chunks each shard's results by batch size independently", async () => {
+    const client = makeClient();
+    // 2 shards × 120 results, batch 50 → each shard: 50, 50, 20.
+    await ingestShardedRun(client, makeShardedRun(2, 120), { batchSize: 50 });
+
+    expect(client.calls.append.map((a) => a.results.length)).toEqual([
+      50, 50, 20, 50, 50, 20,
+    ]);
+  });
+
+  it("reports per-shard progress via onShard", async () => {
+    const client = makeClient();
+    const seen: Array<[number, number]> = [];
+    await ingestShardedRun(client, makeShardedRun(4, 1), {
+      onShard: (index, total) => seen.push([index, total]),
+    });
+    expect(seen).toEqual([
+      [1, 4],
+      [2, 4],
+      [3, 4],
+      [4, 4],
+    ]);
   });
 });

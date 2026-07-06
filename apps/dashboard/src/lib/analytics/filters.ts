@@ -110,21 +110,34 @@ export function ciRunsJoinOn(): JoinCondition {
 }
 
 /**
- * Optional `and (tr.title like <pattern> or tr.file like <pattern>)` predicate
- * for the test-catalog search box (tests / slowest-tests). Takes the raw,
- * already-trimmed search term; a falsy term yields an empty fragment.
+ * Optional test-catalog search predicate (tests / slowest-tests). Takes the raw,
+ * already-trimmed term + the scope's projectId; a falsy term yields an empty
+ * fragment.
+ *
+ * Resolves the `title`/`file` substring match against the `tests` CATALOG table
+ * (correlated on `tr."testId"`) rather than `ILIKE`-ing the `testResults` fact
+ * rows directly. This is what lets the trigram GIN indexes live on `tests` (one
+ * row per test) instead of the result-history table: the EXISTS seeks the
+ * catalog row via `tests_project_testId_idx` and the ILIKE hits the trigram
+ * index there. `projectId` is a BOUND parameter, so the correlated subquery is
+ * itself tenant-scoped (defense-in-depth alongside the outer scope join).
  *
  * The term goes through `escapeLike` and the LIKEs carry `ESCAPE '\'`, so
- * `%`/`_`/`\` in a search match literally — the same semantics as the runs
- * list search (`@/lib/runs-filters-where`), which previously diverged (this
- * fragment used to pass wildcards through raw). Emitted as a BOUND parameter.
+ * `%`/`_`/`\` in a search match literally — the same semantics as the runs list
+ * search. `ILIKE` keeps the match case-insensitive.
  */
-export function searchFragment(query: string | null): SqlFilterFragment {
+export function searchFragment(
+  query: string | null,
+  projectId: string,
+): SqlFilterFragment {
   if (!query) return sql``;
   const pattern = `%${escapeLike(query)}%`;
-  // `ILIKE` (Postgres case-insensitive LIKE) so the test-catalog search is
-  // case-insensitive.
-  return sql`and (tr.title ilike ${pattern} escape '\\' or tr.file ilike ${pattern} escape '\\')`;
+  return sql`and exists (
+    select 1 from "tests" t
+    where t."projectId" = ${projectId}
+      and t."testId" = tr."testId"
+      and (t.title ilike ${pattern} escape '\\' or t.file ilike ${pattern} escape '\\')
+  )`;
 }
 
 /**

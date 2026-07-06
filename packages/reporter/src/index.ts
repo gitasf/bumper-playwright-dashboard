@@ -37,6 +37,13 @@ import {
   fetchQuarantine,
   type QuarantineMap,
 } from "./quarantine.js";
+import {
+  MAX_MESSAGE,
+  MAX_STACK,
+  MAX_TITLE,
+  truncate,
+  truncateNullable,
+} from "./limits.js";
 import { computeTestId } from "./test-id.js";
 import type {
   ArtifactMode,
@@ -454,19 +461,25 @@ export default class WrightfulReporter implements Reporter {
             // dashboard watchdog picks up anything we didn't finalize.
           }
         }
-        // Deliberately do NOT call process.exit() here. We only piggy-back the
-        // signal to fire a best-effort /complete and then get out of the way:
-        //   - SIGINT (local Ctrl-C): Playwright installs its own handler and
-        //     receives the same signal — it does the graceful worker shutdown,
-        //     flushes every other reporter, and computes the exit code. Calling
-        //     process.exit() here would preempt all of that the instant our
-        //     /complete settles, truncating output and overriding Playwright's
-        //     exit code. So we let Playwright own termination.
-        //   - SIGTERM (CI cancellation): the runner is being torn down anyway,
-        //     usually followed by SIGKILL after a grace period. We mark the run
-        //     'interrupted' best-effort and let that teardown proceed; the
-        //     dashboard watchdog finalizes the run if we never got the chance.
-        // Our handler is `process.once`, so it can't re-fire or loop.
+        // Termination handoff differs by signal — we only piggy-back it to fire
+        // one best-effort /complete, then get out of the way:
+        //   - SIGINT (local Ctrl-C): Playwright installs its OWN SIGINT handler
+        //     and receives the same signal — it does the graceful worker
+        //     shutdown, flushes every other reporter, and computes the exit code.
+        //     Calling process.exit()/re-raising here would preempt all of that the
+        //     instant our /complete settles, truncating output and overriding
+        //     Playwright's exit code. So we let Playwright own termination.
+        //   - SIGTERM (CI cancellation): Playwright (≤1.61) does NOT watch
+        //     SIGTERM, and installing ANY listener removes Node's default
+        //     (immediate exit) — so if we just returned, the process would linger
+        //     (ignoring the SIGTERM) until the runner's SIGKILL ~10s later. Our
+        //     `process.once` listener is already removed, so RE-RAISE SIGTERM to
+        //     pass it through to the default (terminate now, exit 143) once our
+        //     best-effort /complete has settled. The dashboard watchdog finalizes
+        //     the run if we never got the chance.
+        if (signal === "SIGTERM") {
+          process.kill(process.pid, "SIGTERM");
+        }
       };
       void task();
     };
@@ -505,7 +518,11 @@ export default class WrightfulReporter implements Reporter {
 
   private async enqueueDone(entry: PendingTest): Promise<void> {
     try {
-      const built = buildPayload(entry, this.rootDir);
+      const built = buildPayload(
+        entry,
+        this.rootDir,
+        this.shard?.index ?? null,
+      );
       // Demote a quarantined hard failure to `skipped` on the wire. The map is
       // resolved by the time the first test ends in any real run, but await it
       // here so we never race a slow fetch; it's empty on any fetch failure, so
@@ -869,7 +886,12 @@ export function buildTestDescriptor(
   );
   return {
     testId,
-    title: titlePath.join(" > "),
+    // Truncate the DISPLAY title to the dashboard's hard cap so a long
+    // data-driven title can't 400 the open/`/results` call (which would disable
+    // streaming for the whole run). The `testId` above is hashed from the raw
+    // `titlePath`, not this string, so truncating display text can't change
+    // identity — the prefilled queued row and the streamed result still match.
+    title: truncate(titlePath.join(" > "), MAX_TITLE),
     file,
     projectName: projectName || null,
   };
@@ -890,6 +912,7 @@ function normaliseAttemptStatus(
 export function buildPayload(
   entry: PendingTest,
   rootDir: string | null = null,
+  shardIndex: number | null = null,
 ): TestResultPayload {
   const { test, results } = entry;
   const descriptor = buildTestDescriptor(test, rootDir);
@@ -913,8 +936,10 @@ export function buildPayload(
       attempt: r.retry,
       status: normaliseAttemptStatus(r.status),
       durationMs: Math.round(r.duration),
-      errorMessage: r.errors?.[0]?.message ?? null,
-      errorStack: r.errors?.[0]?.stack ?? null,
+      // Clamp free-form text client-side so a huge assertion diff can't 413 the
+      // whole batch before the server (which also truncates) can parse it.
+      errorMessage: truncateNullable(r.errors?.[0]?.message, MAX_MESSAGE),
+      errorStack: truncateNullable(r.errors?.[0]?.stack, MAX_STACK),
     }));
 
   return {
@@ -926,14 +951,22 @@ export function buildPayload(
     status,
     durationMs: Math.round(totalDuration),
     retryCount: Math.max(0, results.length - 1),
-    errorMessage: errorSource?.errors?.[0]?.message ?? null,
-    errorStack: errorSource?.errors?.[0]?.stack ?? null,
+    errorMessage: truncateNullable(
+      errorSource?.errors?.[0]?.message,
+      MAX_MESSAGE,
+    ),
+    errorStack: truncateNullable(errorSource?.errors?.[0]?.stack, MAX_STACK),
     workerIndex:
       lastResult && lastResult.workerIndex >= 0 ? lastResult.workerIndex : 0,
+    shardIndex,
     tags: test.tags ?? [],
     annotations: test.annotations.map((a) => ({
       type: a.type,
-      description: a.description,
+      // Clamp like the error text (server truncates too, but oversized bodies 413).
+      description:
+        a.description == null
+          ? a.description
+          : truncate(a.description, MAX_MESSAGE),
     })),
     attempts,
   };

@@ -2,18 +2,20 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   clampRunResultsLimit,
   decodeCursor,
+  decodeRankedCursor,
   encodeCursor,
+  encodeRankedCursor,
   MAX_RUN_RESULTS_LIMIT,
   normalizeTestStatus,
 } from "@/lib/run-results-page";
 
 /**
- * `loadRunResultsPage` is the one canonical "first page of a run's
- * testResults as RunProgressTest[]" seam, consumed by BOTH the GET /results
- * back-paginator and the run-detail SSR loader. The query/ownership pieces
- * hit D1 (not unit-testable under the void/db stub), but the cursor codec,
- * limit clamp, and status normalizer are pure — and they are exactly the
- * contract the two callers must agree on. These tests pin that contract.
+ * `loadRunResultsPage` is the one canonical "page of a run's testResults as
+ * RunProgressTest[]" seam, consumed by the GET /results API (per-group row pages
+ * + back-paginator), the v1 tests API, and the CSV export loop. The query pieces
+ * hit Postgres (see `pg-integration.test.ts`), but the cursor codecs, limit
+ * clamp, and status normalizer are pure — and they are exactly the contract the
+ * callers must agree on. These tests pin that contract.
  */
 describe("run-results-page cursor codec", () => {
   it("round-trips a (createdAt, id) tuple through encode/decode", () => {
@@ -54,6 +56,47 @@ describe("run-results-page cursor codec", () => {
     // indexOf finds the FIRST colon, so the id keeps any later colons.
     const cursor = encodeCursor(42, "a:b:c");
     expect(decodeCursor(cursor)).toEqual({ createdAt: 42, id: "a:b:c" });
+  });
+});
+
+// The "recommended" view orders failed-before-flaky, so its keyset cursor
+// prepends a bucket rank: `${rank}:${createdAt}:${id}`. Distinct arity from the
+// 2-tuple codec above; the loader picks by query mode.
+describe("run-results-page ranked cursor codec (recommended view)", () => {
+  it("round-trips a (rank, createdAt, id) triple through encode/decode", () => {
+    const cursor = encodeRankedCursor(1, 1717000000000, "01HZXABCDEF");
+    expect(decodeRankedCursor(cursor)).toEqual({
+      rank: 1,
+      createdAt: 1717000000000,
+      id: "01HZXABCDEF",
+    });
+  });
+
+  it("treats null / malformed base64 as first-page", () => {
+    expect(decodeRankedCursor(null)).toBeNull();
+    expect(decodeRankedCursor("not valid base64!!")).toBeNull();
+  });
+
+  it("rejects a triple missing the rank segment (a 2-tuple cursor)", () => {
+    expect(decodeRankedCursor(btoa("1717000000000:01HZX"))).toBeNull();
+  });
+
+  it("rejects a non-numeric rank or createdAt", () => {
+    expect(decodeRankedCursor(btoa("x:1717000000000:01HZX"))).toBeNull();
+    expect(decodeRankedCursor(btoa("0:abc:01HZX"))).toBeNull();
+  });
+
+  it("rejects an empty id", () => {
+    expect(decodeRankedCursor(btoa("0:1717000000000:"))).toBeNull();
+  });
+
+  it("preserves ids that themselves contain a colon", () => {
+    const cursor = encodeRankedCursor(0, 42, "a:b:c");
+    expect(decodeRankedCursor(cursor)).toEqual({
+      rank: 0,
+      createdAt: 42,
+      id: "a:b:c",
+    });
   });
 });
 

@@ -3,11 +3,15 @@
  * so the "who gets alerted" policy is unit-testable on its own; `alerts.tsx`
  * supplies the live membership + group data and does the sending.
  *
- * Storage contract (`monitors.alertTargets`):
+ * Storage contract (`monitors.alertTargets`, a `jsonb` column):
  *   - `null`            ⇒ ALL current team members (the default).
  *   - `{ users, groups }` ⇒ those specific members + the members of those
  *     groups, unioned and re-intersected with live memberships at read time
  *     (so a removed member or a deleted group can't leak or linger).
+ *
+ * Since the column is `jsonb`, the driver hands back the already-parsed value —
+ * `buildAlertTargets` writes the object directly and `parseAlertTargets`
+ * validates/normalizes what comes back (no JSON encode/decode either side).
  */
 
 export interface AlertTargets {
@@ -17,28 +21,19 @@ export interface AlertTargets {
   groups: string[];
 }
 
-/** Parse the stored JSON. `null`/malformed ⇒ `null` (= all members, the safe default). */
-export function parseAlertTargets(raw: string | null): AlertTargets | null {
-  if (!raw) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const obj = parsed as { users?: unknown; groups?: unknown };
+/**
+ * Normalize the stored `jsonb` value into a well-formed {@link AlertTargets}.
+ * The input is the already-parsed column value (or a request-shaped object);
+ * `null`/non-object ⇒ `null` (= all members, the safe default), and each field
+ * is filtered to a string array so a malformed/schema-evolved row can't leak a
+ * non-string id downstream.
+ */
+export function parseAlertTargets(raw: unknown): AlertTargets | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const obj = raw as { users?: unknown; groups?: unknown };
   const strings = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   return { users: strings(obj.users), groups: strings(obj.groups) };
-}
-
-/** Serialize for storage; `null` (= all members) stays `null`. */
-export function serializeAlertTargets(
-  targets: AlertTargets | null,
-): string | null {
-  if (targets === null) return null;
-  return JSON.stringify({ users: targets.users, groups: targets.groups });
 }
 
 /**

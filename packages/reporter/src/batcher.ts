@@ -5,8 +5,12 @@
  * for the same run.
  *
  * Fail-closed: if the flush function throws, the batch is handed to
- * `onFailure` instead of being retried in-band. The reporter decides what to
- * do with failed items (typically: stash them for the fallback file).
+ * `onFailure` instead of being retried in-band. The reporter decides what to do
+ * with failed items — today it logs a warning and DROPS them (there is no
+ * on-disk fallback yet), relying on the dashboard's stale-run watchdog to
+ * finalize the run and on the prefilled `queued` rows to keep the missing tests
+ * visible. A durable fallback (persist dropped batches, re-send next run) is a
+ * possible future enhancement.
  */
 export class Batcher<T> {
   private queue: T[] = [];

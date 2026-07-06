@@ -1,8 +1,11 @@
+import { use } from "react";
+import { DeferredSection } from "@/components/defer-error-boundary";
 import {
   SettingsCard,
   SettingsHeader,
   SettingsPage,
 } from "@/components/settings/settings-primitives";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/cn";
 import type { Props, UsageRow, UsageRowTone } from "./usage.server";
 
@@ -48,42 +51,65 @@ function UsageMeter({ row }: { row: UsageRow }) {
 }
 
 /**
- * Settings → Team → Usage. Read-only meter for the current billing period.
- * Purely presentational — all formatting/tone is computed in `usage.server.ts`.
+ * Settings → Team → Usage. Read-only meter for the current billing period. The
+ * header + "This billing period" card title paint immediately; the whole
+ * billing-period aggregate (tier, period, meter rows, artifact count) streams
+ * in behind a skeleton. Purely presentational — all formatting/tone is computed
+ * in `usage.server.ts`.
  */
-export default function SettingsTeamUsagePage({
-  team,
-  tier,
-  periodStart,
-  artifactCount,
-  rows,
-}: Props) {
-  const periodLabel = new Date(periodStart * 1000).toLocaleDateString("en-US", {
-    month: "long",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-
+export default function SettingsTeamUsagePage({ team, usage }: Props) {
   return (
     <SettingsPage>
       <SettingsHeader
         title={`${team.name} · Usage`}
-        subtitle={`Usage for ${periodLabel}, against the ${tier} plan. Resets at the start of each month.`}
+        subtitle="Usage for the current billing period, against your plan. Resets at the start of each month."
       />
 
       <SettingsCard title="This billing period">
-        <div className="flex flex-col gap-5">
-          {rows.map((row) => (
-            <UsageMeter key={row.key} row={row} />
-          ))}
-          <p className="text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
-            <span className="font-mono tabular-nums">
-              {artifactCount.toLocaleString("en-US")}
-            </span>{" "}
-            artifacts stored this period.
-          </p>
-        </div>
+        <DeferredSection skeleton={<UsageMetersSkeleton />}>
+          <UsageMetersRegion usage={usage} />
+        </DeferredSection>
       </SettingsCard>
     </SettingsPage>
+  );
+}
+
+/** The meter rows + "N artifacts stored" line. Reads the deferred `usage`
+ *  group ({ tier, periodStart, artifactCount, rows }). */
+function UsageMetersRegion({ usage }: { usage: Props["usage"] }) {
+  const { artifactCount, rows } = use(usage);
+
+  return (
+    <div className="flex flex-col gap-5">
+      {rows.map((row) => (
+        <UsageMeter key={row.key} row={row} />
+      ))}
+      <p className="text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+        <span className="font-mono tabular-nums">
+          {artifactCount.toLocaleString("en-US")}
+        </span>{" "}
+        artifacts stored this period.
+      </p>
+    </div>
+  );
+}
+
+/** Fallback matching the meter region: three meter rows (label/limit line +
+ *  bar) plus the trailing "N artifacts stored" text line, so the card holds
+ *  its height and doesn't shift when the deferred usage resolves. */
+function UsageMetersSkeleton() {
+  return (
+    <div className="flex flex-col gap-5">
+      {Array.from({ length: 3 }, (_, i) => (
+        <div key={i} className="flex flex-col gap-2">
+          <div className="flex items-baseline justify-between gap-3">
+            <Skeleton className="h-[13px] w-24" />
+            <Skeleton className="h-[11px] w-20" />
+          </div>
+          <Skeleton className="h-1.5 w-full rounded-full" />
+        </div>
+      ))}
+      <Skeleton className="h-[13px] w-48" />
+    </div>
   );
 }

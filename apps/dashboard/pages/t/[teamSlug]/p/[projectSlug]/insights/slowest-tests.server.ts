@@ -1,4 +1,4 @@
-import { defineHandler, type InferProps } from "void";
+import { defer, defineHandler, type InferProps } from "void";
 import { sql } from "void/db";
 import { loadProjectBranches } from "@/lib/branches-query";
 import { runRow, runRows } from "@/lib/db-run";
@@ -95,7 +95,7 @@ export const loader = defineHandler(async (c) => {
   const { nowSec, windowStartSec } = resolveAnalyticsWindow(range);
 
   const branchSql = branchFragment(branchFilter);
-  const qSql = searchFragment(q || null);
+  const qSql = searchFragment(q || null, scope.projectId);
 
   // Branch list is independent of the totals — run the two in parallel.
   // Totals: max duration + count of non-skipped + distinct testIds.
@@ -128,17 +128,64 @@ export const loader = defineHandler(async (c) => {
   const bucketMs = pickBinWidthMs(totals.maxDurationMs);
   const topBin = HIST_BINS - 1;
 
-  const { currentPage, totalPages, offset } = resolveOffsetPage({
+  // Pagination shell: derived purely from the eager totals so the footer's
+  // "Showing 1–N of M" and page links paint immediately. `toRow` is left at
+  // `offset` here (no `rowCount`) and re-derived against the real slice length
+  // inside the deferred bottlenecks region once its rows resolve.
+  const { currentPage, totalPages, offset, fromRow } = resolveOffsetPage({
     total: totals.totalUniqueTests,
     pageSize: PAGE_SIZE,
     requestedPage,
   });
 
-  // Histogram + bottlenecks each depend only on the totals, not on each
-  // other — run them in parallel.
-  const histogramPromise: Promise<HistogramRow[]> =
-    totals.totalResults > 0
-      ? runRows<HistogramRow>(sql`
+  // Shell data: the branch list is cheap (index-covered DISTINCT) and drives
+  // the always-visible header control; the totals above are the cheap
+  // count/max pass that feeds bin width, pagination and the "Tests tracked"
+  // KPI. Both stay eager. The two heavy regions below — the duration histogram
+  // and the ranked-bottlenecks table (+ its 7-day sparklines) — each stream in
+  // behind their own Suspense boundary.
+
+  // A deferred loader streams its body — NDJSON on SPA nav, chunked HTML on a
+  // document load — and Void keys the two variants with `Vary: X-VoidPages`.
+  // SWR/max-age caching of that streamed, variant-specific response lets the
+  // browser replay the wrong variant: a cached NDJSON payload served for a
+  // top-level navigation downloads as a file instead of rendering. Deferred
+  // pages must not be stored; the perceived-load win now comes from streaming,
+  // not from the cache. (Was `private, max-age=300, stale-while-revalidate=900`
+  // when this loader returned a single non-streamed response — see worklog §4.)
+  c.header("Cache-Control", "private, no-store");
+  return {
+    project: {
+      id: project.id,
+      teamId: project.teamId,
+      slug: project.slug,
+      name: project.name,
+      teamSlug: project.teamSlug,
+    },
+    range,
+    branchParam,
+    branches,
+    branchFilter,
+    q,
+    currentPage,
+    totalPages,
+    fromRow,
+    // `offset` + `pageSize` let the page reserve the exact skeleton row count
+    // for the deferred bottlenecks table (page size clamped to the rows left on
+    // the last page) without re-deriving PAGE_SIZE or importing this module's
+    // constants into the client bundle.
+    offset,
+    pageSize: PAGE_SIZE,
+    totals,
+    bucketMs,
+    pathname: url.pathname,
+    ranges: RANGES,
+
+    // Duration-distribution histogram — its own boundary so the slower ranking
+    // query never gates it. Depends only on the eager totals (bin width) + scope.
+    histogram: defer<HistogramRow[]>(async () =>
+      totals.totalResults > 0
+        ? runRows<HistogramRow>(sql`
       select
         cast(
           case
@@ -155,11 +202,19 @@ export const loader = defineHandler(async (c) => {
         ${qSql}
       group by bin
     `)
-      : Promise.resolve([]);
+        : [],
+    ),
 
-  const bottlenecksPromise: Promise<BottleneckRow[]> =
-    totals.totalUniqueTests > 0
-      ? runRows<BottleneckRow>(sql`
+    // Ranked bottlenecks + their 7-day sparklines. The sparklines depend on the
+    // bottleneck rows' testIds (a dependency chain), so they resolve together in
+    // ONE boundary: fetch the ranked slice, then its sparklines, then fold the
+    // slice-relative `toRow` in. Returns plain serializable JSON (rows + a
+    // testId→points map); all JSX (icons, tooltips, sparkline SVGs) is built in
+    // the client component that reads this via `use()`.
+    slowest: defer(async () => {
+      const bottlenecks: BottleneckRow[] =
+        totals.totalUniqueTests > 0
+          ? await runRows<BottleneckRow>(sql`
       with filtered as (
         select
           tr."testId" as "testId",
@@ -198,27 +253,24 @@ export const loader = defineHandler(async (c) => {
         ${statusCounter("flaky", { alias: `"flakyCount"` })}
       from ranked
       group by "testId"
-      order by p95 desc
+      -- "testId" breaks p95 ties so OFFSET pagination is stable (rows sharing a
+      -- p95 can't be skipped/duplicated across page boundaries).
+      order by p95 desc, "testId"
       limit ${PAGE_SIZE}
       offset ${offset}
     `)
-      : Promise.resolve([]);
+          : [];
 
-  const [histogram, bottlenecks] = await Promise.all([
-    histogramPromise,
-    bottlenecksPromise,
-  ]);
-
-  const pageTestIds = bottlenecks.map((r) => r.testId);
-  const sparklinesEntries: [string, SparklinePoint[]][] = [];
-  if (pageTestIds.length > 0) {
-    const sparkStart = nowSec - SPARKLINE_DAYS * DAY_SEC;
-    const branchSparkSql = branchFragment(branchFilter);
-    const sparkRows = await runRows<{
-      testId: string;
-      day: number;
-      avg: number;
-    }>(sql`
+      const pageTestIds = bottlenecks.map((r) => r.testId);
+      const sparklinesEntries: [string, SparklinePoint[]][] = [];
+      if (pageTestIds.length > 0) {
+        const sparkStart = nowSec - SPARKLINE_DAYS * DAY_SEC;
+        const branchSparkSql = branchFragment(branchFilter);
+        const sparkRows = await runRows<{
+          testId: string;
+          day: number;
+          avg: number;
+        }>(sql`
       select
         tr."testId" as "testId",
         cast(${bucketExpr("day", sql`tr."createdAt"`)} as integer) as day,
@@ -235,48 +287,29 @@ export const loader = defineHandler(async (c) => {
       group by tr."testId", day
       order by tr."testId" asc, day asc
     `);
-    const sparkMap = new Map<string, SparklinePoint[]>();
-    for (const r of sparkRows) {
-      const list = sparkMap.get(r.testId) ?? [];
-      list.push({ day: r.day, avg: r.avg });
-      sparkMap.set(r.testId, list);
-    }
-    sparklinesEntries.push(...sparkMap.entries());
-  }
+        const sparkMap = new Map<string, SparklinePoint[]>();
+        for (const r of sparkRows) {
+          const list = sparkMap.get(r.testId) ?? [];
+          list.push({ day: r.day, avg: r.avg });
+          sparkMap.set(r.testId, list);
+        }
+        sparklinesEntries.push(...sparkMap.entries());
+      }
 
-  const { fromRow, toRow } = resolveOffsetPage({
-    total: totals.totalUniqueTests,
-    pageSize: PAGE_SIZE,
-    requestedPage,
-    rowCount: bottlenecks.length,
-  });
+      // `toRow` reflects the real page slice — re-derive it here now the rows
+      // exist (the eager shell only knew `fromRow`/`offset`).
+      const { toRow } = resolveOffsetPage({
+        total: totals.totalUniqueTests,
+        pageSize: PAGE_SIZE,
+        requestedPage,
+        rowCount: bottlenecks.length,
+      });
 
-  // Staleness-tolerant analytics: cache privately with SWR (see worklog §4).
-  // `private` keeps tenant-scoped data out of shared/edge caches.
-  c.header("Cache-Control", "private, max-age=300, stale-while-revalidate=900");
-  return {
-    project: {
-      id: project.id,
-      teamId: project.teamId,
-      slug: project.slug,
-      name: project.name,
-      teamSlug: project.teamSlug,
-    },
-    range,
-    branchParam,
-    branches,
-    branchFilter,
-    q,
-    currentPage,
-    totalPages,
-    fromRow,
-    toRow,
-    totals,
-    bucketMs,
-    histogram,
-    bottlenecks,
-    sparklines: Object.fromEntries(sparklinesEntries),
-    pathname: url.pathname,
-    ranges: RANGES,
+      return {
+        bottlenecks,
+        sparklines: Object.fromEntries(sparklinesEntries),
+        toRow,
+      };
+    }),
   };
 });

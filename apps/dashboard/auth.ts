@@ -122,6 +122,22 @@ function mirrorGithubAccount(
   );
 }
 
+// The user-teardown hooks (for the Better Auth `deleteUser` flow below) are
+// imported dynamically — deferred to request time — for the same config-time-
+// loadability reason as the github mirror above: `void prepare` evaluates this
+// file in a bare Node context that can't resolve the `.ts` source. They close
+// the logical-FK orphan gap (a deleted user's memberships / group memberships /
+// state / github-account rows carry no cascading FK across the auth boundary)
+// and enforce the sole-owner guard. See `@/lib/user-teardown`.
+function assertUserDeletable(userId: string): Promise<void> {
+  return import("@/lib/user-teardown").then((m) =>
+    m.assertUserDeletable(userId),
+  );
+}
+function cleanupUserAfterDelete(userId: string): Promise<void> {
+  return import("@/lib/user-teardown").then((m) => m.cleanupUserData(userId));
+}
+
 // Builds the Polar Better Auth plugin (checkout + portal + auto-mounted webhook
 // at POST /api/auth/polar/webhooks). Only invoked when `polarConfigured` is true.
 // DB-touching webhook handlers are deferred via request-time dynamic import
@@ -180,9 +196,40 @@ export default defineAuth(({ defaults }) => ({
     ...(defaults.plugins ?? []),
     ...(polarConfigured ? [buildPolarPlugin()] : []),
   ],
+  // Session cookie cache: sign the resolved session into a short-lived cookie so
+  // `getSession()` is served in-memory instead of querying Postgres on EVERY
+  // authenticated request/navigation (a serialized DB phase per nav otherwise).
+  // `maxAge` bounds both the read-avoidance window and the cross-device
+  // revocation lag — another device keeps a cached session until its cookie ages
+  // out. 5 min keeps revocation lag low for a CI dashboard while cutting the
+  // per-nav session read to ~one per active user per window. This was enabled pre-migration
+  // (worklog 2026-04-30-better-auth-cookie-cache) but lost when auth moved from
+  // the old rwsdk `better-auth.ts` to `void/auth`'s `defineAuth`; re-added here.
+  session: {
+    ...defaults.session,
+    cookieCache: {
+      ...defaults.session?.cookieCache,
+      enabled: true,
+      maxAge: 300,
+    },
+  },
   advanced: {
     ...defaults.advanced,
     database: { ...defaults.advanced?.database, generateId: () => ulid() },
+  },
+  // Self-service account deletion, made SAFE by the two hooks: `beforeDelete`
+  // blocks a user who is the sole owner of any team (a cascade would strand it),
+  // and `afterDelete` sweeps the user's logical-FK rows that void/auth's own
+  // cascade doesn't reach. Enabled so the hooks actually fire — a dormant hook
+  // would leave the orphan gap open. Guard logic lives in `@/lib/user-teardown`.
+  user: {
+    ...defaults.user,
+    deleteUser: {
+      ...defaults.user?.deleteUser,
+      enabled: true,
+      beforeDelete: (user: { id: string }) => assertUserDeletable(user.id),
+      afterDelete: (user: { id: string }) => cleanupUserAfterDelete(user.id),
+    },
   },
   emailAndPassword: {
     ...defaults.emailAndPassword,

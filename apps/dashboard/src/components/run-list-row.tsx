@@ -1,4 +1,4 @@
-import { Link } from "@void/react";
+import { Link, PREFETCH_REALTIME } from "@/components/ui/link";
 import type React from "react";
 import { ActorAvatar } from "@/components/actor-avatar";
 import { LiveDuration } from "@/components/live-duration";
@@ -58,6 +58,7 @@ export function RunListRow({
          * chips) call `e.stopPropagation()` so their clicks don't bubble to this
          * Link's SPA-navigation handler. */}
         <Link
+          cacheFor={PREFETCH_REALTIME}
           className="flex items-center justify-center focus-visible:outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring"
           href={href}
         >

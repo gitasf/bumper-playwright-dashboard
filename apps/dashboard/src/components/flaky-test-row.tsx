@@ -1,4 +1,4 @@
-import { Link } from "@void/react";
+import { Link, PREFETCH_STABLE } from "@/components/ui/link";
 import type React from "react";
 import { OwnerCell, type OwnerChip } from "@/components/owner-cell";
 import { Sparkline, type SparklinePoint } from "@/components/sparkline";
@@ -93,6 +93,7 @@ export function FlakyTestRow({
     <TableRow>
       <TableCell className="w-10 px-4 align-middle">
         <Link
+          cacheFor={PREFETCH_STABLE}
           className="flex items-center justify-center focus-visible:outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring"
           href={rowHref}
         >

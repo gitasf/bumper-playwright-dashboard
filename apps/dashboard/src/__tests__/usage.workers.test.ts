@@ -189,7 +189,13 @@ describe("usageBumpStatement", () => {
     const exec = null as unknown as BatchExecutor;
     expect(usageBumpStatement("team_1", 0, {}, 0, exec)).toBeNull();
     expect(
-      usageBumpStatement("team_1", 0, { runs: 0, testResults: 0 }, 0, exec),
+      usageBumpStatement(
+        "team_1",
+        0,
+        { runs: 0, artifactBytes: 0, artifactCount: 0 },
+        0,
+        exec,
+      ),
     ).toBeNull();
   });
 });

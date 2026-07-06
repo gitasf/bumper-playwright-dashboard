@@ -1,4 +1,4 @@
-import { Link } from "@void/react";
+import { Link, PREFETCH_STABLE } from "@/components/ui/link";
 import { cn } from "@/lib/cn";
 
 export interface AnalyticsButtonGroupProps<T extends string> {
@@ -35,6 +35,7 @@ export function AnalyticsButtonGroup<T extends string>({
       {options.map((o) => (
         <Link
           key={o}
+          cacheFor={PREFETCH_STABLE}
           href={hrefFor(o)}
           className={cn(
             "px-3 py-1 text-xs font-mono rounded transition-colors capitalize",

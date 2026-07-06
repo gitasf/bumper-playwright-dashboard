@@ -1,5 +1,6 @@
 import { defineHandler } from "void";
 import { z } from "zod";
+import { GROUP_BY_AXES, STATUS_FILTER_VALUES } from "@/lib/run-groups-page";
 import {
   DEFAULT_RUN_RESULTS_LIMIT,
   loadRunResultsPage,
@@ -19,6 +20,16 @@ const QuerySchema = z.object({
   status: z.enum(STATUS_VALUES).optional(),
   limit: z.coerce.number().int().positive().optional(),
   cursor: z.string().optional(),
+  // The Tests-tab per-group row page: restrict to one group of an axis. A
+  // present `groupBy` with an absent `groupKey` selects that axis's fallback
+  // group (empty projectName / non-sharded rows); `file`'s fallback is the
+  // empty-path string, so an absent key there reads as `""`.
+  groupBy: z.enum(GROUP_BY_AXES).optional(),
+  groupKey: z.string().optional(),
+  // Chip status filter (matches the skeleton: `failed` includes `timedout`,
+  // `recommended` = failed ∪ flaky). Distinct from the raw `status` above.
+  statusBucket: z.enum(STATUS_FILTER_VALUES).optional(),
+  search: z.string().optional(),
 });
 
 /**
@@ -37,10 +48,23 @@ export const GET = defineHandler.withValidator({
   if (ctx instanceof Response) return ctx;
   const { scope, runId } = ctx;
 
+  // A present `groupBy` marks this as a per-group row page. An absent `groupKey`
+  // is the axis's fallback group; `groupPredicate` owns the null-vs-empty rule
+  // (it coerces a null `file` key to `""`, and maps null project/shard to IS NULL).
+  const group = query.groupBy
+    ? { axis: query.groupBy, key: query.groupKey ?? null }
+    : null;
+
   const result = await loadRunResultsPage(scope, runId, {
     cursor: query.cursor ?? null,
     limit: query.limit ?? DEFAULT_RUN_RESULTS_LIMIT,
     status: query.status ?? null,
+    statusBucket: query.statusBucket ?? null,
+    group,
+    search: query.search ?? null,
+    // Run-detail Tests tab: light the per-row "Test Replay" button for rows
+    // that have a trace artifact.
+    includeTraceFlags: true,
   });
   if (!result) return c.json({ error: "Not found" }, 404);
   return result;

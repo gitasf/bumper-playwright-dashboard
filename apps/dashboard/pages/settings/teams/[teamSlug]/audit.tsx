@@ -1,10 +1,14 @@
+import { use } from "react";
+import { DeferredSection } from "@/components/defer-error-boundary";
 import {
   SettingsCard,
   SettingsHeader,
   SettingsPage,
 } from "@/components/settings/settings-primitives";
+import { TablePaginationFooterSkeleton } from "@/components/skeletons";
 import { TablePaginationFooter } from "@/components/table-pagination-footer";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -65,14 +69,18 @@ function targetText(entry: AuditEntry): string {
   return entry.targetId;
 }
 
+/**
+ * Settings → Team → Audit log. The header + "Activity · N" card title paint
+ * immediately from the eager count; the row slice (a select + actor-name
+ * hydration over the void-owned user table) streams in behind a table skeleton.
+ */
 export default function SettingsTeamAuditPage({
   team,
-  entries,
   totalCount,
   currentPage,
   totalPages,
   fromRow,
-  toRow,
+  entries,
 }: Props) {
   const pageHref = (page: number) =>
     page <= 1
@@ -90,71 +98,156 @@ export default function SettingsTeamAuditPage({
         className="overflow-hidden"
         title={`Activity · ${totalCount.toLocaleString()}`}
       >
-        {entries.length === 0 ? (
-          <p className="py-2 text-[length:var(--text-fs-13)] text-fg-3">
-            No activity recorded yet. Privileged changes will show up here.
-          </p>
-        ) : (
-          <div className="-mx-[18px] -my-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="ps-[18px]">Action</TableHead>
-                  <TableHead>Actor</TableHead>
-                  <TableHead>Target</TableHead>
-                  <TableHead className="pe-[18px] text-right">When</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {entries.map((entry) => (
-                  <TableRow key={entry.id}>
-                    <TableCell className="ps-[18px]">
-                      <Badge variant={actionVariant(entry.action)}>
-                        {actionLabel(entry.action)}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <div className="flex size-6 shrink-0 items-center justify-center rounded-full border border-line-1 bg-bg-3 font-mono font-semibold text-[9.5px] text-fg-3">
-                          {initials(entry.actorName)}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="truncate font-medium text-[length:var(--text-fs-13)] text-fg-1">
-                            {entry.actorName}
-                          </div>
-                          {entry.actorEmail && (
-                            <div className="truncate font-mono text-[11px] text-fg-3">
-                              {entry.actorEmail}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="max-w-[220px] truncate font-mono text-[12px] text-fg-2">
-                      {targetText(entry)}
-                    </TableCell>
-                    <TableCell
-                      className="pe-[18px] text-right font-mono text-[11.5px] text-fg-3"
-                      title={new Date(entry.createdAt * 1000).toISOString()}
-                    >
-                      {formatRelativeTime(entry.createdAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            <TablePaginationFooter
-              currentPage={currentPage}
-              fromRow={fromRow}
-              itemNoun="event"
-              pageHref={pageHref}
-              toRow={toRow}
-              totalCount={totalCount}
-              totalPages={totalPages}
-            />
-          </div>
-        )}
+        <DeferredSection
+          resetKey={String(currentPage)}
+          skeleton={<AuditTableSkeleton totalPages={totalPages} />}
+        >
+          <AuditTableRegion
+            currentPage={currentPage}
+            entries={entries}
+            fromRow={fromRow}
+            pageHref={pageHref}
+            totalCount={totalCount}
+            totalPages={totalPages}
+          />
+        </DeferredSection>
       </SettingsCard>
     </SettingsPage>
+  );
+}
+
+/** The audit table — Empty note or the event rows + pagination footer. Reads
+ *  the deferred `entries` group ({ entries, toRow }); the pagination shell
+ *  (page/total/fromRow) is eager. */
+function AuditTableRegion({
+  entries,
+  currentPage,
+  totalPages,
+  fromRow,
+  totalCount,
+  pageHref,
+}: {
+  entries: Props["entries"];
+  currentPage: number;
+  totalPages: number;
+  fromRow: number;
+  totalCount: number;
+  pageHref: (page: number) => string;
+}) {
+  const { entries: rows, toRow } = use(entries);
+
+  if (rows.length === 0) {
+    return (
+      <p className="py-2 text-[length:var(--text-fs-13)] text-fg-3">
+        No activity recorded yet. Privileged changes will show up here.
+      </p>
+    );
+  }
+
+  return (
+    <div className="-mx-[18px] -my-4">
+      <Table>
+        <AuditTableHead />
+        <TableBody>
+          {rows.map((entry) => (
+            <TableRow key={entry.id}>
+              <TableCell className="ps-[18px]">
+                <Badge variant={actionVariant(entry.action)}>
+                  {actionLabel(entry.action)}
+                </Badge>
+              </TableCell>
+              <TableCell>
+                <div className="flex items-center gap-2">
+                  <div className="flex size-6 shrink-0 items-center justify-center rounded-full border border-line-1 bg-bg-3 font-mono font-semibold text-[9.5px] text-fg-3">
+                    {initials(entry.actorName)}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-[length:var(--text-fs-13)] text-fg-1">
+                      {entry.actorName}
+                    </div>
+                    {entry.actorEmail && (
+                      <div className="truncate font-mono text-[11px] text-fg-3">
+                        {entry.actorEmail}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </TableCell>
+              <TableCell className="max-w-[220px] truncate font-mono text-[12px] text-fg-2">
+                {targetText(entry)}
+              </TableCell>
+              <TableCell
+                className="pe-[18px] text-right font-mono text-[11.5px] text-fg-3"
+                title={new Date(entry.createdAt * 1000).toISOString()}
+              >
+                {formatRelativeTime(entry.createdAt)}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      <TablePaginationFooter
+        currentPage={currentPage}
+        fromRow={fromRow}
+        itemNoun="event"
+        pageHref={pageHref}
+        toRow={toRow}
+        totalCount={totalCount}
+        totalPages={totalPages}
+      />
+    </div>
+  );
+}
+
+/** Shared 4-column header used by the live table and its skeleton. */
+function AuditTableHead() {
+  return (
+    <TableHeader>
+      <TableRow>
+        <TableHead className="ps-[18px]">Action</TableHead>
+        <TableHead>Actor</TableHead>
+        <TableHead>Target</TableHead>
+        <TableHead className="pe-[18px] text-right">When</TableHead>
+      </TableRow>
+    </TableHeader>
+  );
+}
+
+/** Fallback matching the audit table: same 4 columns + a footer strip. The
+ *  Actor cell (avatar + two text lines) drives the ~44px row height. Row count
+ *  is a fixed placeholder (real count unknown until the slice resolves); the
+ *  table is the terminal region in the card, so it resizes in place. */
+function AuditTableSkeleton({ totalPages }: { totalPages: number }) {
+  return (
+    <div className="-mx-[18px] -my-4">
+      <Table>
+        <AuditTableHead />
+        <TableBody>
+          {Array.from({ length: 8 }, (_, i) => (
+            <TableRow key={i}>
+              <TableCell className="ps-[18px]">
+                <Skeleton className="h-5 w-32 rounded-full" />
+              </TableCell>
+              <TableCell>
+                <div className="flex items-center gap-2">
+                  <Skeleton className="size-6 shrink-0 rounded-full" />
+                  <div className="min-w-0 space-y-1">
+                    <Skeleton className="h-[13px] w-24" />
+                    <Skeleton className="h-3 w-32" />
+                  </div>
+                </div>
+              </TableCell>
+              <TableCell>
+                <Skeleton className="h-3 w-32" />
+              </TableCell>
+              <TableCell className="pe-[18px]">
+                <Skeleton className="ml-auto h-3 w-16" />
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      <TablePaginationFooterSkeleton showPager={totalPages > 1} />
+    </div>
   );
 }
