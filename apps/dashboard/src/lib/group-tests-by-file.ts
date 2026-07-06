@@ -185,7 +185,17 @@ export function mergeGroupRows(
   const live = filterTests(liveRows, opts);
   const map = new Map<string, RunProgressTest>();
   for (const r of fetched) map.set(r.id, r);
-  for (const r of live) map.set(r.id, r);
+  // A live event replaces its server-fetched row by id, but live rows can't
+  // carry `hasTrace` (artifacts register after the results flush), so carry the
+  // server-derived flag forward — otherwise a mid-view live update would drop
+  // the row's "Test Replay" button until the next reload.
+  for (const r of live) {
+    const prev = map.get(r.id);
+    map.set(
+      r.id,
+      prev?.hasTrace && r.hasTrace === undefined ? { ...r, hasTrace: true } : r,
+    );
+  }
   return [...map.values()].sort((a, b) => {
     if (opts.statusFilter === "recommended") {
       const rank = recommendedRank(a.status) - recommendedRank(b.status);

@@ -33,6 +33,15 @@ export interface RunProgressTest {
    * group rows by shard alongside file / project.
    */
   shardIndex: number | null;
+  /**
+   * Whether this test has a trace artifact → gates the per-row "Test Replay"
+   * button. Server-derived on the run-detail row page (`loadRunResultsPage`
+   * with `includeTraceFlags`); absent on live `changedTests` events, since
+   * artifacts register in a flush AFTER results post so the realtime event
+   * can't carry it (a test streamed in live gets the button only after reload,
+   * which is fine — replay is a finished-run action).
+   */
+  hasTrace?: boolean;
 }
 
 /**

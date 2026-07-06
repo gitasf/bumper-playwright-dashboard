@@ -76,8 +76,13 @@ const connectSpy = vi.fn(
 vi.mock("void/ws", () => ({ connect: connectSpy }));
 
 const refreshSpy = vi.fn(() => Promise.resolve());
+// Navigation state the mocked `useNavigation` reports. Mutable so a test can
+// simulate an in-flight visit ("loading") and assert the reconnect-refresh
+// guard skips reconciliation mid-navigation.
+let navState: "idle" | "loading" | "submitting" = "idle";
 vi.mock("@void/react", () => ({
   useRouter: () => ({ refresh: refreshSpy }),
+  useNavigation: () => ({ state: navState }),
 }));
 
 const { useFeedRoom } = await import("@/realtime/use-feed-room");
@@ -92,6 +97,7 @@ afterEach(() => {
   cleanup();
   refreshSpy.mockClear();
   resetReconnectRefreshForTests();
+  navState = "idle";
 });
 
 /** Last socket opened for the given param value. */
@@ -309,6 +315,32 @@ describe("useFeedRoom (reconnect → coalesced router.refresh)", () => {
       socket.emitOpen(); // reconnect — rooms have no replay, so reconcile
     });
     expect(refreshSpy).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("does NOT refresh on a reconnect that lands mid-navigation", () => {
+    // A reconnect-refresh visits window.location, but Void only writes history
+    // at commit time — mid-navigation that's still the page being LEFT. So while
+    // a visit is in flight ("loading"), reconciling would bounce the user back.
+    navState = "loading";
+    const projectId = "pp-reconnect-nav";
+    const seedRows = [monitor("m-1")];
+    const { unmount } = renderHook(() =>
+      useFeedRoom<"/ws/project/:projectId", readonly MonitorRow[]>(
+        "/ws/project/:projectId",
+        { projectId },
+        [projectId, seedRows],
+        () => [...seedRows],
+        (prev, event) => applyMonitorFeedEvent(prev, event),
+      ),
+    );
+    const socket = socketFor("projectId", projectId);
+
+    act(() => {
+      socket.emitOpen(); // initial open
+      socket.emitOpen(); // reconnect — but a navigation is in flight
+    });
+    expect(refreshSpy).not.toHaveBeenCalled();
     unmount();
   });
 });

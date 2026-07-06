@@ -62,6 +62,9 @@ export const GET = defineHandler.withValidator({
     statusBucket: query.statusBucket ?? null,
     group,
     search: query.search ?? null,
+    // Run-detail Tests tab: light the per-row "Test Replay" button for rows
+    // that have a trace artifact.
+    includeTraceFlags: true,
   });
   if (!result) return c.json({ error: "Not found" }, 404);
   return result;

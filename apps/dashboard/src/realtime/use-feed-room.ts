@@ -1,7 +1,8 @@
 "use client";
 
 import type { Dispatch, SetStateAction } from "react";
-import { useRouter } from "@void/react";
+import { useRef } from "react";
+import { useNavigation, useRouter } from "@void/react";
 import type { WebSocketRouteMap } from "void/routes";
 import { requestReconnectRefresh } from "@/realtime/reconnect-refresh";
 import { useRoom } from "@/realtime/use-room";
@@ -54,6 +55,14 @@ type ServerEventOf<P extends RoomPath> = WebSocketRouteMap[P] extends {
  *      Coalesced via `requestReconnectRefresh` so the several leaves sharing a
  *      room's socket issue ONE refresh per reconnect burst, not one each.
  *
+ *      SKIPPED while a navigation is in flight. `router.refresh()` re-visits
+ *      `window.location`, but Void only writes history at COMMIT time — so
+ *      mid-navigation `window.location` is still the page we're LEAVING. A
+ *      reconnect landing during a row click would then schedule a visit back to
+ *      the old page, aborting the in-flight one and bouncing the user back (most
+ *      visible navigating off the WS-heavy run-detail page). The destination
+ *      loads fresh from SSR regardless, so skipping the reconcile is safe.
+ *
  * Returns the seeded state and its setter (`useState`-shaped). Read-only
  * consumers (`useProjectRoom` / `useRunRoom`) take just the state; the monitors
  * roster keeps the setter for its optimistic pause toggle, which writes the same
@@ -68,6 +77,13 @@ export function useFeedRoom<P extends RoomPath, S>(
 ): [S, Dispatch<SetStateAction<S>>] {
   const router = useRouter();
 
+  // Read through a ref so the reconnect callback (rebuilt each render, invoked
+  // via `useRoom`'s ref) sees the navigation state AT FIRE TIME without
+  // re-subscribing the socket. "loading"/"submitting" = a visit is in flight.
+  const navigation = useNavigation();
+  const navStateRef = useRef(navigation.state);
+  navStateRef.current = navigation.state;
+
   const [state, setState] = useSeededState<S>(seedDeps, seed);
 
   useRoom(
@@ -77,6 +93,9 @@ export function useFeedRoom<P extends RoomPath, S>(
       setState((prev) => fold(prev, event));
     },
     () => {
+      // See step 3 above — don't reconcile mid-navigation; it bounces the user
+      // back to the page they're leaving.
+      if (navStateRef.current !== "idle") return;
       requestReconnectRefresh(() => router.refresh());
     },
   );

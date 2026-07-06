@@ -66,26 +66,37 @@ export function signedDownloadHref(artifactId: string, token: string): string {
 }
 
 /**
- * Wrap a signed download URL in a trace.playwright.dev link. The trace viewer
- * fetches the absolute download URL, so this needs the request `origin`. Pure
+ * Path to the self-hosted Playwright Trace Viewer bundle. Vendored into
+ * `public/trace-viewer/` by `scripts/vendor-trace-viewer.mjs` and served from
+ * our OWN origin, so trace bytes never leave for the public trace.playwright.dev.
+ * The viewer SPA reads the trace from its `?trace=<url>` query param.
+ */
+export const TRACE_VIEWER_PATH = "/trace-viewer/index.html";
+
+/**
+ * Wrap a signed download URL in a self-hosted trace-viewer link. The viewer
+ * fetches the trace from the `?trace=` URL with range requests, so it must be
+ * the **absolute** same-origin download URL — hence the request `origin`. Pure
  * + exported alongside `signedDownloadHref` so the trace-viewer wrap lives next
  * to the download-URL shape it depends on (the viewer URL embeds the download
- * URL verbatim).
+ * URL verbatim). Embedded in-app via an iframe (see `trace-viewer-dialog.tsx`).
  */
 export function signedTraceViewerUrl(
   origin: string,
   artifactId: string,
   token: string,
 ): string {
-  return traceViewerUrlFor(`${origin}${signedDownloadHref(artifactId, token)}`);
+  const downloadUrl = `${origin}${signedDownloadHref(artifactId, token)}`;
+  return `${TRACE_VIEWER_PATH}?trace=${encodeURIComponent(downloadUrl)}`;
 }
 
 /**
- * Wrap any absolute trace URL in a trace.playwright.dev link. The one place the
- * `trace.playwright.dev` literal lives — used both by {@link signedTraceViewerUrl}
- * (worker-proxy download URL) and by the direct-R2 path (a presigned R2 GET URL
- * embedded directly, so the cross-origin trace viewer never has to follow a
- * cross-origin 302; see `test-artifact-actions.ts` and ADR 0003).
+ * Wrap any absolute trace URL in a trace.playwright.dev link. Used by the
+ * direct-R2 path (a presigned R2 GET URL embedded directly, so the cross-origin
+ * trace viewer never has to follow a cross-origin 302; see
+ * `test-artifact-actions.ts` and ADR 0003). The worker-proxy download path goes
+ * through {@link signedTraceViewerUrl} instead, which wraps the same-origin
+ * download URL in the self-hosted viewer (`TRACE_VIEWER_PATH`).
  */
 export function traceViewerUrlFor(absoluteTraceUrl: string): string {
   return `https://trace.playwright.dev/?trace=${encodeURIComponent(absoluteTraceUrl)}`;

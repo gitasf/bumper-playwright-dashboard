@@ -16,6 +16,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { TraceViewerDialog } from "@/components/trace-viewer-dialog";
 import { VisualDiffRailButton } from "@/components/visual-diff-dialog";
 import { cn } from "@/lib/cn";
 import { useCopiedFlag } from "@/lib/use-copied-flag";
@@ -165,17 +166,10 @@ function RailTraceButton({
 }): React.ReactElement {
   if (!artifact.traceViewerUrl) return <></>;
   return (
-    <Button
-      size="sm"
-      variant="outline"
-      className={railButtonClasses()}
-      render={
-        <a href={artifact.traceViewerUrl} target="_blank" rel="noreferrer" />
-      }
-    >
-      <RailIconLabel icon={<History />} label="Trace Viewer" />
+    <TraceViewerDialog artifact={artifact}>
+      <RailIconLabel icon={<History />} label="Test Replay" />
       <ArrowRight className="opacity-50" aria-hidden />
-    </Button>
+    </TraceViewerDialog>
   );
 }
 

@@ -1,6 +1,7 @@
 import { ChevronRight } from "lucide-react";
 import { Link } from "@void/react";
 import { StatusGlyph } from "@/components/status-glyph";
+import { TestReplayButton } from "@/components/trace-viewer-dialog";
 import { cn } from "@/lib/cn";
 import {
   type GroupByAxis,
@@ -73,45 +74,70 @@ export function TestRow({
         ? (test.file.split("/").pop() ?? test.file)
         : null;
 
+  // The row is a <Link>, so the Test Replay button (which opens a dialog) lives
+  // as a sibling rather than nested inside the anchor.
   return (
-    <Link
+    <div
       className={cn(
         "group flex w-full items-center gap-1 py-1.5 pl-[50px] pr-6",
         "min-h-8 text-left text-foreground hover:bg-bg-1",
       )}
-      href={href}
     >
-      <span className="flex w-[18px] shrink-0 items-center justify-center">
-        <StatusGlyph size={12} status={test.status} />
-      </span>
-      <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
-        <span className="min-w-0 truncate text-[12.5px]">{displayTitle}</span>
-        {test.retryCount > 0 ? (
+      <Link
+        className="flex min-w-0 flex-1 items-center gap-1 text-left text-foreground"
+        href={href}
+      >
+        <span className="flex w-[18px] shrink-0 items-center justify-center">
+          <StatusGlyph size={12} status={test.status} />
+        </span>
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
+          <span className="min-w-0 truncate text-[12.5px]">{displayTitle}</span>
+          {test.retryCount > 0 ? (
+            <span
+              className="shrink-0 font-mono text-[10.5px]"
+              style={{ color: statusToken("flaky") }}
+            >
+              ×{test.retryCount + 1}
+            </span>
+          ) : null}
+        </div>
+        {meta ? (
           <span
-            className="shrink-0 font-mono text-[10.5px]"
-            style={{ color: statusToken("flaky") }}
+            className={cn(
+              "inline-flex max-w-[128px] shrink-0 items-center rounded-[4px] bg-bg-2 px-1.5 py-px font-mono text-[10.5px] leading-[16px] text-fg-3",
+              groupBy === "file" && "capitalize",
+            )}
+            title={meta}
           >
-            ×{test.retryCount + 1}
+            <span className="truncate">{meta}</span>
           </span>
         ) : null}
-      </div>
-      {meta ? (
-        <span
-          className={cn(
-            "inline-flex max-w-[128px] shrink-0 items-center rounded-[4px] bg-bg-2 px-1.5 py-px font-mono text-[10.5px] leading-[16px] text-fg-3",
-            groupBy === "file" && "capitalize",
-          )}
-          title={meta}
-        >
-          <span className="truncate">{meta}</span>
+        <span className="w-[70px] shrink-0 px-2 text-right font-mono text-[12px] tabular-nums text-fg-3">
+          {formatDuration(test.durationMs)}
         </span>
+      </Link>
+      {test.hasTrace ? (
+        <TestReplayButton
+          projectSlug={projectSlug}
+          runId={runId}
+          teamSlug={teamSlug}
+          testResultId={test.id}
+          title={displayTitle}
+        />
       ) : null}
-      <span className="w-[70px] shrink-0 px-2 text-right font-mono text-[12px] tabular-nums text-fg-3">
-        {formatDuration(test.durationMs)}
-      </span>
-      <span className="w-5 shrink-0 px-1 text-center text-fg-3 opacity-0 group-hover:opacity-100">
+      {/*
+       * Decorative hover affordance only — the primary row <Link> above already
+       * navigates to the test. Keep this a non-interactive, aria-hidden <span>
+       * (not a second <Link> to the same href): a duplicate anchor adds a
+       * redundant screen-reader link and lets the SPA schedule two competing
+       * navigations (which bounced the test-detail nav back to the run page).
+       */}
+      <span
+        aria-hidden="true"
+        className="flex w-5 shrink-0 items-center justify-center px-1 text-center text-fg-3 opacity-0 group-hover:opacity-100"
+      >
         <ChevronRight className="size-3" strokeWidth={2} />
       </span>
-    </Link>
+    </div>
   );
 }

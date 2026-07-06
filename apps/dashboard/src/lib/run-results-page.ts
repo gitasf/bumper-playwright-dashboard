@@ -1,5 +1,5 @@
-import { and, asc, db, desc, eq, gt, lt, or, sql } from "void/db";
-import { runs, testResults } from "@schema";
+import { and, asc, db, desc, eq, gt, inArray, lt, or, sql } from "void/db";
+import { artifacts, runs, testResults } from "@schema";
 import {
   type GroupByAxis,
   recommendedRank,
@@ -51,6 +51,14 @@ export interface LoadRunResultsOpts {
    * still filters every read by projectId + runId.
    */
   skipOwnershipCheck?: boolean;
+  /**
+   * Populate `hasTrace` on each returned row (gates the per-row "Test Replay"
+   * button on the run-detail Tests tab). One extra distinct-id query over the
+   * page's test ids against `artifacts` — only the run-detail row page needs
+   * it, so the v1 tests API and the CSV export leave it off. Absent ⇒ `hasTrace`
+   * is omitted from the wire.
+   */
+  includeTraceFlags?: boolean;
 }
 
 /**
@@ -260,6 +268,30 @@ export async function loadRunResultsPage(
 
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
+
+  // Which of THIS page's tests have a trace → per-row "Test Replay" button.
+  // Gated (only the run-detail row page asks) and scoped to the page's ids, so
+  // it's one indexed distinct-id read (artifacts_testResultId_idx) per page.
+  // Scoped by projectId like every child read; artifacts also carry runId but
+  // the page ids already pin the rows to this run.
+  let tracedIds: Set<string> | null = null;
+  if (opts.includeTraceFlags && page.length > 0) {
+    const traced = await db
+      .selectDistinct({ testResultId: artifacts.testResultId })
+      .from(artifacts)
+      .where(
+        and(
+          eq(artifacts.projectId, scope.projectId),
+          eq(artifacts.type, "trace"),
+          inArray(
+            artifacts.testResultId,
+            page.map((r) => r.id),
+          ),
+        ),
+      );
+    tracedIds = new Set(traced.map((t) => t.testResultId));
+  }
+
   const last = page.at(-1);
   const nextCursor =
     hasMore && last
@@ -283,6 +315,7 @@ export async function loadRunResultsPage(
       durationMs: r.durationMs,
       retryCount: r.retryCount,
       shardIndex: r.shardIndex,
+      ...(tracedIds ? { hasTrace: tracedIds.has(r.id) } : {}),
     })),
     nextCursor,
   };
