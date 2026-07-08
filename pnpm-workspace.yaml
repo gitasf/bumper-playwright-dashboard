@@ -4,11 +4,8 @@ packages:
 
 allowBuilds:
   better-sqlite3: true
-  cpu-features: false
   esbuild: true
-  protobufjs: false
   sharp: true
-  ssh2: false
   workerd: true
 
 # pnpm 11 reads patchedDependencies from here, not package.json's "pnpm" block.

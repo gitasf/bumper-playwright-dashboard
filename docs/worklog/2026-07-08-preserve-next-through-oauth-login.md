@@ -88,8 +88,10 @@ patches). Completed the migration:
 
 - Moved `patchedDependencies` into `pnpm-workspace.yaml` (matching the lockfile
   paths); `onlyBuiltDependencies` was already migrated to `allowBuilds:` there.
-  Pinned the three transitive native deps pnpm auto-listed (`cpu-features`,
-  `protobufjs`, `ssh2`) to `false` — they were never built before.
+  Left the three transitive native deps pnpm auto-listed (`cpu-features`,
+  `protobufjs`, `ssh2`) out of `allowBuilds:` — they were never built before, so
+  the default (not built) already matches, and explicit `false` entries just add
+  noise.
 - Removed the now-ignored `pnpm` block from `package.json`.
 - Regenerated stale Void route codegen (`void prepare`) — the co-worker's new
   `runs/:runId/groups` route wasn't in `.void/routes.d.ts`, which surfaced as
