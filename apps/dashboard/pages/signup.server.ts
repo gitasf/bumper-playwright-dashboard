@@ -2,6 +2,7 @@ import { defineHandler, type InferProps } from "void";
 import { env } from "void/env";
 import { getSession } from "void/auth";
 import { githubOAuthEnabled, openSignupAllowed } from "@/lib/config";
+import { hrefWithNext, safeNextPath } from "@/lib/safe-next-path";
 
 export type Props = InferProps<typeof loader>;
 
@@ -10,15 +11,19 @@ export type Props = InferProps<typeof loader>;
  * otherwise it bounces to `/login`, so the route can't be used to self-register
  * on instances that mean to be invite-only (the email+password sign-up API is
  * gated by Better Auth config, this guards the UI surface to match). Already
- * authenticated users go to `/`.
+ * authenticated users go to their post-signup destination (`next`, e.g. an
+ * `/invite/:token` link — otherwise `/`). The `next` param is preserved through
+ * both the authenticated bounce and the invite-only `/login` bounce so an
+ * invited user who lands here never loses the link they were headed to.
  */
 export const loader = defineHandler(async (c) => {
+  const next = safeNextPath(new URL(c.req.url).searchParams.get("next"));
   const session = getSession();
   if (session) {
-    return c.redirect("/");
+    return c.redirect(next);
   }
   if (!openSignupAllowed(env.ALLOW_OPEN_SIGNUP)) {
-    return c.redirect("/login");
+    return c.redirect(hrefWithNext("/login", next));
   }
   // When a sender is configured, signup requires email verification (see
   // auth.ts `emailConfigured`) — `signUp.email` then returns without a session
@@ -26,5 +31,6 @@ export const loader = defineHandler(async (c) => {
   return {
     githubEnabled: githubOAuthEnabled(env),
     verifyEmail: Boolean(env.EMAIL_FROM),
+    next,
   };
 });

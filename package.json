@@ -28,18 +28,5 @@
   "engines": {
     "node": ">=22.18.0"
   },
-  "packageManager": "pnpm@10.33.0",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "sharp",
-      "workerd",
-      "better-sqlite3"
-    ],
-    "patchedDependencies": {
-      "@cloudflare/vite-plugin@1.38.0": "patches/@cloudflare__vite-plugin@1.38.0.patch",
-      "void@0.10.4": "patches/void@0.10.4.patch",
-      "@void/react@0.10.4": "patches/@void__react@0.10.4.patch"
-    }
-  }
+  "packageManager": "pnpm@11.10.0"
 }

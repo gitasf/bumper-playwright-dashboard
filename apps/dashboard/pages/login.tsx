@@ -11,6 +11,7 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
+import { hrefWithNext } from "@/lib/safe-next-path";
 import type { Props } from "./login.server";
 
 /**
@@ -28,6 +29,7 @@ export default function LoginPage({
   githubEnabled,
   signupAllowed,
   resetEnabled,
+  next,
 }: Props) {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -54,7 +56,7 @@ export default function LoginPage({
         setError(result.error.message ?? "Sign-in failed");
         return;
       }
-      void router.visit("/");
+      void router.visit(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed");
     } finally {
@@ -71,7 +73,7 @@ export default function LoginPage({
     try {
       const result = await auth.signIn.social({
         provider: "github",
-        callbackURL: "/",
+        callbackURL: next,
       });
       if (result?.error) {
         setError(result.error.message ?? "GitHub sign-in failed");
@@ -244,7 +246,7 @@ export default function LoginPage({
               <div className="mt-[22px] text-center text-[12.5px] text-fg-3">
                 New to Wrightful?{" "}
                 <Link
-                  href="/signup"
+                  href={hrefWithNext("/signup", next)}
                   className="text-fg-1 underline underline-offset-2"
                 >
                   Create an account
