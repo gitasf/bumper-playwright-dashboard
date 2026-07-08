@@ -88,10 +88,13 @@ patches). Completed the migration:
 
 - Moved `patchedDependencies` into `pnpm-workspace.yaml` (matching the lockfile
   paths); `onlyBuiltDependencies` was already migrated to `allowBuilds:` there.
-  Left the three transitive native deps pnpm auto-listed (`cpu-features`,
-  `protobufjs`, `ssh2`) out of `allowBuilds:` — they were never built before, so
-  the default (not built) already matches, and explicit `false` entries just add
-  noise.
+  Pinned the three transitive native deps pnpm auto-listed (`cpu-features`,
+  `protobufjs`, `ssh2`) to `false`. These entries are **required**, not
+  cosmetic: pnpm 11 hard-errors with `ERR_PNPM_IGNORED_BUILDS` on any dependency
+  that has a build script but no explicit `allowBuilds` decision. `false`
+  records "decided: don't build" and suppresses the error. A clean CI checkout
+  fails `pnpm install --frozen-lockfile` without them (local installs pass off
+  cached approval state, which masks it).
 - Removed the now-ignored `pnpm` block from `package.json`.
 - Regenerated stale Void route codegen (`void prepare`) — the co-worker's new
   `runs/:runId/groups` route wasn't in `.void/routes.d.ts`, which surfaced as
