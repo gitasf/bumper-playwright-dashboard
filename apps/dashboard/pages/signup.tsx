@@ -4,6 +4,7 @@ import { Link, useRouter } from "@void/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { hrefWithNext } from "@/lib/safe-next-path";
 import type { Props } from "./signup.server";
 
 /**
@@ -11,7 +12,11 @@ import type { Props } from "./signup.server";
  * `ALLOW_OPEN_SIGNUP` is enabled (the colocated loader bounces to /login
  * otherwise). Authenticated users are redirected to `/` by the loader.
  */
-export default function SignupPage({ githubEnabled, verifyEmail }: Props) {
+export default function SignupPage({
+  githubEnabled,
+  verifyEmail,
+  next,
+}: Props) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -41,7 +46,7 @@ export default function SignupPage({ githubEnabled, verifyEmail }: Props) {
         setAwaitingVerification(true);
         return;
       }
-      void router.visit("/");
+      void router.visit(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-up failed");
     } finally {
@@ -58,7 +63,7 @@ export default function SignupPage({ githubEnabled, verifyEmail }: Props) {
     try {
       const result = await auth.signIn.social({
         provider: "github",
-        callbackURL: "/",
+        callbackURL: next,
       });
       if (result?.error) {
         setError(result.error.message ?? "GitHub sign-in failed");
@@ -167,7 +172,7 @@ export default function SignupPage({ githubEnabled, verifyEmail }: Props) {
 
       <p className="text-center text-sm">
         Already have an account?{" "}
-        <Link href="/login" className="underline">
+        <Link href={hrefWithNext("/login", next)} className="underline">
           Sign in
         </Link>
       </p>

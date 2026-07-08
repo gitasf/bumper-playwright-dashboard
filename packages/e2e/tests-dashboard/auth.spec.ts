@@ -41,6 +41,41 @@ test.describe("Auth", () => {
       await loginPage.waitForLandedOff("/login");
       await expect(loginPage.page).not.toHaveURL(/\/login/);
     });
+
+    // Regression: an invited user opening `/invite/:token` while signed out is
+    // bounced to `/login?next=/invite/:token`. The login page must honor that
+    // `next` after auth — otherwise it dumps them on `/` (the "No teams yet"
+    // picker) instead of the invite. The GitHub `callbackURL` reads the same
+    // server-validated `next` prop this exercises (the OAuth provider itself
+    // can't be driven in e2e).
+    test("honors a ?next redirect after email sign-in", async ({
+      loginPage,
+      ctx,
+    }) => {
+      const next = `/t/${ctx.teamSlug}/p/${ctx.projectSlug}`;
+      await loginPage.page.goto(`/login?next=${encodeURIComponent(next)}`);
+      await loginPage.page.waitForLoadState("networkidle");
+      await loginPage.signIn(ctx.email, ctx.password);
+      await loginPage.page.waitForURL((url) => url.pathname.startsWith(next), {
+        timeout: 30_000,
+      });
+    });
+
+    // Open-redirect guard: a hostile `next` (protocol-relative off-site URL)
+    // must be sanitized to `/` by `safeNextPath`, never followed. The user
+    // stays on the app origin.
+    test("sanitizes a hostile ?next and stays on-origin", async ({
+      loginPage,
+      ctx,
+    }) => {
+      await loginPage.page.goto("/login?next=//evil.example.com/pwned");
+      await loginPage.page.waitForLoadState("networkidle");
+      await loginPage.signIn(ctx.email, ctx.password);
+      await loginPage.waitForLandedOff("/login");
+      expect(new URL(loginPage.page.url()).hostname).not.toContain(
+        "evil.example.com",
+      );
+    });
   });
 
   test("authed visitor on / is not bounced back to /login", async ({

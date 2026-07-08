@@ -4,9 +4,18 @@ packages:
 
 allowBuilds:
   better-sqlite3: true
+  cpu-features: false
   esbuild: true
+  protobufjs: false
   sharp: true
+  ssh2: false
   workerd: true
+
+# pnpm 11 reads patchedDependencies from here, not package.json's "pnpm" block.
+patchedDependencies:
+  "@cloudflare/vite-plugin@1.38.0": patches/@cloudflare__vite-plugin@1.38.0.patch
+  "void@0.10.4": patches/void@0.10.4.patch
+  "@void/react@0.10.4": patches/@void__react@0.10.4.patch
 
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.2.2
