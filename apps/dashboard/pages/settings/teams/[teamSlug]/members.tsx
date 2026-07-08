@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { Mail, UserPlus, X } from "lucide-react";
+import { Check, Copy, Mail, UserPlus, X } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "@void/react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -21,12 +21,53 @@ import {
 import { cn } from "@/lib/cn";
 import { initials } from "@/lib/initials";
 import { formatRelativeTime } from "@/lib/time-format";
+import { useCopiedFlag } from "@/lib/use-copied-flag";
 import type { MembershipRole } from "@schema";
 import type { Props } from "./members.server";
 
 /** Title-case a role for display in the selectors ("owner" → "Owner"). */
 function roleLabel(role: string): string {
   return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+/**
+ * The revealed single-use invite link: the URL is truncated to a single line
+ * (it's long and the token tail carries no meaning to a human) with a copy
+ * button that flashes "Copied" feedback. The full link is always what gets
+ * written to the clipboard.
+ */
+function InviteLinkField({ url }: { url: string }) {
+  const { copied, flash } = useCopiedFlag();
+
+  async function onCopy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(url);
+      flash();
+    } catch {
+      // Clipboard can be unavailable (insecure context / denied permission);
+      // the link stays visible for a manual copy.
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-line-1 bg-bg-0 p-1.5 pl-2.5">
+      <code className="min-w-0 flex-1 truncate font-mono text-[length:var(--text-fs-13)] text-fg-1">
+        {url}
+      </code>
+      <Button
+        aria-label={copied ? "Copied" : "Copy invite link"}
+        onClick={() => {
+          void onCopy();
+        }}
+        size="xs"
+        type="button"
+        variant="outline"
+      >
+        {copied ? <Check /> : <Copy />}
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  );
 }
 
 interface CreateInviteResponse {
@@ -215,9 +256,7 @@ export default function SettingsTeamMembersPage({
         open={Boolean(revealedInviteUrl)}
         title="Invite link ready"
       >
-        <pre className="overflow-x-auto rounded-md border border-line-1 bg-bg-0 p-2.5 font-mono text-[12.5px] text-fg-1">
-          {revealedInviteUrl}
-        </pre>
+        {revealedInviteUrl && <InviteLinkField url={revealedInviteUrl} />}
       </RevealOnceDialog>
 
       {canManageMembers && (
