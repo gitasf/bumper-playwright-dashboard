@@ -1,6 +1,6 @@
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
-import { ChevronRight, MoreHorizontal } from "lucide-react";
+import { ChevronRight, Ellipsis } from "lucide-react";
 import type * as React from "react";
 import { cn } from "@/lib/cn";
 
@@ -100,7 +100,7 @@ export function BreadcrumbEllipsis({
       role="presentation"
       {...props}
     >
-      <MoreHorizontal className="size-4" />
+      <Ellipsis className="size-4" />
       <span className="sr-only">More</span>
     </span>
   );

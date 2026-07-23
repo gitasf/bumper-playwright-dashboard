@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { DANGER_TRIGGER_CLASSES } from "@/components/danger-trigger";
-import { Github, LogOut } from "lucide-react";
+import { LogOut } from "lucide-react";
+import { GithubIcon } from "@/components/github-icon";
 import { useRouter } from "@void/react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -184,7 +185,7 @@ function ConnectedAccountsCard({
         </Alert>
       )}
       <div className="flex items-center gap-3 rounded-md border border-line-1 bg-bg-2 px-3 py-2.5">
-        <Github className="size-5 shrink-0 text-fg-2" />
+        <GithubIcon className="size-5 shrink-0 text-fg-2" />
         <div className="min-w-0 flex-1">
           <div className="font-medium text-body">GitHub</div>
           {githubAccount ? (

@@ -48,10 +48,10 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
-    "@types/node": "^25.6.0",
-    "@typescript/native-preview": "7.0.0-dev.20260416.2",
-    "@vitest/coverage-v8": "4.1.9",
-    "typescript": "~6.0.2",
+    "@types/node": "^26.1.1",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "@vitest/coverage-v8": "4.1.10",
+    "typescript": "~7.0.2",
     "vite-plus": "catalog:",
     "vitest": "catalog:",
     "zod": "^4.4.3"

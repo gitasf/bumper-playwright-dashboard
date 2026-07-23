@@ -1,4 +1,4 @@
-import { CheckCircle2, TriangleAlert, XCircle } from "lucide-react";
+import { CircleCheckBig, CircleX, TriangleAlert } from "lucide-react";
 import { RowLink } from "@/components/row-link";
 import { use } from "react";
 import { PREFETCH_STABLE } from "@/components/ui/link";
@@ -526,7 +526,7 @@ function BottlenecksSkeleton({
 }
 
 interface RowTone {
-  Icon: typeof CheckCircle2;
+  Icon: typeof CircleCheckBig;
   iconColor: string;
   border: string;
   p95Text: string;
@@ -536,7 +536,7 @@ interface RowTone {
 function rowTone(row: BottleneckRow): RowTone {
   if (row.failCount > 0) {
     return {
-      Icon: XCircle,
+      Icon: CircleX,
       iconColor: statusToken("failed"),
       border: "border-l-destructive",
       p95Text: "text-destructive",
@@ -553,7 +553,7 @@ function rowTone(row: BottleneckRow): RowTone {
     };
   }
   return {
-    Icon: CheckCircle2,
+    Icon: CircleCheckBig,
     iconColor: statusToken("passed"),
     border: "border-l-border",
     p95Text: "text-fg-3",

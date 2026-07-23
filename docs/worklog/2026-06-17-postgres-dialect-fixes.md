@@ -3,7 +3,7 @@
 ## What changed
 
 The D1 (SQLite) → Postgres-only migration left a class of **SQLite-isms in
-hand-written `sql\`…\`` queries** that compile and pass the test suite but throw
+hand-written `` sql`…` `` queries** that compile and pass the test suite but throw
 at runtime against Postgres. Surfaced while getting `pnpm setup:local` working
 end-to-end (the seed step exercises ingest). Found and fixed all of them, then
 **retired the raw-SQL seam against the Better Auth tables entirely** by giving

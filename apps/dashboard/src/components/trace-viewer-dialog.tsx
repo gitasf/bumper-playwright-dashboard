@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Download, PlayCircle, Share2 } from "lucide-react";
+import { CirclePlay, Download, Share2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { fetch } from "void/client";
 import type { ArtifactAction } from "@/components/artifact-actions";
@@ -278,7 +278,7 @@ export function ReplayRowButton({
       // SW registration alone shaves the modal's first-ever load.
       onPointerEnter={() => warmTraceViewer()}
     >
-      <PlayCircle className="size-3.5" strokeWidth={2} />
+      <CirclePlay className="size-3.5" strokeWidth={2} />
       Replay
     </Button>
   );

@@ -986,13 +986,16 @@ describe("Wrightful E2E", () => {
       const consentCookies = harvestCookies(authorizeRes);
       expect(consentCookies).toContain("oidc_consent_prompt");
 
-      // 4. Approve — the same POST the consent page's button makes.
+      // 4. Approve — the same POST the consent page's button makes. Better Auth
+      // rejects consent POSTs with a missing Origin (MISSING_OR_NULL_ORIGIN), so
+      // send the dashboard origin the browser button would attach.
       const consentRes = await fetch(
         `${DASHBOARD_URL}/api/auth/oauth2/consent`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            Origin: new URL(DASHBOARD_URL).origin,
             Cookie: `${SESSION_COOKIE}; ${consentCookies}`,
           },
           body: JSON.stringify({ accept: true }),
@@ -1122,6 +1125,7 @@ describe("Wrightful E2E", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Origin: new URL(DASHBOARD_URL).origin,
           Cookie: `${SESSION_COOKIE}; ${consentCookies}`,
         },
         body: JSON.stringify({ accept: false }),

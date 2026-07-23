@@ -1,8 +1,8 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
-index 4e094d902c37c6d1ee898d8024df6b0e0a46947f..c3013924ce499170d95bc484242e886492b99216 100644
+index 370b0143757e0e4352e0d447e56641dbddd1f45d..c1c8515c255575618170e014eb0c1b9074d8c0b7 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
-@@ -42794,7 +42794,11 @@ function filterEntryWorkerConfig(config) {
+@@ -63716,7 +63716,11 @@ function filterEntryWorkerConfig(config$2) {
  }
  function customizeWorkerConfig(options) {
  	const configResult = typeof options.configCustomizer === "function" ? "entryWorkerConfig" in options ? options.configCustomizer(options.workerConfig, { entryWorkerConfig: filterEntryWorkerConfig(options.entryWorkerConfig) }) : options.configCustomizer(options.workerConfig) : options.configCustomizer;

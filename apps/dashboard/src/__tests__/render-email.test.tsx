@@ -1,4 +1,4 @@
-import { Text } from "@react-email/components";
+import { Text } from "react-email";
 import { describe, expect, it } from "vite-plus/test";
 import { EmailLayout } from "@/emails/layout";
 import { renderEmail } from "@/lib/render-email";

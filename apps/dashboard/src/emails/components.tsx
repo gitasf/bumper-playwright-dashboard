@@ -5,14 +5,7 @@
  * is inline and table-based (no flexbox/grid) — see `./layout` for the palette
  * + fonts and the rationale.
  */
-import {
-  Button,
-  Column,
-  Hr,
-  Row,
-  Section,
-  Text,
-} from "@react-email/components";
+import { Button, Column, Hr, Row, Section, Text } from "react-email";
 import type { CSSProperties, ReactNode } from "react";
 import { fonts, palette } from "./layout";
 

@@ -1,4 +1,4 @@
-import { ArrowRight, ImageOff, SplitSquareHorizontal } from "lucide-react";
+import { ArrowRight, ImageOff, SquareSplitHorizontal } from "lucide-react";
 import type React from "react";
 import { useRef, useState } from "react";
 import type {
@@ -63,7 +63,7 @@ export function VisualDiffRailButton({
         }
       >
         <span className="inline-flex items-center gap-2">
-          <SplitSquareHorizontal />
+          <SquareSplitHorizontal />
           Visual diff
           <span className="text-fg-3 text-xs">{group.snapshotName}</span>
         </span>
@@ -243,7 +243,7 @@ function SliderCompare({
         style={{ left: `${pos}%` }}
       >
         <span className="-translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2 flex size-7 items-center justify-center rounded-full bg-white text-black shadow-md">
-          <SplitSquareHorizontal className="size-3.5" />
+          <SquareSplitHorizontal className="size-3.5" />
         </span>
       </div>
       <span className="pointer-events-none absolute top-2 left-2 rounded bg-black/60 px-1.5 py-0.5 font-medium text-micro text-white">

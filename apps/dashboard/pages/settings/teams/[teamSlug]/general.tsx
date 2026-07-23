@@ -1,4 +1,5 @@
-import { ExternalLink, Github, LockKeyhole } from "lucide-react";
+import { ExternalLink, LockKeyhole } from "lucide-react";
+import { GithubIcon } from "@/components/github-icon";
 import { Link } from "@/components/ui/link";
 import { DANGER_TRIGGER_CLASSES } from "@/components/danger-trigger";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -171,7 +172,7 @@ export default function SettingsTeamGeneralPage({
                     >
                       <div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
                         <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-bg-3 text-fg-2">
-                          <Github className="size-4" />
+                          <GithubIcon className="size-4" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">

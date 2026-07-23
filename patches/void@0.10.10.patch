@@ -1,5 +1,5 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
-index 4489e58001e54fd10852a40c3272f2e03e1a1220..898bffb31fc4aa4a662f6f19773beb28701adb45 100644
+index c21c9e364a46fc474e643f8fdfebcd92c791183a..6dca28e7903f226566897949c9555e50c78f8da6 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
 @@ -596,8 +596,6 @@ import { getRuntimeBinding } from ${JSON.stringify(envModuleResolved)};
@@ -36,21 +36,3 @@ index 4489e58001e54fd10852a40c3272f2e03e1a1220..898bffb31fc4aa4a662f6f19773beb28
  }
  
  export const db = new Proxy({}, {
-diff --git a/dist/pages/protocol.mjs b/dist/pages/protocol.mjs
-index 30d378c89967eda569c7aaad027ded4e6e4c5f0e..a9f80f1c5ee08e5851dd75bff5adf1d39f9d5366 100644
---- a/dist/pages/protocol.mjs
-+++ b/dist/pages/protocol.mjs
-@@ -182,6 +182,13 @@ function streamDeferredResponse(initialChunk, deferredMap, c, contentType, forma
- 	});
- 	return new Response(readable, { headers: adjustDevCssCsp(pageResponseHeaders(c, {
- 		"content-type": contentType,
-+		// A deferred response built for a pages request (client-router SPA nav) must
-+		// carry X-VoidPages, exactly like pageJsonResponse — otherwise the client
-+		// router treats it as unknown and falls back to a full page load
-+		// (window.location). Keyed on the request (isPagesRequest), not the response
-+		// content-type: streamDeferredResponse also builds the text/html document
-+		// response, which is a full navigation and correctly omits the header here.
-+		...(isPagesRequest(c) ? { "X-VoidPages": "true", Vary: "X-VoidPages" } : {}),
- 		...POWERED_BY
- 	}), assetTags?.devCssNonce) });
- }
