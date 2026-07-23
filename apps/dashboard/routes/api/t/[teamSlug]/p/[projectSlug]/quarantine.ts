@@ -7,8 +7,8 @@ import {
   UnquarantineTestSchema,
 } from "@/lib/quarantine-schemas";
 import { quarantineTest, unquarantineTest } from "@/lib/quarantine-repo";
-import { redirectWithParam } from "@/lib/settings-scope";
-import { resolveOwnerTenantApiScope } from "@/lib/tenant-api-scope";
+import { resolveProjectApiScope } from "@/lib/tenant-api-scope";
+import { TEST_DETAIL_FLASH } from "@/lib/test-detail-flash";
 import { safeNextPath } from "@/lib/safe-next-path";
 
 /**
@@ -19,14 +19,15 @@ import { safeNextPath } from "@/lib/safe-next-path";
  *
  * A single POST discriminates on an `intent` field (HTML forms can only GET /
  * POST): `quarantine` upserts an entry, `unquarantine` removes one. Owner gating
- * + scope come from `resolveOwnerTenantApiScope` (404s a non-owner / non-member
- * without leaking existence). On success it redirects back to the originating
- * page (`redirectTo`, validated as a same-origin path); on a validation error it
- * appends `?quarantineError=` so the page can surface it.
+ * + scope come from `resolveProjectApiScope(c, "writeConfig")` (404s a
+ * non-owner / non-member without leaking existence). On success it redirects
+ * back to the originating page (`redirectTo`, validated as a same-origin path);
+ * on a validation error it appends `?quarantineError=` so the page can surface
+ * it.
  */
 export const POST = defineHandler(async (c) => {
   const user = requireAuth(c);
-  const ctx = await resolveOwnerTenantApiScope(c);
+  const ctx = await resolveProjectApiScope(c, "writeConfig");
   if (ctx instanceof Response) return ctx;
   const { scope } = ctx;
 
@@ -43,7 +44,7 @@ export const POST = defineHandler(async (c) => {
   const safeRedirect = rawRedirect ? safeNextPath(rawRedirect) : "/";
   const redirectTo = safeRedirect === "/" ? `${base}/tests` : safeRedirect;
   const fail = (msg: string) =>
-    redirectWithParam(c, redirectTo, "quarantineError", msg);
+    TEST_DETAIL_FLASH.fail(c, redirectTo, "quarantineError", msg);
 
   const intent = readField(form, "intent");
 

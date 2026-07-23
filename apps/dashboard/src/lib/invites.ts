@@ -1,10 +1,10 @@
 import type { Context } from "hono";
-import { and, db, eq, gt } from "void/db";
+import { and, db, eq, gt, inArray, lt } from "void/db";
 import { ulid } from "ulid";
 import { memberships, teamInvites, teams } from "@schema";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { buildInviteMatchConds, getUserIdentity } from "@/lib/auth-users";
-import { changedRows, runBatch } from "@/lib/db-batch";
+import { changedRows, isUniqueViolation } from "@/lib/db/batch";
 
 /**
  * Shared accept/decline core for tokenless (directed-invite) redemption.
@@ -40,6 +40,7 @@ export async function acceptDirectedInvite(
   }
 
   const now = Math.floor(Date.now() / 1000);
+  // The transaction below revalidates the invite before granting membership.
   const rows = await db
     .select({
       id: teamInvites.id,
@@ -62,46 +63,54 @@ export async function acceptDirectedInvite(
     return { ok: false, status: 404, error: "Invite not found or expired" };
   }
 
-  // Idempotent on re-accept: a second invite to the same team (or a previous
-  // acceptance via the page-level handler) leaves the user already a member.
-  // Consume the invite without re-inserting to avoid a unique-constraint 500.
-  const existing = await db
-    .select({ id: memberships.id })
-    .from(memberships)
-    .where(
-      and(
-        eq(memberships.userId, userId),
-        eq(memberships.teamId, invite.teamId),
-      ),
-    )
-    .limit(1);
-  if (existing[0]) {
-    await db.delete(teamInvites).where(eq(teamInvites.id, invite.id));
+  let joined: { teamId: string; role: string } | null = null;
+  try {
+    joined = await db.transaction(async (tx) => {
+      const consumed = await tx
+        .delete(teamInvites)
+        .where(
+          and(
+            eq(teamInvites.id, inviteId),
+            gt(teamInvites.expiresAt, now),
+            matchConds,
+          ),
+        )
+        .returning({
+          teamId: teamInvites.teamId,
+          role: teamInvites.role,
+        });
+      const row = consumed[0];
+      if (!row) return null;
+      await tx.insert(memberships).values({
+        id: ulid(),
+        userId,
+        teamId: row.teamId,
+        role: row.role,
+        createdAt: now,
+      });
+      return { teamId: row.teamId, role: row.role };
+    });
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    await db
+      .delete(teamInvites)
+      .where(and(eq(teamInvites.id, inviteId), matchConds));
     return { ok: true, teamId: invite.teamId, teamSlug: invite.teamSlug };
   }
 
-  await runBatch((tx) => [
-    tx.insert(memberships).values({
-      id: ulid(),
-      userId,
-      teamId: invite.teamId,
-      role: invite.role,
-      createdAt: now,
-    }),
-    tx.delete(teamInvites).where(eq(teamInvites.id, invite.id)),
-  ]);
+  if (!joined) {
+    return { ok: false, status: 404, error: "Invite not found or expired" };
+  }
 
-  // Audit the genuine join only (the idempotent re-accept branch above creates
-  // no membership). The actor IS the invitee; record the role they joined as.
   await recordAudit(c, {
-    teamId: invite.teamId,
+    teamId: joined.teamId,
     action: AUDIT_ACTIONS.INVITE_ACCEPT,
     targetType: "member",
     targetId: userId,
-    metadata: { role: invite.role, inviteId: invite.id },
+    metadata: { role: joined.role, inviteId: invite.id },
   });
 
-  return { ok: true, teamId: invite.teamId, teamSlug: invite.teamSlug };
+  return { ok: true, teamId: joined.teamId, teamSlug: invite.teamSlug };
 }
 
 export type DeclineInviteResult =
@@ -131,4 +140,23 @@ export async function declineDirectedInvite(
     return { ok: false, status: 404, error: "Not found" };
   }
   return { ok: true };
+}
+
+/** Maximum expired invites deleted by one sweep chunk. */
+export const EXPIRED_INVITE_SWEEP_BATCH_SIZE = 500;
+
+/** Delete one bounded chunk of expired invites. */
+export async function sweepExpiredInvites(
+  now: number,
+  limit: number = EXPIRED_INVITE_SWEEP_BATCH_SIZE,
+): Promise<number> {
+  const doomed = db
+    .select({ id: teamInvites.id })
+    .from(teamInvites)
+    .where(lt(teamInvites.expiresAt, now))
+    .limit(limit);
+  const result = await db
+    .delete(teamInvites)
+    .where(inArray(teamInvites.id, doomed));
+  return changedRows(result);
 }

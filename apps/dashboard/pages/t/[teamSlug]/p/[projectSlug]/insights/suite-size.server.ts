@@ -15,13 +15,14 @@ import {
   ciRunsJoinOn,
 } from "@/lib/analytics/filters";
 import { intAggExpr, numericSql } from "@/lib/db/sql-ops";
-import { runRow } from "@/lib/db-run";
+import { runRow } from "@/lib/runs/db";
 import {
   normalizeBranchFilter,
   resolveAnalyticsWindow,
 } from "@/lib/analytics/params";
 import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
+import { deferredNoStore, pageProjectFields } from "@/lib/page-loader";
 import { rate } from "@/lib/rate";
 import { childProjectScopeWhere, ciRunsScopeWhere } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
@@ -206,23 +207,9 @@ export const loader = defineHandler(async (c) => {
   // header/tabs/filters paint immediately and each region streams in.
   const branches = await loadProjectBranches(scope);
 
-  // A deferred loader streams its body — NDJSON on SPA nav, chunked HTML on a
-  // document load — and Void keys the two variants with `Vary: X-VoidPages`.
-  // SWR/max-age caching of that streamed, variant-specific response lets the
-  // browser replay the wrong variant: a cached NDJSON payload served for a
-  // top-level navigation downloads as a file instead of rendering. Deferred
-  // pages must not be stored; the perceived-load win now comes from streaming,
-  // not from the cache. (Was `private, max-age=300, stale-while-revalidate=900`
-  // when this loader returned a single non-streamed response — see worklog §4.)
-  c.header("Cache-Control", "private, no-store");
+  deferredNoStore(c);
   return {
-    project: {
-      id: project.id,
-      teamId: project.teamId,
-      slug: project.slug,
-      name: project.name,
-      teamSlug: project.teamSlug,
-    },
+    project: pageProjectFields(project),
     range,
     segment,
     rangeSec,

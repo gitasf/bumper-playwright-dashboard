@@ -40,7 +40,7 @@ vi.mock("void/db", async () => {
   return { ...stub, db };
 });
 
-const { resolveRunDiff } = await import("@/lib/run-diff");
+const { resolveRunDiff } = await import("@/lib/runs/diff");
 
 const scope: TenantScope = {
   teamId: "team_abc" as TenantScope["teamId"],

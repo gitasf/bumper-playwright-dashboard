@@ -1,9 +1,10 @@
 import { type Locator, type Page, expect } from "@playwright/test";
 
+import { gotoAndExpect } from "../helpers/navigation";
+
 /**
  * Page object for `/settings/teams/:slug/p/:slug/keys`. The mint form
- * uses a Base UI <FieldLabel> which doesn't always wire up cleanly to
- * Playwright's getByLabel; the input is targeted by `name` instead.
+ * uses a client-only mutation to mint and reveal each plaintext token.
  */
 export class ApiKeysPage {
   readonly page: Page;
@@ -27,12 +28,12 @@ export class ApiKeysPage {
     this.settingsHeading = page.getByRole("heading", {
       name: /settings/i,
     });
-    this.labelInput = page.locator('input[name="label"]');
+    this.labelInput = page.getByLabel("Key label");
     this.mintButton = page.getByRole("button", { name: /mint key/i });
     // The freshly-minted token is surfaced in a Base UI Dialog
     // (role="dialog"), title "Save this key now" — not a status Alert.
-    this.revealDialog = page.getByRole("dialog").filter({
-      hasText: /save this key now/i,
+    this.revealDialog = page.getByRole("dialog", {
+      name: /save this key now/i,
     });
   }
 
@@ -41,24 +42,15 @@ export class ApiKeysPage {
   }
 
   async goto(): Promise<void> {
-    await this.page.goto(this.path);
-    await expect(this.settingsHeading).toBeVisible();
+    await gotoAndExpect(this.page, this.path, this.settingsHeading);
   }
 
   /** Mint a key with the given label. Returns the revealed plaintext. */
   async mint(label: string): Promise<string> {
-    // The mint form is a client island. Before React hydrates, clicking the
-    // submit button does a native GET (appending ?label=… to the URL) rather
-    // than running the mintKey mutation, so the dialog never opens. Re-fill +
-    // re-click until it appears — once hydrated, the mutation runs and the
-    // RevealOnceDialog (role="dialog", title "Save this key now") surfaces the
-    // plaintext token in a <pre>. Scope the lookup to the dialog so an
-    // unrelated <pre> elsewhere on the page can't shadow it.
-    await expect(async () => {
-      await this.labelInput.fill(label);
-      await this.mintButton.click();
-      await expect(this.revealDialog).toBeVisible({ timeout: 2_000 });
-    }).toPass({ timeout: 15_000 });
+    await expect(this.mintButton).toBeEnabled({ timeout: 15_000 });
+    await this.labelInput.fill(label);
+    await this.mintButton.click();
+    await expect(this.revealDialog).toBeVisible({ timeout: 15_000 });
     const token = await this.revealDialog.locator("pre").innerText();
     // Dismiss the modal — left open, its overlay intercepts clicks on the keys
     // list behind it (e.g. the Revoke button), which is what broke the revoke
@@ -69,16 +61,11 @@ export class ApiKeysPage {
   }
 
   rowFor(label: string): Locator {
-    // The keys list is not a table: each key is a <div> row containing
-    // the label, prefix, a status badge with exact text "active"/
-    // "revoked", and (while active) a Revoke button. Anchor on the row
-    // <div> that holds both the label and the status badge so the inner
-    // label-only <div> can't match.
-    return this.page
-      .locator("div")
-      .filter({ hasText: label })
-      .filter({ has: this.page.getByText(/^(active|revoked)$/i) })
-      .last();
+    // Not a table: each key is a <div data-testid="key-row"> with a label,
+    // prefix, active/revoked badge, and (while active) a Revoke button. The
+    // test id matches only the row container, so anchor there and narrow by
+    // label — no `.last()` hack against the inner label-only <div> needed.
+    return this.page.getByTestId("key-row").filter({ hasText: label });
   }
 
   async revoke(label: string): Promise<void> {

@@ -7,8 +7,8 @@ import {
   testResults,
   testTags,
 } from "@schema";
-import { EMPTY_FILTERS } from "@/lib/runs-filters";
-import { scopedRunsWhere } from "@/lib/runs-filters-where";
+import { EMPTY_FILTERS } from "@/lib/runs/filters";
+import { scopedRunsWhere } from "@/lib/runs/filters-where";
 import {
   childByIdWhere,
   childByRunWhere,

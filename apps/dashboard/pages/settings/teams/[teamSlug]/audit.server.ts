@@ -3,7 +3,8 @@ import { db, desc, eq, sql } from "void/db";
 import { auditLog } from "@schema";
 import { getUsersByIds } from "@/lib/auth-users";
 import { numericSql } from "@/lib/db/sql-ops";
-import { resolveOffsetPage } from "@/lib/page-window";
+import { paginateOffsetTable, resolveOffsetPage } from "@/lib/page-window";
+import { parsePage } from "@/lib/runs/filters";
 import { requireRoleScope } from "@/lib/settings-scope";
 
 export type Props = InferProps<typeof loader>;
@@ -52,19 +53,14 @@ function parseMetadata(raw: unknown): Record<string, unknown> | null {
  */
 export const loader = defineHandler(async (c) => {
   const { team } = await requireRoleScope(c, "manageMembers");
-  const pageParam = parseInt(
-    new URL(c.req.url).searchParams.get("page") ?? "1",
-    10,
-  );
-  const requestedPage =
-    Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
+  const requestedPage = parsePage(new URL(c.req.url).searchParams.get("page"));
 
   const totalRows = await db
     .select({ value: numericSql(sql`count(*)`) })
     .from(auditLog)
     .where(eq(auditLog.teamId, team.id));
   const totalCount = totalRows[0]?.value ?? 0;
-  const { currentPage, totalPages, offset, fromRow } = resolveOffsetPage({
+  const { currentPage, totalPages, fromRow } = resolveOffsetPage({
     total: totalCount,
     pageSize: PAGE_SIZE,
     requestedPage,
@@ -85,55 +81,60 @@ export const loader = defineHandler(async (c) => {
     // table skeleton; the header + "Activity · N" card title paint immediately
     // from the eager count. `toRow` derives from the resolved slice, so it's here.
     entries: defer(async () => {
-      const rows = await db
-        .select({
-          id: auditLog.id,
-          action: auditLog.action,
-          actorUserId: auditLog.actorUserId,
-          targetType: auditLog.targetType,
-          targetId: auditLog.targetId,
-          metadata: auditLog.metadata,
-          createdAt: auditLog.createdAt,
-        })
-        .from(auditLog)
-        .where(eq(auditLog.teamId, team.id))
-        // `createdAt` is epoch SECONDS, so several rows routinely share a value;
-        // append the ULID `id` (lexicographically time-ordered) as a stable
-        // tiebreak so offset paging can't duplicate/skip rows across pages —
-        // matching the (createdAt, id) convention in export.ts / run-diff.ts.
-        .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
-        .limit(PAGE_SIZE)
-        .offset(offset);
-
-      // Resolve actor display names from the void-owned `user` table via the
-      // auth-users seam. A deleted user (or the "unknown" sentinel) falls back
-      // to the raw id so the row stays meaningful.
-      const profiles = await getUsersByIds([
-        ...new Set(rows.map((r) => r.actorUserId)),
-      ]);
-      const entries: AuditEntry[] = rows.map((r) => {
-        const profile = profiles.get(r.actorUserId);
-        return {
-          id: r.id,
-          action: r.action,
-          actorUserId: r.actorUserId,
-          actorName: profile?.name ?? r.actorUserId,
-          actorEmail: profile?.email ?? null,
-          targetType: r.targetType,
-          targetId: r.targetId,
-          metadata: parseMetadata(r.metadata),
-          createdAt: r.createdAt,
-        };
-      });
-
-      const { toRow } = resolveOffsetPage({
-        total: totalCount,
+      // Total is eagerly known (shell derived `fromRow` from it above), so
+      // `paginateOffsetTable` clamps first, fetches the slice at the clamped
+      // offset (skipping the query for an empty log), and derives `toRow` from
+      // the mapped length. `mapRows` hydrates actor display names.
+      const page = await paginateOffsetTable({
+        page: requestedPage,
         pageSize: PAGE_SIZE,
-        requestedPage,
-        rowCount: entries.length,
+        count: totalCount,
+        pageQuery: (off) =>
+          db
+            .select({
+              id: auditLog.id,
+              action: auditLog.action,
+              actorUserId: auditLog.actorUserId,
+              targetType: auditLog.targetType,
+              targetId: auditLog.targetId,
+              metadata: auditLog.metadata,
+              createdAt: auditLog.createdAt,
+            })
+            .from(auditLog)
+            .where(eq(auditLog.teamId, team.id))
+            // `createdAt` is epoch SECONDS, so several rows routinely share a
+            // value; append the ULID `id` (lexicographically time-ordered) as a
+            // stable tiebreak so offset paging can't duplicate/skip rows across
+            // pages — matching the (createdAt, id) convention in export.ts /
+            // run-diff.ts.
+            .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
+            .limit(PAGE_SIZE)
+            .offset(off),
+        // Resolve actor display names from the void-owned `user` table via the
+        // auth-users seam. A deleted user (or the "unknown" sentinel) falls back
+        // to the raw id so the row stays meaningful.
+        mapRows: async (rows): Promise<AuditEntry[]> => {
+          const profiles = await getUsersByIds([
+            ...new Set(rows.map((r) => r.actorUserId)),
+          ]);
+          return rows.map((r) => {
+            const profile = profiles.get(r.actorUserId);
+            return {
+              id: r.id,
+              action: r.action,
+              actorUserId: r.actorUserId,
+              actorName: profile?.name ?? r.actorUserId,
+              actorEmail: profile?.email ?? null,
+              targetType: r.targetType,
+              targetId: r.targetId,
+              metadata: parseMetadata(r.metadata),
+              createdAt: r.createdAt,
+            };
+          });
+        },
       });
 
-      return { entries, toRow };
+      return { entries: page.rows, toRow: page.toRow };
     }),
   };
 });

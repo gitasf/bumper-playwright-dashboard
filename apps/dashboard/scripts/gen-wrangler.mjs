@@ -75,6 +75,12 @@ function fromEnvBool(key) {
 const workerName = fromEnv("CF_WORKER_NAME") || "wrightful-dashboard-void";
 const r2Bucket = fromEnv("CF_R2_BUCKET");
 const hyperdriveId = fromEnv("CF_HYPERDRIVE_ID");
+// Local Postgres for the Hyperdrive binding. Prod resolves the DB through the
+// Hyperdrive `id`; local dev (workerd) can't reach that, so it needs a direct
+// connection string — otherwise `vp dev` errors out asking for
+// CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE. Reuse DATABASE_URL
+// (the same string local dev + migrations already use). Ignored on deploy.
+const localConnectionString = fromEnv("DATABASE_URL");
 const observability = fromEnvBool("CF_OBSERVABILITY");
 
 // Own-account binding blocks — only what the env enables. Postgres binds the DB
@@ -84,8 +90,13 @@ const observability = fromEnvBool("CF_OBSERVABILITY");
 // special character is escaped rather than corrupting the generated JSONC.
 const blocks = [];
 if (hyperdriveId) {
+  // `localConnectionString` only takes effect in local dev; wrangler ignores it
+  // when deploying (the `id` wins), so it's safe to always emit when known.
+  const local = localConnectionString
+    ? `, "localConnectionString": ${JSON.stringify(localConnectionString)}`
+    : "";
   blocks.push(
-    `  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": ${JSON.stringify(hyperdriveId)} }],`,
+    `  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": ${JSON.stringify(hyperdriveId)}${local} }],`,
   );
 }
 if (r2Bucket) {

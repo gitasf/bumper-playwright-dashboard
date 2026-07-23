@@ -1,5 +1,7 @@
 import { type Locator, type Page, expect } from "@playwright/test";
 
+import { gotoAndExpect } from "../helpers/navigation";
+
 /**
  * Page object for `/t/:teamSlug/p/:projectSlug/runs/:runId`.
  *
@@ -46,14 +48,11 @@ export class RunDetailPage {
   }
 
   async goto(runId: string): Promise<void> {
-    const target = this.pathFor(runId);
-    try {
-      await this.page.goto(target);
-    } catch (err) {
-      // Retry once past the transient net::ERR_ABORTED seen under dev-server load.
-      if (!/ERR_ABORTED/i.test(String(err))) throw err;
-      await this.page.goto(target);
-    }
+    await gotoAndExpect(
+      this.page,
+      this.pathFor(runId),
+      this.page.getByRole("heading", { level: 1 }),
+    );
   }
 
   /** Project-page back-link — the generic chrome anchor on every detail page. */
@@ -87,15 +86,13 @@ export class RunDetailPage {
     await this.expandTestGroups();
     const link = this.testRowLinks.first();
     await expect(link).toBeVisible({ timeout: 10_000 });
+    const href = await link.getAttribute("href");
+    if (!href) throw new Error("first test-row link has no href");
+    const targetPath = new URL(href, this.page.url()).pathname;
     await link.click();
-    try {
-      await this.page.waitForURL(/\/tests\//, { timeout: 10_000 });
-    } catch (err) {
-      // Re-click once if a pre-hydration click was dropped; bail if we did navigate.
-      if (/\/tests\//.test(this.page.url())) throw err;
-      await link.click();
-      await this.page.waitForURL(/\/tests\//, { timeout: 10_000 });
-    }
-    await this.page.waitForLoadState("load");
+    await expect(this.page).toHaveURL((url) => url.pathname === targetPath, {
+      timeout: 15_000,
+    });
+    await expect(this.testTitleHeading).toBeVisible({ timeout: 15_000 });
   }
 }

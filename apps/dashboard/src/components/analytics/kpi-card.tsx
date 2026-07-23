@@ -37,7 +37,7 @@ export interface AnalyticsKpiCardProps {
  *   [value 26px                              optional sparkline]
  *   [optional sub-text 11.5px muted]
  *
- * Card chrome: bg-card, border-line-1, radius 8, padding 14×16.
+ * Card chrome: bg-bg-1, border-line-1, radius 8, padding 14×16.
  */
 export function AnalyticsKpiCard({
   label,
@@ -46,7 +46,7 @@ export function AnalyticsKpiCard({
   delta,
   spark,
   Icon,
-  iconColor = "var(--color-muted-foreground)",
+  iconColor = "var(--color-fg-3)",
 }: AnalyticsKpiCardProps) {
   const deltaColor =
     delta == null
@@ -58,14 +58,14 @@ export function AnalyticsKpiCard({
           : "var(--fg-3)";
 
   return (
-    <div className="flex min-w-0 flex-col gap-1.5 rounded-[8px] border border-line-1 bg-card px-4 py-3.5">
+    <div className="flex min-w-0 flex-col gap-1.5 rounded-[9px] border border-line-1 bg-bg-1 px-4 py-3.5">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[12px] font-medium tracking-[0.1px] text-fg-3">
+        <span className="text-caption font-medium tracking-[0.1px] text-fg-3">
           {label}
         </span>
         {delta != null ? (
           <span
-            className="font-mono text-[11px] tabular-nums"
+            className="font-mono text-micro tabular-nums"
             style={{ color: deltaColor }}
           >
             {delta > 0 ? "+" : ""}
@@ -76,7 +76,7 @@ export function AnalyticsKpiCard({
         ) : null}
       </div>
       <div className="flex items-baseline justify-between gap-3">
-        <span className="font-mono text-[26px] font-semibold tracking-[-0.4px] tabular-nums text-foreground">
+        <span className="font-mono text-display font-semibold tracking-[-0.4px] tabular-nums text-fg-1">
           {value}
         </span>
         {spark && spark.length > 1 ? (
@@ -84,7 +84,7 @@ export function AnalyticsKpiCard({
         ) : null}
       </div>
       {footnote ? (
-        <span className="text-[11.5px] text-fg-3">{footnote}</span>
+        <span className="text-caption text-fg-3">{footnote}</span>
       ) : null}
     </div>
   );

@@ -119,6 +119,23 @@ describe("StreamClient", () => {
       expect(JSON.parse(init.body)).toEqual(runPayload);
     });
 
+    it("strips a trailing slash from the base URL so it can't build //api/runs", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse(200, { runId: "run_1", runUrl: null }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+
+      // A WRIGHTFUL_URL with a trailing slash previously yielded a double slash,
+      // which 404s on the dashboard and silently drops the whole run.
+      const client = new StreamClient("http://dash.example/", "tok-1");
+      await client.openRun(runPayload);
+
+      const [url] = fetchMock.mock.calls[0];
+      expect(url).toBe("http://dash.example/api/runs");
+    });
+
     it("throws when the 200 response is missing runId", async () => {
       const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(200, {}));
       vi.stubGlobal("fetch", fetchMock);

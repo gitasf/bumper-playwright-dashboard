@@ -59,6 +59,17 @@ export const SAFE_CONTENT_TYPES: ReadonlySet<string> = new Set<string>([
 const FALLBACK_CONTENT_TYPE = "application/octet-stream";
 
 /**
+ * Mirror of the dashboard's replay-eligibility policy. The reporter and
+ * dashboard cannot share runtime code, so `contract.test.ts` keeps these
+ * tuples and their predicates in lockstep across the package boundary.
+ */
+export const REPLAY_TRACE_ARTIFACT_NAMES = ["trace", "trace.zip"] as const;
+export const REPLAY_TRACE_CONTENT_TYPES = [
+  "application/zip",
+  "application/x-zip-compressed",
+] as const;
+
+/**
  * Map an attachment's contentType onto the dashboard-safe set: strip
  * parameters (`; charset=…`), lower-case, and fall back to
  * `application/octet-stream` for anything not on the allowlist (matching what
@@ -67,6 +78,17 @@ const FALLBACK_CONTENT_TYPE = "application/octet-stream";
 export function normalizeContentType(value: string): string {
   const base = value.split(";", 1)[0].trim().toLowerCase();
   return SAFE_CONTENT_TYPES.has(base) ? base : FALLBACK_CONTENT_TYPE;
+}
+
+export function isReplayTraceAttachment(
+  name: string,
+  contentType: string,
+): boolean {
+  const normalized = normalizeContentType(contentType);
+  return (
+    REPLAY_TRACE_ARTIFACT_NAMES.some((candidate) => candidate === name) &&
+    REPLAY_TRACE_CONTENT_TYPES.some((candidate) => candidate === normalized)
+  );
 }
 
 /**
@@ -100,14 +122,11 @@ export function classifyAttachment(
   contentType: string,
 ): ArtifactType {
   const ct = contentType.toLowerCase();
-  if (ct === "application/zip" || ct === "application/x-zip-compressed") {
-    return "trace";
-  }
+  if (isReplayTraceAttachment(name, contentType)) return "trace";
   if (ct.startsWith("image/")) return "screenshot";
   if (ct.startsWith("video/")) return "video";
 
   const ext = extname(name).toLowerCase();
-  if (ext === ".zip" && name.includes("trace")) return "trace";
   if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp") {
     return "screenshot";
   }

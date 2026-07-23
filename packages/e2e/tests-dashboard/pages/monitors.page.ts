@@ -1,20 +1,18 @@
 import { type Locator, type Page, expect } from "@playwright/test";
 
+import { gotoAndExpect, waitForHydration } from "../helpers/navigation";
+
+const escapeRegExp = (s: string): string =>
+  s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * Page object for the synthetic-monitors section under
  * `/t/:teamSlug/p/:projectSlug/monitors` — the list, the create form
  * (`/new`), and a monitor's detail (`/:monitorId`).
  *
- * The create form (`MonitorForm`) is a client island whose interactive leaf is
- * the `<CodeEditor>` source field. That editor renders a plain `<textarea>` on
- * the server / before hydration and swaps to a CodeMirror surface after mount —
- * both expose `role="textbox"` with `aria-label="Playwright source"`, and
- * Playwright's `fill` drives the textarea and CodeMirror's contenteditable
- * alike, so `sourceEditor` is a stable anchor across the swap. The rest of the
- * form posts natively even before hydration (the hidden `source`/`enabled`
- * fields are in the SSR HTML), so a submit works on the no-JS slow path too;
- * `create` retries the submit until the URL settles on the new detail page to
- * ride out the hydration window (same pattern as the api-keys mint).
+ * `create*` waits for app hydration (via {@link waitForHydration}) before
+ * filling controlled fields, so tests never drive the fallback textarea while
+ * CodeMirror is replacing it.
  */
 export class MonitorsPage {
   readonly page: Page;
@@ -27,8 +25,10 @@ export class MonitorsPage {
   readonly intervalSelect: Locator;
   readonly sourceEditor: Locator;
   readonly urlInput: Locator;
-  readonly enabledSwitch: Locator;
   readonly createButton: Locator;
+  readonly enabledSwitch: Locator;
+  readonly pauseButton: Locator;
+  readonly resumeButton: Locator;
 
   constructor(page: Page, teamSlug: string, projectSlug: string) {
     this.page = page;
@@ -43,8 +43,12 @@ export class MonitorsPage {
       name: /playwright source/i,
     });
     this.urlInput = page.locator('input[name="url"]');
-    this.enabledSwitch = page.getByRole("switch");
     this.createButton = page.getByRole("button", { name: /create monitor/i });
+    this.enabledSwitch = page.getByRole("switch", {
+      name: /^(enabled|paused)\b/i,
+    });
+    this.pauseButton = page.getByRole("button", { name: /^pause$/i });
+    this.resumeButton = page.getByRole("button", { name: /^resume$/i });
   }
 
   get base(): string {
@@ -63,57 +67,66 @@ export class MonitorsPage {
     return `${this.listPath}/${monitorId}`;
   }
 
+  /**
+   * URL pattern for a monitor detail page under THIS team/project (excludes
+   * `/new`), so a wrong-tenant redirect can never satisfy the assertion.
+   */
+  private get detailUrl(): RegExp {
+    return new RegExp(
+      `${escapeRegExp(this.listPath)}/(?!new(?:[/?#]|$))[^/?#]+(?:[?#]|$)`,
+    );
+  }
+
+  private async submitCreate(): Promise<string> {
+    await this.createButton.click();
+    await expect(this.page).toHaveURL(this.detailUrl, { timeout: 15_000 });
+    // The create action redirects via a full page load, so the detail page
+    // hydrates like any fresh navigation; callers chain straight into
+    // pause()/openEdit(), whose clicks a mid-hydration render can swallow.
+    await waitForHydration(this.page);
+
+    const monitorId = new URL(this.page.url()).pathname.match(
+      /\/monitors\/([^/?#]+)/,
+    )?.[1];
+    if (!monitorId) {
+      throw new Error(
+        `Monitor creation did not land on a detail URL: ${this.page.url()}`,
+      );
+    }
+    return monitorId;
+  }
+
   async gotoList(): Promise<void> {
-    await this.page.goto(this.listPath);
-    await expect(this.listHeading).toBeVisible();
+    await gotoAndExpect(this.page, this.listPath, this.listHeading);
   }
 
   /** Open the create form for the browser type directly (skips the chooser). */
   async gotoNew(): Promise<void> {
-    await this.page.goto(`${this.newPath}?type=browser`);
-    await expect(this.nameInput).toBeVisible();
+    await gotoAndExpect(
+      this.page,
+      `${this.newPath}?type=browser`,
+      this.nameInput,
+    );
   }
 
   /** Open the create form for the http (uptime) type directly (skips the chooser). */
   async gotoNewHttp(): Promise<void> {
-    await this.page.goto(`${this.newPath}?type=http`);
-    await expect(this.urlInput).toBeVisible();
+    await gotoAndExpect(this.page, `${this.newPath}?type=http`, this.urlInput);
   }
 
-  /**
-   * Fill + submit the http (uptime) create form, returning the new monitor's id.
-   * The http form posts natively even before hydration (the hidden `type=http`,
-   * `enabled`, `followRedirects`, and `assertions` fields are in the SSR HTML, and
-   * the threshold inputs carry default values), so the same retry-submit pattern
-   * as {@link create} rides out the hydration window.
-   */
   async createHttp(opts: {
     name: string;
     intervalSeconds: number;
     url: string;
+    enabled?: boolean;
   }): Promise<string> {
+    await waitForHydration(this.page);
     await this.nameInput.fill(opts.name);
     await this.intervalSelect.selectOption(String(opts.intervalSeconds));
     await this.urlInput.fill(opts.url);
+    await this.setFormEnabled(opts.enabled ?? true);
 
-    const detailUrlRe = new RegExp(
-      `/monitors/(?!new(?:[/?#]|$))[^/?#]+(?:[?#]|$)`,
-    );
-    await expect(async () => {
-      await this.createButton.click();
-      await this.page.waitForURL(detailUrlRe, { timeout: 3_000 });
-    }).toPass({ timeout: 15_000 });
-
-    const match = new URL(this.page.url()).pathname.match(
-      /\/monitors\/([^/?#]+)/,
-    );
-    const monitorId = match?.[1];
-    if (!monitorId) {
-      throw new Error(
-        `createHttp() did not land on a monitor detail URL: ${this.page.url()}`,
-      );
-    }
-    return monitorId;
+    return this.submitCreate();
   }
 
   /**
@@ -127,37 +140,24 @@ export class MonitorsPage {
     name: string;
     intervalSeconds: number;
     source?: string;
+    enabled?: boolean;
   }): Promise<string> {
+    await waitForHydration(this.page);
     await this.nameInput.fill(opts.name);
     await this.intervalSelect.selectOption(String(opts.intervalSeconds));
     if (opts.source !== undefined) {
       await this.sourceEditor.fill(opts.source);
     }
+    await this.setFormEnabled(opts.enabled ?? true);
 
-    // The form is a client island; before React hydrates a click does a native
-    // POST (which is also handled by the action and redirects), but to be
-    // robust against the SPA-action takeover mid-click, re-submit until the URL
-    // lands on the detail page. The id is a ULID — exclude the `/monitors/new`
-    // sentinel we post FROM, otherwise `waitForURL` matches the still-current
-    // pre-redirect URL immediately and we'd capture "new" as the monitor id.
-    const detailUrlRe = new RegExp(
-      `/monitors/(?!new(?:[/?#]|$))[^/?#]+(?:[?#]|$)`,
-    );
-    await expect(async () => {
-      await this.createButton.click();
-      await this.page.waitForURL(detailUrlRe, { timeout: 3_000 });
-    }).toPass({ timeout: 15_000 });
+    return this.submitCreate();
+  }
 
-    const match = new URL(this.page.url()).pathname.match(
-      /\/monitors\/([^/?#]+)/,
-    );
-    const monitorId = match?.[1];
-    if (!monitorId) {
-      throw new Error(
-        `create() did not land on a monitor detail URL: ${this.page.url()}`,
-      );
-    }
-    return monitorId;
+  private async setFormEnabled(enabled: boolean): Promise<void> {
+    if (enabled) return;
+    await expect(this.enabledSwitch).toBeChecked();
+    await this.enabledSwitch.click();
+    await expect(this.enabledSwitch).not.toBeChecked();
   }
 
   /** A list-table row anchored on the monitor's name. */
@@ -168,7 +168,21 @@ export class MonitorsPage {
   // ─── Detail page ──────────────────────────────────────────────────────────
 
   async gotoDetail(monitorId: string): Promise<void> {
-    await this.page.goto(this.detailPath(monitorId));
+    await gotoAndExpect(
+      this.page,
+      this.detailPath(monitorId),
+      this.page.getByRole("heading", { level: 1 }),
+    );
+  }
+
+  async pause(): Promise<void> {
+    await this.pauseButton.click();
+    await expect(this.resumeButton).toBeVisible();
+  }
+
+  async resume(): Promise<void> {
+    await this.resumeButton.click();
+    await expect(this.pauseButton).toBeVisible();
   }
 
   /** The empty-executions placeholder shown before any execution lands. */
@@ -224,19 +238,16 @@ export class MonitorsPage {
     return this.editForm.getByRole("button", { name: /save changes/i });
   }
 
-  /**
-   * Open the edit modal. The modal's open state is keyed off `?edit=1`, which
-   * the "Edit" link navigates to; the island then hydrates and shows it. Only
-   * clicks when the form isn't already visible so a re-click can't land on the
-   * (backdrop-covered) link, and retries to ride out the hydration window.
-   */
   async openEdit(): Promise<void> {
-    await expect(async () => {
-      if (!(await this.saveEditButton.isVisible())) {
-        await this.editLink.click();
-      }
-      await expect(this.saveEditButton).toBeVisible({ timeout: 3_000 });
-    }).toPass({ timeout: 15_000 });
+    await expect(this.editLink).toBeVisible();
+    // Pin the assertion to the detail page we're editing, not any ?edit=1 URL.
+    const detailPathname = new URL(this.page.url()).pathname;
+    await this.editLink.click();
+    await expect(this.page).toHaveURL(
+      new RegExp(`${escapeRegExp(detailPathname)}\\?(?:.*&)?edit=1(?:&|$)`),
+      { timeout: 15_000 },
+    );
+    await expect(this.saveEditButton).toBeVisible({ timeout: 15_000 });
   }
 
   recipientModeRadio(mode: "all" | "specific"): Locator {

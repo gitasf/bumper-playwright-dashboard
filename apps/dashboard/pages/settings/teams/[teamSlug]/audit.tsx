@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { initials } from "@/lib/initials";
+import { UserAvatar } from "@/components/user-avatar";
 import { formatRelativeTime } from "@/lib/time-format";
 import type { AuditEntry, Props } from "./audit.server";
 
@@ -138,7 +138,7 @@ function AuditTableRegion({
 
   if (rows.length === 0) {
     return (
-      <p className="py-2 text-[length:var(--text-fs-13)] text-fg-3">
+      <p className="py-2 text-body text-fg-3">
         No activity recorded yet. Privileged changes will show up here.
       </p>
     );
@@ -158,26 +158,24 @@ function AuditTableRegion({
               </TableCell>
               <TableCell>
                 <div className="flex items-center gap-2">
-                  <div className="flex size-6 shrink-0 items-center justify-center rounded-full border border-line-1 bg-bg-3 font-mono font-semibold text-[9.5px] text-fg-3">
-                    {initials(entry.actorName)}
-                  </div>
+                  <UserAvatar name={entry.actorName} size={24} />
                   <div className="min-w-0">
-                    <div className="truncate font-medium text-[length:var(--text-fs-13)] text-fg-1">
+                    <div className="truncate font-medium text-body text-fg-1">
                       {entry.actorName}
                     </div>
                     {entry.actorEmail && (
-                      <div className="truncate font-mono text-[11px] text-fg-3">
+                      <div className="truncate font-mono text-micro text-fg-3">
                         {entry.actorEmail}
                       </div>
                     )}
                   </div>
                 </div>
               </TableCell>
-              <TableCell className="max-w-[220px] truncate font-mono text-[12px] text-fg-2">
+              <TableCell className="max-w-[220px] truncate font-mono text-caption text-fg-2">
                 {targetText(entry)}
               </TableCell>
               <TableCell
-                className="pe-[18px] text-right font-mono text-[11.5px] text-fg-3"
+                className="pe-[18px] text-right font-mono text-caption text-fg-3"
                 title={new Date(entry.createdAt * 1000).toISOString()}
               >
                 {formatRelativeTime(entry.createdAt)}

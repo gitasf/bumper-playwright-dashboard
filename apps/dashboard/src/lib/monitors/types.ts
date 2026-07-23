@@ -9,6 +9,21 @@ export type { Monitor, MonitorExecution };
  */
 export type MonitorType = "browser" | "http" | "tcp" | "ping";
 
+/**
+ * The queue/executor family partition over {@link MonitorType}, defined once:
+ * the lightweight uptime family (`http`, `tcp`, `ping` — raw connects, no
+ * container) vs the container-backed `browser` family. Both the sweep's queue
+ * routing (`crons/sweep-monitors.ts`) and the consumers' executor dispatch
+ * (`executor-registry.ts`) derive from this, so the partition can't drift.
+ * Takes a plain string (the DB column isn't narrowed); anything unknown falls
+ * to `"browser"`, matching both call sites' historical defaults.
+ */
+export function monitorFamily(type: string): "uptime" | "browser" {
+  return type === "http" || type === "tcp" || type === "ping"
+    ? "uptime"
+    : "browser";
+}
+
 /** Terminal + transient states of a single monitor execution attempt. */
 export type ExecutionState =
   | "queued"

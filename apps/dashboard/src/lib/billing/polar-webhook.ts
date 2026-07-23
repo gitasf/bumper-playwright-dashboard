@@ -20,7 +20,7 @@ import type { Order } from "@polar-sh/sdk/models/components/order";
 import type { Subscription } from "@polar-sh/sdk/models/components/subscription";
 import { teams } from "@schema";
 import { polarDateToSeconds } from "@/lib/billing/polar-time";
-import { changedRows } from "@/lib/db-batch";
+import { changedRows } from "@/lib/db/batch";
 
 interface MirrorWrite {
   teamId: string;

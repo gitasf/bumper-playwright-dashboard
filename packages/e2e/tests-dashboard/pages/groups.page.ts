@@ -1,5 +1,7 @@
 import { type Locator, type Page, expect } from "@playwright/test";
 
+import { gotoAndExpect } from "../helpers/navigation";
+
 /**
  * Page object for the team-settings Groups page
  * (`/settings/teams/:teamSlug/groups`) — owner-managed, server-rendered CRUD
@@ -28,8 +30,7 @@ export class GroupsPage {
   }
 
   async goto(): Promise<void> {
-    await this.page.goto(this.path);
-    await expect(this.heading).toBeVisible();
+    await gotoAndExpect(this.page, this.path, this.heading);
   }
 
   private get createForm(): Locator {
@@ -42,7 +43,7 @@ export class GroupsPage {
 
   /** A group's settings card, anchored on its (unique) name. */
   card(name: string): Locator {
-    return this.page.locator("div.mb-4").filter({ hasText: name });
+    return this.page.getByTestId("group-card").filter({ hasText: name });
   }
 
   /**
@@ -60,7 +61,19 @@ export class GroupsPage {
         .check();
     }
     await form.getByRole("button", { name: /create group/i }).click();
-    await expect(this.card(name)).toBeVisible();
+    await expect(this.card(name)).toBeVisible({ timeout: 15_000 });
+  }
+
+  async createExpectingDuplicate(name: string): Promise<void> {
+    const form = this.createForm;
+    await form.locator('input[name="name"]').fill(name);
+    await form.getByRole("button", { name: /create group/i }).click();
+    await expect(this.page.getByRole("alert")).toContainText(
+      /already exists/i,
+      {
+        timeout: 15_000,
+      },
+    );
   }
 
   /** Open the inline editor for a group (its `?editGroup=` Link). */

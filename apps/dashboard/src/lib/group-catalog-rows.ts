@@ -45,8 +45,8 @@ export function catalogGroupKey(
 }
 
 /**
- * Cluster rows into groups (preserving first-seen order, so groups appear in
- * the rows' existing lastSeen-desc order) with summed outcome counts.
+ * Cluster rows into groups (preserving first-seen order, so groups follow the
+ * rows' active catalog sort) with summed outcome counts.
  */
 export function groupCatalogRows<T extends GroupableRow>(
   rows: readonly T[],

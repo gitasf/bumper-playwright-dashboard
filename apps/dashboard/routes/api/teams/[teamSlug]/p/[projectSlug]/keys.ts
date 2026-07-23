@@ -24,7 +24,7 @@ export const POST = defineHandler(async (c) => {
   try {
     project = await resolveOwnedProject(c);
   } catch (err) {
-    if (err instanceof AuthzError) return c.json({ error: "Forbidden" }, 403);
+    if (err instanceof AuthzError) return c.json({ error: "Not found" }, 404);
     throw err;
   }
 

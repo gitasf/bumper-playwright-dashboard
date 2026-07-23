@@ -1,13 +1,12 @@
 import { defineHandler } from "void";
 import { env } from "void/env";
 import { getApiKey } from "@/lib/api-auth";
-import { buildRunTestsCsv, csvHeaders } from "@/lib/export";
+import { buildRunTestsCsv, csvExportResponse } from "@/lib/export";
 import {
   DEFAULT_RUN_RESULTS_LIMIT,
   loadRunResultsPage,
-} from "@/lib/run-results-page";
+} from "@/lib/runs/results-page";
 import { tenantScopeForApiKey } from "@/lib/scope";
-import { logger } from "void/log";
 
 /**
  * GET /api/v1/runs/:runId/tests — public, Bearer-authed list of a run's test
@@ -30,17 +29,13 @@ export const GET = defineHandler(async (c) => {
     const maxRows = env.WRIGHTFUL_EXPORT_MAX_ROWS;
     const csv = await buildRunTestsCsv(scope, runId, maxRows);
     if (!csv) return c.json({ error: "Not found" }, 404);
-    if (csv.truncated) {
-      logger.warn("run tests csv export truncated at cap", {
-        projectId: scope.projectId,
-        runId,
-        maxRows,
-        rowCount: csv.rowCount,
-      });
-    }
-    const filename = `${scope.teamSlug}-${scope.projectSlug}-run-${runId}-tests`;
-    return new Response(csv.body, {
-      headers: csvHeaders(filename, csv.truncated),
+    return csvExportResponse({
+      scope,
+      csv,
+      maxRows,
+      filenameSuffix: `run-${runId}-tests`,
+      logMessage: "run tests csv export truncated at cap",
+      logFields: { runId },
     });
   }
 

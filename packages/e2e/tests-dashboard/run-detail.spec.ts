@@ -15,12 +15,10 @@ test.describe("Run detail", () => {
   });
 
   test("lists at least one test result row from the seeded run", async ({
-    runsListPage,
     runDetailPage,
+    openSeededRun,
   }) => {
-    await runsListPage.goto();
-    const runId = await runsListPage.firstRunId();
-    await runDetailPage.goto(runId);
+    await openSeededRun();
     // Rows live inside paginated-by-group sections; expand them so a row renders.
     await runDetailPage.expandTestGroups();
     await expect(runDetailPage.testRowLinks.first()).toBeVisible({

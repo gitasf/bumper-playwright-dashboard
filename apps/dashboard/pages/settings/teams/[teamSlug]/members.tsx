@@ -19,9 +19,9 @@ import {
   SettingsPage,
 } from "@/components/settings/settings-primitives";
 import { cn } from "@/lib/cn";
-import { initials } from "@/lib/initials";
+import { UserAvatar } from "@/components/user-avatar";
 import { formatRelativeTime } from "@/lib/time-format";
-import { useCopiedFlag } from "@/lib/use-copied-flag";
+import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 import type { MembershipRole } from "@schema";
 import type { Props } from "./members.server";
 
@@ -50,8 +50,8 @@ function InviteLinkField({ url }: { url: string }) {
   }
 
   return (
-    <div className="flex items-center gap-2 rounded-md border border-line-1 bg-bg-0 p-1.5 pl-2.5">
-      <code className="min-w-0 flex-1 truncate font-mono text-[length:var(--text-fs-13)] text-fg-1">
+    <div className="flex items-center gap-2 rounded-[10px] border border-line-1 bg-bg-0 p-1.5 pl-2.5">
+      <code className="min-w-0 flex-1 truncate font-mono text-body text-fg-1">
         {url}
       </code>
       <Button
@@ -63,7 +63,7 @@ function InviteLinkField({ url }: { url: string }) {
         type="button"
         variant="outline"
       >
-        {copied ? <Check /> : <Copy />}
+        {copied ? <Check className="animate-copy-pop" /> : <Copy />}
         {copied ? "Copied" : "Copy"}
       </Button>
     </div>
@@ -315,10 +315,10 @@ export default function SettingsTeamMembersPage({
               Send invite
             </Button>
           </form>
-          <p className="mt-2 text-[11.5px] text-fg-3">
+          <p className="mt-2 text-caption text-fg-3">
             {roleDescriptions[inviteRole]}
           </p>
-          <p className="mt-2 text-[11.5px] text-fg-3">
+          <p className="mt-2 text-caption text-fg-3">
             Email invites match accounts with a verified email (currently GitHub
             sign-ins). For password accounts, invite by GitHub username instead.
           </p>
@@ -340,26 +340,12 @@ export default function SettingsTeamMembersPage({
               )}
               key={m.userId}
             >
-              {m.image ? (
-                <img
-                  alt=""
-                  className="size-7 shrink-0 rounded-full border border-line-1 bg-bg-3 object-cover"
-                  height={28}
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                  src={m.image}
-                  width={28}
-                />
-              ) : (
-                <div className="flex size-7 shrink-0 items-center justify-center rounded-full border border-line-1 bg-bg-3 font-mono font-semibold text-[10.5px] text-fg-3">
-                  {initials(m.name)}
-                </div>
-              )}
+              <UserAvatar image={m.image} name={m.name} size={28} />
               <div className="min-w-0 flex-1">
-                <div className="truncate font-medium text-[length:var(--text-fs-14)] text-fg-1">
+                <div className="truncate font-medium text-body-lg text-fg-1">
                   {m.name}
                 </div>
-                <div className="truncate font-mono text-[11.5px] text-fg-3">
+                <div className="truncate font-mono text-caption text-fg-3">
                   {m.email}
                 </div>
               </div>
@@ -373,9 +359,9 @@ export default function SettingsTeamMembersPage({
               ) : (
                 <span
                   className={cn(
-                    "rounded-sm px-2 py-0.5 font-mono text-[11px] capitalize",
+                    "rounded-sm px-2 py-0.5 font-mono text-micro capitalize",
                     m.role === "owner"
-                      ? "bg-accent-soft text-accent"
+                      ? "bg-accent-soft text-info"
                       : "bg-bg-3 text-fg-2",
                   )}
                 >
@@ -431,18 +417,18 @@ export default function SettingsTeamMembersPage({
                   <Mail className="size-3.5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-[13px] text-fg-1">
+                  <div className="truncate font-mono text-body text-fg-1">
                     {inv.email ??
                       (inv.githubLogin
                         ? `@${inv.githubLogin}`
                         : "Open invite link")}
                   </div>
-                  <div className="text-[11.5px] text-fg-3">
+                  <div className="text-caption text-fg-3">
                     sent {formatRelativeTime(inv.createdAt)} · expires in{" "}
                     {formatExpiresIn(inv.expiresAt)}
                   </div>
                 </div>
-                <span className="rounded-sm bg-bg-3 px-2 py-0.5 font-mono text-[11px] capitalize text-fg-2">
+                <span className="rounded-sm bg-bg-3 px-2 py-0.5 font-mono text-micro capitalize text-fg-2">
                   {inv.role}
                 </span>
                 {canManageMembers && (

@@ -1,13 +1,14 @@
 import { and, db, desc, eq, lt, or } from "void/db";
+import { logger } from "void/log";
 import { runs } from "@schema";
 import { type CsvValue, csvRow } from "@/lib/csv";
 import {
   decodeCursor,
   encodeCursor,
   loadRunResultsPage,
-} from "@/lib/run-results-page";
-import type { RunsFilters } from "@/lib/runs-filters";
-import { scopedRunsWhere } from "@/lib/runs-filters-where";
+} from "@/lib/runs/results-page";
+import type { RunsFilters } from "@/lib/runs/filters";
+import { scopedRunsWhere } from "@/lib/runs/filters-where";
 import { runByIdWhere, type TenantScope } from "@/lib/scope";
 
 /**
@@ -389,4 +390,40 @@ export function csvHeaders(filename: string, truncated: boolean): HeadersInit {
   };
   if (truncated) headers["x-wrightful-export-truncated"] = "true";
   return headers;
+}
+
+/**
+ * The one CSV-attachment response constructor for the export routes (public
+ * `?format=csv` + the in-dashboard export): truncation warn-log, the
+ * `${teamSlug}-${projectSlug}-…` filename derivation (sanitized via
+ * {@link csvHeaders}), and `Response` assembly, previously copy-pasted per
+ * route. Routes stay translation-only: build the CSV (their own `null` → 404),
+ * then hand the result here. `maxRows` is received rather than read from env so
+ * this module stays env-free; it appears only in the truncation log.
+ */
+export function csvExportResponse(opts: {
+  scope: TenantScope;
+  csv: CsvExportResult;
+  /** Filename becomes `${teamSlug}-${projectSlug}-${filenameSuffix}.csv`. */
+  filenameSuffix: string;
+  /** Warn-log message emitted only when the row cap truncated the export. */
+  logMessage: string;
+  /** The configured (unclamped) row cap, for the truncation log. */
+  maxRows: number;
+  /** Extra structured fields for the truncation log (e.g. `{ runId }`). */
+  logFields?: Record<string, unknown>;
+}): Response {
+  const { scope, csv } = opts;
+  if (csv.truncated) {
+    logger.warn(opts.logMessage, {
+      projectId: scope.projectId,
+      ...opts.logFields,
+      maxRows: opts.maxRows,
+      rowCount: csv.rowCount,
+    });
+  }
+  const filename = `${scope.teamSlug}-${scope.projectSlug}-${opts.filenameSuffix}`;
+  return new Response(csv.body, {
+    headers: csvHeaders(filename, csv.truncated),
+  });
 }

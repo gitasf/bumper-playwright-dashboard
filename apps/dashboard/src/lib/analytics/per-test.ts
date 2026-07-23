@@ -52,8 +52,15 @@ export function latestPerTestRn(
   opts: { testIdCol?: string; orderByCol?: string } = {},
 ): SqlFilterFragment {
   const { testIdCol = 'tr."testId"', orderByCol = 'tr."createdAt"' } = opts;
+  // `row_number()` is `int8` on Postgres, which node-postgres returns as a
+  // STRING (pglite returns a number, hiding this in the fast test lane);
+  // casting to `int4` (`cast(… as integer)`, same idiom as `statusCounter`
+  // below) makes both drivers hand back a JS number. Load-bearing for
+  // flaky.server.ts's `loadSparklinesAndMeta`, which reads the alias back in
+  // JS and does `r.rn === 1` — that strict compare is silently dead on real
+  // pg without this cast. A per-test rank comfortably fits int4.
   return sql.raw(
-    `row_number() over (partition by ${assertSqlIdentifier(testIdCol)} order by ${assertSqlIdentifier(orderByCol)} desc) as ${assertSqlIdentifier(alias)}`,
+    `cast(row_number() over (partition by ${assertSqlIdentifier(testIdCol)} order by ${assertSqlIdentifier(orderByCol)} desc) as integer) as ${assertSqlIdentifier(alias)}`,
   ) as SqlFilterFragment;
 }
 

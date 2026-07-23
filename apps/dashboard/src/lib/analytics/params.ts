@@ -1,4 +1,4 @@
-import { parseBranchParam } from "@/components/run-history-branch-filter.shared";
+import { parseBranchParam } from "@/components/run/history-branch-filter.shared";
 import { DAY_SEC } from "./bucketing";
 import { rangeToSeconds } from "./range";
 

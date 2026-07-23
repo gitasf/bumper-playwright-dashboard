@@ -4,12 +4,19 @@ import {
   SAFE_CONTENT_TYPES as DASHBOARD_SAFE_CONTENT_TYPES,
 } from "../../../../apps/dashboard/src/lib/content-types.js";
 import {
+  isReplayTraceArtifact,
+  REPLAY_TRACE_ARTIFACT_NAMES as DASHBOARD_REPLAY_TRACE_ARTIFACT_NAMES,
+  REPLAY_TRACE_CONTENT_TYPES as DASHBOARD_REPLAY_TRACE_CONTENT_TYPES,
+} from "../../../../apps/dashboard/src/lib/artifacts/trace.js";
+import {
   AppendResultsPayloadSchema,
   AppendResultsResponseSchema,
   CompleteRunPayloadSchema,
   OpenRunPayloadSchema,
   OpenRunResponseSchema,
   MAX as DASHBOARD_MAX,
+  MAX_PLANNED_TESTS as DASHBOARD_MAX_PLANNED_TESTS,
+  MAX_RESULTS_PER_BATCH as DASHBOARD_MAX_RESULTS_PER_BATCH,
   QuarantineResponseSchema,
   RegisterArtifactsPayloadSchema,
   RegisterArtifactsResponseSchema,
@@ -25,13 +32,18 @@ import {
 import { MAX_CODEOWNERS_BYTES } from "../codeowners-file.js";
 import {
   MAX_MESSAGE,
+  MAX_PLANNED_TESTS,
+  MAX_RESULTS_PER_BATCH,
   MAX_STACK,
   MAX_TITLE,
   truncate,
   truncateNullable,
 } from "../limits.js";
 import {
+  isReplayTraceAttachment,
   normalizeContentType,
+  REPLAY_TRACE_ARTIFACT_NAMES as REPORTER_REPLAY_TRACE_ARTIFACT_NAMES,
+  REPLAY_TRACE_CONTENT_TYPES as REPORTER_REPLAY_TRACE_CONTENT_TYPES,
   SAFE_CONTENT_TYPES as REPORTER_SAFE_CONTENT_TYPES,
 } from "../attachments.js";
 import {
@@ -778,6 +790,38 @@ describe("reporter ↔ dashboard artifact content-type contract", () => {
   });
 });
 
+describe("reporter ↔ dashboard replay trace contract", () => {
+  it("keeps the canonical trace names and ZIP content types identical", () => {
+    expect(REPORTER_REPLAY_TRACE_ARTIFACT_NAMES).toEqual(
+      DASHBOARD_REPLAY_TRACE_ARTIFACT_NAMES,
+    );
+    expect(REPORTER_REPLAY_TRACE_CONTENT_TYPES).toEqual(
+      DASHBOARD_REPLAY_TRACE_CONTENT_TYPES,
+    );
+  });
+
+  it("keeps replay eligibility identical across the ingest boundary", () => {
+    for (const candidate of [
+      { name: "trace", contentType: "application/zip" },
+      { name: "trace.zip", contentType: "application/x-zip-compressed" },
+      { name: "trace", contentType: "Application/ZIP; charset=binary" },
+      { name: "trace", contentType: "text/plain" },
+      { name: "trace.zip", contentType: "image/png" },
+      { name: "diagnostics.zip", contentType: "application/zip" },
+    ]) {
+      expect(
+        isReplayTraceAttachment(candidate.name, candidate.contentType),
+      ).toBe(
+        isReplayTraceArtifact({
+          type: "trace",
+          name: candidate.name,
+          contentType: candidate.contentType,
+        }),
+      );
+    }
+  });
+});
+
 // The protocol version is a third hand-maintained copy of the contract: the
 // reporter stamps `PROTOCOL_VERSION` on every ingest request (client.ts), and
 // the dashboard independently maintains the `SUPPORTED_VERSIONS` accept-set it
@@ -867,6 +911,99 @@ describe("reporter ↔ dashboard wire shape (structural equivalence)", () => {
   });
 });
 
+// Per-attempt stdout/stderr capture: the live `buildPayload` reads Playwright's
+// `TestResult.stdout`/`stderr` (Array<string|Buffer>) off each attempt, decodes
+// + joins + truncates them, and the dashboard's `TestAttemptSchema` accepts the
+// result. These assert the capture happens on the REAL reporter path (not just
+// the seeder builder) and survives the wire parse — the console.log-reaches-MCP
+// contract end to end.
+describe("reporter ↔ dashboard captured stdout/stderr", () => {
+  it("buildPayload joins mixed string + Buffer stdout/stderr chunks per attempt", () => {
+    const test = makeTest({ id: "t1", outcome: "expected", title: "logs" });
+    const payload = buildPayload({
+      test,
+      results: [
+        makeResult({
+          status: "passed",
+          duration: 5,
+          retry: 0,
+          stdout: ["hello ", Buffer.from("world\n", "utf8")],
+          stderr: [Buffer.from("deprecation ", "utf8"), "warning\n"],
+        }),
+      ],
+    });
+
+    expect(payload.attempts[0]?.stdout).toBe("hello world\n");
+    expect(payload.attempts[0]?.stderr).toBe("deprecation warning\n");
+
+    const parsed = AppendResultsPayloadSchema.safeParse({ results: [payload] });
+    expect(parsed.success).toBe(true);
+    // The value survives the schema transform verbatim (under the cap).
+    expect(parsed.success && parsed.data.results[0]?.attempts[0]?.stdout).toBe(
+      "hello world\n",
+    );
+  });
+
+  it("emits null stdout/stderr for an attempt that wrote nothing", () => {
+    const test = makeTest({ id: "t1", outcome: "expected", title: "quiet" });
+    const payload = buildPayload({
+      test,
+      results: [makeResult({ status: "passed", duration: 1, retry: 0 })],
+    });
+    expect(payload.attempts[0]?.stdout).toBeNull();
+    expect(payload.attempts[0]?.stderr).toBeNull();
+  });
+
+  it("clamps an over-cap stdout stream to MAX.MESSAGE so it can't 413 the batch", () => {
+    const test = makeTest({ id: "t1", outcome: "expected", title: "chatty" });
+    const payload = buildPayload({
+      test,
+      results: [
+        makeResult({
+          status: "passed",
+          duration: 1,
+          retry: 0,
+          stdout: ["L".repeat(DASHBOARD_MAX.MESSAGE + 5000)],
+        }),
+      ],
+    });
+    expect((payload.attempts[0]?.stdout ?? "").length).toBe(
+      DASHBOARD_MAX.MESSAGE,
+    );
+    const parsed = AppendResultsPayloadSchema.safeParse({ results: [payload] });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("keeps per-attempt stdout distinct across a flaky test's attempts", () => {
+    const test = makeTest({
+      id: "t1",
+      outcome: "flaky",
+      title: "recovers",
+      retries: 1,
+    });
+    const payload = buildPayload({
+      test,
+      results: [
+        makeResult({
+          status: "failed",
+          duration: 30,
+          retry: 0,
+          errorMessage: "first try",
+          stdout: ["attempt 0 log\n"],
+        }),
+        makeResult({
+          status: "passed",
+          duration: 20,
+          retry: 1,
+          stdout: ["attempt 1 log\n"],
+        }),
+      ],
+    });
+    expect(payload.attempts[0]?.stdout).toBe("attempt 0 log\n");
+    expect(payload.attempts[1]?.stdout).toBe("attempt 1 log\n");
+  });
+});
+
 // The shape/enum/version checks above guard the wire STRUCTURE, but the
 // reporter's two numeric preflight caps — the idempotency-key length and the
 // CODEOWNERS byte size — are hand-mirrored from the dashboard's `MAX` table and
@@ -887,5 +1024,10 @@ describe("reporter ↔ dashboard preflight caps", () => {
     // env/payload value can't 400 the (reject-on-oversize) open-run call.
     expect(MAX_SHORT_FIELD_LENGTH).toBe(DASHBOARD_MAX.SHORT);
     expect(MAX_NAME_FIELD_LENGTH).toBe(DASHBOARD_MAX.NAME);
+  });
+
+  it("the reporter's batch + planned-test array caps equal the dashboard's", () => {
+    expect(MAX_RESULTS_PER_BATCH).toBe(DASHBOARD_MAX_RESULTS_PER_BATCH);
+    expect(MAX_PLANNED_TESTS).toBe(DASHBOARD_MAX_PLANNED_TESTS);
   });
 });

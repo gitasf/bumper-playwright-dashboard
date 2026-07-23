@@ -11,11 +11,13 @@
  *   - runs LIST (`/ws/project/:projectId`): a row streams its counts and flips to
  *     its terminal status on completion; a run opened after load appears live.
  *
- * WS rooms have NO event replay, so each test connects the room socket BEFORE
- * streaming (wait for the `websocket` event whose URL matches the room, then a
- * brief settle for React StrictMode's dev double-mount).
+ * WS rooms have no event replay, so each test connects the room socket before
+ * streaming: wait for the matching `websocket` event, then for a possible
+ * second connect (some mounts tear down and reopen the socket shortly after —
+ * e.g. a double-invoked effect in dev) so we don't stream into a socket that's
+ * about to be replaced.
  */
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Page, WebSocket } from "@playwright/test";
 
 import { expect, test } from "./fixtures";
 
@@ -95,23 +97,71 @@ async function completeRun(
 }
 
 /**
- * Navigate via `navigate()` and resolve once the room WebSocket whose URL
- * contains `fragment` (`/ws/run/` or `/ws/project/`) is open, then settle for
- * the StrictMode connect→teardown→reconnect so we don't stream into a torn-down
- * socket. Must wrap the navigation so the listener is attached before connect.
+ * Navigate via `navigate()`, resolve once the room WebSocket whose URL
+ * contains `fragment` (`/ws/run/` or `/ws/project/`) is open, then wait
+ * (briefly, bounded) for a possible second connect before returning.
+ *
+ * Some mounts tear down and reopen the socket shortly after the first connect
+ * (e.g. a double-invoked effect in dev). WS rooms have no event replay, so
+ * streaming into a socket about to be torn down loses those events for good —
+ * retrying `expect()` can't recover them. Waiting for the second connect (when
+ * it happens) means the caller streams against the socket that survives.
+ *
+ * The listener is attached before `navigate()` and stays attached across both
+ * waits: Playwright fires `websocket` once per socket at creation, so a
+ * listener attached only after the first event could miss a reconnect between.
  */
 async function gotoAndAwaitRoom(
   page: Page,
   navigate: () => Promise<void>,
   fragment: string,
 ): Promise<void> {
-  const ready = page.waitForEvent("websocket", {
-    predicate: (ws) => ws.url().includes(fragment),
-    timeout: 20_000,
-  });
-  await navigate();
-  await ready;
-  await page.waitForTimeout(800);
+  const matches: WebSocket[] = [];
+  // Resolvers waiting for `matches.length` to reach some target count; woken
+  // (and pruned) on every matching socket, not just the next one.
+  let pending: Array<{ target: number; wake: () => void }> = [];
+  const onWebSocket = (ws: WebSocket): void => {
+    if (!ws.url().includes(fragment)) return;
+    matches.push(ws);
+    pending = pending.filter(({ target, wake }) => {
+      if (matches.length < target) return true;
+      wake();
+      return false;
+    });
+  };
+  page.on("websocket", onWebSocket);
+
+  const waitForCount = (target: number, timeoutMs: number): Promise<void> => {
+    if (matches.length >= target) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending = pending.filter((p) => p.wake !== wake);
+        reject(
+          new Error(
+            `timed out waiting for ${target} websocket(s) matching "${fragment}" (got ${matches.length})`,
+          ),
+        );
+      }, timeoutMs);
+      const wake = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      pending.push({ target, wake });
+    });
+  };
+
+  try {
+    // CI's shared preview can be slow to open the void/ws socket under
+    // parallel load; give it more room there than a responsive local server.
+    const firstConnectTimeout = process.env.CI ? 30_000 : 20_000;
+    await navigate();
+    await waitForCount(1, firstConnectTimeout);
+    // A reconnect (if any) lands within a render tick or two. `.catch()` lets
+    // the helper proceed with just the first socket when no remount occurs.
+    await waitForCount(2, 2_000).catch(() => null);
+  } finally {
+    page.off("websocket", onWebSocket);
+  }
 }
 
 test.describe("Realtime UI updates (void/ws rooms)", () => {
@@ -129,7 +179,7 @@ test.describe("Realtime UI updates (void/ws rooms)", () => {
       // Header (sticky top-0 H1) status glyph starts on "running". StatusGlyph
       // exposes role=img + aria-label; `exact` avoids colliding with the
       // OutcomeBar (also role=img, name "…passed, …failed, …").
-      const header = page.locator("div.sticky.top-0");
+      const header = page.getByTestId("run-header");
       await expect(
         header.getByRole("img", { name: "running", exact: true }),
       ).toBeVisible();

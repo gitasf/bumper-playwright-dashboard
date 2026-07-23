@@ -74,6 +74,15 @@ describe("rate-limit config ⇆ code", () => {
     }
   });
 
+  it("keeps the session tenant-API gate (isTenantApiRoute) wired in 03", () => {
+    // The `/api/t/*` family is cookie-authed (no Bearer key stash) and once
+    // fell through 03 entirely — leaving the export/runs CSV cursor walk
+    // unthrottled. Its gate must consume the predicate from ingest-routes.ts
+    // (single source of truth) rather than a re-inlined regex.
+    const gate = readText("middleware/03.rate-limit.ts");
+    expect(gate).toContain("isTenantApiRoute");
+  });
+
   it("orders budgets strict→loose: AUTH < API < ARTIFACT < INGEST_IP", () => {
     const limitOf = (name: string): number => {
       const entry = wrangler.ratelimits.find((r) => r.name === name);

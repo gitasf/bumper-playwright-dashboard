@@ -97,7 +97,7 @@ export function OutcomeBar({
   emptyDash = false,
 }: OutcomeBarProps) {
   if (emptyDash && isOutcomeEmpty({ passed, failed, flaky, skipped, total })) {
-    return <div className="font-mono text-[10px] text-muted-foreground">—</div>;
+    return <div className="font-mono text-micro text-fg-3">—</div>;
   }
   const segments = outcomeBarSegments({
     passed,
@@ -114,17 +114,16 @@ export function OutcomeBar({
       style={{ height, minWidth, maxWidth }}
       title={`${passed} passed · ${failed} failed · ${flaky} flaky · ${skipped} skipped`}
     >
-      {segments.map((s) =>
-        s.n > 0 ? (
-          <div
-            key={s.key}
-            style={{
-              width: `${s.widthPercent}%`,
-              background: s.color,
-            }}
-          />
-        ) : null,
-      )}
+      {segments.map((s) => (
+        <div
+          key={s.key}
+          className="transition-[width] duration-200 ease-out motion-reduce:transition-none"
+          style={{
+            width: `${s.widthPercent}%`,
+            background: s.color,
+          }}
+        />
+      ))}
     </div>
   );
 }

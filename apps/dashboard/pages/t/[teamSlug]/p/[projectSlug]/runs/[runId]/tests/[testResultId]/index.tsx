@@ -1,4 +1,5 @@
 import { Link, PREFETCH_REALTIME } from "@/components/ui/link";
+import type React from "react";
 import { use } from "react";
 import {
   ArtifactsRail,
@@ -10,12 +11,13 @@ import {
   type AttemptTabItem,
 } from "@/components/attempt-tabs";
 import { DeferredSection } from "@/components/defer-error-boundary";
+import { OwnerAssignControl } from "@/components/owner-assign-popover";
 import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
 import { QuarantineControl } from "@/components/quarantine-control";
 import {
   RunHistoryChart,
   RunHistoryChartSkeleton,
-} from "@/components/run-history-chart";
+} from "@/components/run/history-chart";
 import { StatusBadge } from "@/components/status-badge";
 import { TestErrorAlert } from "@/components/test-error-alert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -59,10 +61,10 @@ export default function TestDetailPage(props: Props) {
     const base = `/t/${project.teamSlug}/p/${project.projectSlug}`;
     return (
       <div className="mx-auto max-w-6xl p-6 sm:p-8">
-        <h1 className="mb-2 font-semibold text-2xl">Test not found</h1>
+        <h1 className="mb-2 font-semibold text-title">Test not found</h1>
         <Link
           href={`${base}/runs/${runId}`}
-          className="text-foreground underline-offset-4 hover:underline"
+          className="text-fg-1 underline-offset-4 hover:underline"
         >
           Back to run
         </Link>
@@ -79,44 +81,41 @@ export default function TestDetailPage(props: Props) {
     quarantine,
     quarantineRedirectTo,
     quarantineError,
+    owners,
+    assignableMembers,
+    ownerError,
     tags: tagRows,
     annotations: annotationRows,
-    attempts: attemptRows,
+    attemptSummaries,
+    primaryAttempt,
     history,
     artifacts,
+    attemptDetails,
   } = props;
 
   const base = `/t/${project.teamSlug}/p/${project.projectSlug}`;
   const quarantineActionPath = `/api/t/${project.teamSlug}/p/${project.projectSlug}/quarantine`;
+  const ownerActionPath = `/api/t/${project.teamSlug}/p/${project.projectSlug}/owners`;
 
-  // Attempt count from the eager per-attempt rows; the fallback trusts the
-  // reporter's `retryCount + 1`. (Formerly also `max`'d with an artifact-derived
-  // `maxObservedAttempt`, but that now streams in the deferred rail — the eager
-  // tab scaffold must not read it, or the whole left column would suspend.)
+  // Attempt count from the eager lightweight rows; fallback trusts the
+  // reporter's `retryCount + 1`. (Not `max`'d with the artifact-derived
+  // count anymore — that streams in the deferred rail, and reading it here
+  // would suspend the whole left column.)
   const totalAttempts =
-    attemptRows.length > 0 ? attemptRows.length : result.retryCount + 1;
+    attemptSummaries.length > 0
+      ? attemptSummaries.length
+      : result.retryCount + 1;
 
-  const attemptsByIndex = new Map<
-    number,
-    {
-      status: string;
-      errorMessage: string | null;
-      errorStack: string | null;
-    }
-  >();
-  for (const row of attemptRows) {
-    attemptsByIndex.set(row.attempt, {
-      status: row.status,
-      errorMessage: row.errorMessage,
-      errorStack: row.errorStack,
-    });
+  const attemptStatusByIndex = new Map<number, string>();
+  for (const row of attemptSummaries) {
+    attemptStatusByIndex.set(row.attempt, row.status);
   }
 
   const allAttempts = Array.from({ length: totalAttempts }, (_, i) => i);
   // Which attempt carries the error when there are no per-attempt rows to fall
   // back on — a per-attempt render concern kept local to this page.
   const fallbackErrorOn: number | null =
-    attemptRows.length === 0
+    attemptSummaries.length === 0
       ? result.status === "failed" || result.status === "timedout"
         ? totalAttempts - 1
         : result.status === "flaky"
@@ -124,6 +123,10 @@ export default function TestDetailPage(props: Props) {
           : null
       : null;
   const defaultTab = String(totalAttempts - 1);
+  // Default-tab attempt's error ships eager (`primaryAttempt`); every other
+  // attempt's error text streams behind `attemptDetails`.
+  const primaryAttemptNumber =
+    attemptSummaries.length > 0 ? totalAttempts - 1 : null;
 
   const { testTitle } = parseTitleSegments(
     result.title,
@@ -135,44 +138,34 @@ export default function TestDetailPage(props: Props) {
   )} --grep ${JSON.stringify(testTitle)}`;
 
   const tabValues = allAttempts.map((a) => String(a));
-  const resolveAttemptView = (attempt: number) => {
-    const row = attemptsByIndex.get(attempt);
-    if (row) {
-      return {
-        status: normaliseAttemptRowStatus(row.status),
-        errorMessage: row.errorMessage,
-        errorStack: row.errorStack,
-      };
-    }
+  const resolveAttemptStatus = (attempt: number): AttemptRowStatus => {
+    const status = attemptStatusByIndex.get(attempt);
+    if (status) return normaliseAttemptRowStatus(status);
     const finalStatus = result.status;
-    const inferred: AttemptRowStatus =
-      finalStatus === "skipped"
-        ? "skipped"
-        : finalStatus === "passed"
-          ? "passed"
-          : finalStatus === "flaky"
-            ? attempt === totalAttempts - 1
-              ? "passed"
-              : "failed"
-            : "failed";
-    const isErrorOn = fallbackErrorOn === attempt;
-    return {
-      status: inferred,
-      errorMessage: isErrorOn ? result.errorMessage : null,
-      errorStack: isErrorOn ? result.errorStack : null,
-    };
+    return finalStatus === "skipped"
+      ? "skipped"
+      : finalStatus === "passed"
+        ? "passed"
+        : finalStatus === "flaky"
+          ? attempt === totalAttempts - 1
+            ? "passed"
+            : "failed"
+          : "failed";
   };
   const tabItems: AttemptTabItem[] = allAttempts.map((attempt) => ({
     value: String(attempt),
-    status: resolveAttemptView(attempt).status,
+    status: resolveAttemptStatus(attempt),
     label: `Attempt ${attempt + 1}`,
     finalSuffix:
       attempt === totalAttempts - 1 && totalAttempts > 1 ? "(Final)" : null,
   }));
 
   return (
-    <div className="flex flex-col">
-      <DetailHeaderBar className="justify-between gap-4 border-b border-border">
+    /* Single page-level scroller — the AppLayout <main> is overflow-hidden, so
+     * without this the page clips at the viewport with no scrollbar. Matches
+     * the runs/[runId] pattern: only the H1 bar stays pinned. */
+    <div className="flex flex-1 min-h-0 flex-col overflow-y-auto">
+      <DetailHeaderBar className="sticky top-0 z-30 justify-between gap-4 border-b border-line-1 bg-bg-0">
         <div className="flex min-w-0 items-center gap-3">
           <HeaderCrumbs
             items={[
@@ -185,23 +178,35 @@ export default function TestDetailPage(props: Props) {
             ]}
           />
           <StatusBadge status={result.status} />
-          <h1 className="min-w-0 truncate text-[17px] font-semibold tracking-[-0.2px]">
+          <h1 className="min-w-0 truncate text-heading font-semibold tracking-[-0.2px]">
             {testTitle}
           </h1>
         </div>
-        <QuarantineControl
-          actionPath={quarantineActionPath}
-          canManage={project.canManageQuarantine}
-          quarantine={quarantine}
-          redirectTo={quarantineRedirectTo}
-          testId={result.testId}
-          title={testTitle}
-        />
+        <div className="flex min-w-0 shrink-0 items-center gap-3">
+          <OwnerAssignControl
+            actionPath={ownerActionPath}
+            canManage={project.canManageOwners}
+            members={assignableMembers}
+            owners={owners}
+            redirectTo={quarantineRedirectTo}
+            team={{ slug: project.teamSlug, name: project.teamName }}
+            testId={result.testId}
+            title={testTitle}
+          />
+          <QuarantineControl
+            actionPath={quarantineActionPath}
+            canManage={project.canManageQuarantine}
+            quarantine={quarantine}
+            redirectTo={quarantineRedirectTo}
+            testId={result.testId}
+            title={testTitle}
+          />
+        </div>
       </DetailHeaderBar>
 
       {/* Metadata + tags/annotations, below the title bar. */}
-      <div className="shrink-0 border-b border-border px-6 pt-3 pb-3">
-        <div className="font-mono text-muted-foreground text-xs">
+      <div className="shrink-0 border-b border-line-1 px-6 pt-3 pb-3">
+        <div className="font-mono text-fg-3 text-xs">
           {result.file}
           {result.projectName ? ` · ${result.projectName}` : ""} ·{" "}
           {formatDuration(result.durationMs)}
@@ -210,6 +215,11 @@ export default function TestDetailPage(props: Props) {
         {quarantineError && (
           <Alert className="mt-3" variant="error">
             <AlertDescription>{quarantineError}</AlertDescription>
+          </Alert>
+        )}
+        {ownerError && (
+          <Alert className="mt-3" variant="error">
+            <AlertDescription>{ownerError}</AlertDescription>
           </Alert>
         )}
         {(tagRows.length > 0 || annotationRows.length > 0) && (
@@ -252,16 +262,16 @@ export default function TestDetailPage(props: Props) {
         </DeferredSection>
       </div>
 
-      <div className="flex flex-row gap-0">
-        <section className="flex-[3] min-w-0 flex flex-col border-r border-border bg-background">
+      <div className="flex flex-1 flex-row gap-0">
+        <section className="flex-[3] min-w-0 flex flex-col border-r border-line-1 bg-bg-0">
           {totalAttempts > 1 ? (
-            <div className="shrink-0 border-b border-border px-3 pt-2">
+            <div className="shrink-0 border-b border-line-1 px-3 pt-2">
               <AttemptTabsBar items={tabItems} defaultValue={defaultTab} />
             </div>
           ) : null}
           <div>
             {allAttempts.map((attempt) => {
-              const view = resolveAttemptView(attempt);
+              const label = attemptLabel(attempt, totalAttempts);
               return (
                 <AttemptPanel
                   key={attempt}
@@ -270,17 +280,40 @@ export default function TestDetailPage(props: Props) {
                   defaultValue={defaultTab}
                   className="p-5"
                 >
-                  {view.errorMessage ? (
-                    <TestErrorAlert
-                      errorMessage={view.errorMessage}
-                      errorStack={view.errorStack}
+                  {attemptSummaries.length === 0 ? (
+                    // Legacy data with no per-attempt rows — eager
+                    // `result`-level fallback, nothing to defer.
+                    <AttemptErrorContent
+                      errorMessage={
+                        fallbackErrorOn === attempt ? result.errorMessage : null
+                      }
+                      errorStack={
+                        fallbackErrorOn === attempt ? result.errorStack : null
+                      }
+                      label={label}
+                    />
+                  ) : attempt === primaryAttemptNumber ? (
+                    // Default tab's error — eager, no Suspense.
+                    <AttemptErrorContent
+                      errorMessage={primaryAttempt?.errorMessage ?? null}
+                      errorStack={primaryAttempt?.errorStack ?? null}
+                      label={label}
                     />
                   ) : (
-                    <p className="text-muted-foreground text-sm">
-                      {attemptLabel(attempt, totalAttempts) === "only attempt"
-                        ? "No error details recorded."
-                        : `No error details recorded for this attempt (${attemptLabel(attempt, totalAttempts)}).`}
-                    </p>
+                    // Non-default attempts mount only when their tab is
+                    // active (`AttemptPanel` renders `null` while inactive),
+                    // so this fallback rarely shows — it covers the case where
+                    // `attemptDetails` hasn't resolved when the tab is clicked.
+                    <DeferredSection
+                      resetKey={`${testResultId}:${attempt}`}
+                      skeleton={<AttemptErrorSkeleton />}
+                    >
+                      <DeferredAttemptError
+                        attempt={attempt}
+                        attemptDetails={attemptDetails}
+                        label={label}
+                      />
+                    </DeferredSection>
                   )}
                 </AttemptPanel>
               );
@@ -295,6 +328,7 @@ export default function TestDetailPage(props: Props) {
             <TestArtifactsRail
               allAttempts={allAttempts}
               artifacts={artifacts}
+              attemptDetails={attemptDetails}
               defaultTab={defaultTab}
               environment={{
                 browser: result.projectName,
@@ -307,6 +341,64 @@ export default function TestDetailPage(props: Props) {
           </DeferredSection>
         </aside>
       </div>
+    </div>
+  );
+}
+
+/** Attempt panel's "error alert or empty state" body — shared by the eager
+ *  primary/fallback paths and the deferred non-primary path so they match. */
+function AttemptErrorContent({
+  errorMessage,
+  errorStack,
+  label,
+}: {
+  errorMessage: string | null;
+  errorStack: string | null;
+  label: string;
+}): React.ReactElement {
+  if (!errorMessage) {
+    return (
+      <p className="text-fg-3 text-sm">
+        {label === "only attempt"
+          ? "No error details recorded."
+          : `No error details recorded for this attempt (${label}).`}
+      </p>
+    );
+  }
+  return <TestErrorAlert errorMessage={errorMessage} errorStack={errorStack} />;
+}
+
+/** Deferred error body for non-primary attempts. Reads `attemptDetails` via
+ *  `use()` — the same deferred prop the artifacts rail reads, so it fetches
+ *  once. */
+function DeferredAttemptError({
+  attempt,
+  attemptDetails,
+  label,
+}: {
+  attempt: number;
+  attemptDetails: OkProps["attemptDetails"];
+  label: string;
+}): React.ReactElement {
+  const details = use(attemptDetails);
+  const row = details.find((d) => d.attempt === attempt);
+  return (
+    <AttemptErrorContent
+      errorMessage={row?.errorMessage ?? null}
+      errorStack={row?.errorStack ?? null}
+      label={label}
+    />
+  );
+}
+
+/** Fallback for a deferred attempt error panel — sized like `TestErrorAlert`'s
+ *  title + first stack lines so switching tabs doesn't jump the layout. */
+function AttemptErrorSkeleton(): React.ReactElement {
+  return (
+    <div className="rounded-[9px] border border-line-1 bg-bg-1 p-4">
+      <Skeleton className="mb-3 h-4 w-2/3" />
+      <Skeleton className="mb-1.5 h-3 w-full" />
+      <Skeleton className="h-3 w-5/6" />
     </div>
   );
 }
@@ -362,9 +454,14 @@ function HistoryChartRegion({
  *  fan-out via `use()`; the active-attempt panel is chosen off the `?attempt=`
  *  URL param, exactly like the eager left column, so the Suspense boundary
  *  between them is invisible. Reproduction + environment are eager-derived and
- *  passed in. */
+ *  passed in.
+ *
+ *  Also reads `attemptDetails` (same deferred prop the left column reads) for
+ *  the per-attempt stdout/stderr in the Output section — the only place those
+ *  render, so reusing that promise adds no extra query or Suspense boundary. */
 function TestArtifactsRail({
   artifacts,
+  attemptDetails,
   allAttempts,
   tabValues,
   defaultTab,
@@ -372,6 +469,7 @@ function TestArtifactsRail({
   environment,
 }: {
   artifacts: OkProps["artifacts"];
+  attemptDetails: OkProps["attemptDetails"];
   allAttempts: number[];
   tabValues: string[];
   defaultTab: string;
@@ -379,13 +477,23 @@ function TestArtifactsRail({
   environment: EnvironmentFields;
 }) {
   const { artifactGroups } = use(artifacts);
+  const attemptDetailRows = use(attemptDetails);
   const groupsByAttempt = new Map<number, AttemptArtifactGroup>(
     artifactGroups.map((g) => [g.attempt, g] as const),
+  );
+  const outputByAttempt = new Map<
+    number,
+    { stdout: string | null; stderr: string | null }
+  >(
+    attemptDetailRows.map(
+      (d) => [d.attempt, { stdout: d.stdout, stderr: d.stderr }] as const,
+    ),
   );
   return (
     <>
       {allAttempts.map((attempt) => {
         const group = groupsByAttempt.get(attempt);
+        const output = outputByAttempt.get(attempt);
         return (
           <AttemptPanel
             key={attempt}
@@ -398,6 +506,8 @@ function TestArtifactsRail({
               copyPrompt={group?.copyPrompt ?? null}
               reproduceCommand={reproduceCommand}
               environment={environment}
+              stdout={output?.stdout ?? null}
+              stderr={output?.stderr ?? null}
             />
           </AttemptPanel>
         );
@@ -413,14 +523,14 @@ function TestArtifactsRail({
 function ArtifactsRailSkeleton() {
   return (
     <div className="flex flex-col">
-      <section className="p-5 border-b border-border">
+      <section className="p-5 border-b border-line-1">
         <Skeleton className="mb-3 h-2.5 w-16" />
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8 w-full" />
           <Skeleton className="h-8 w-full" />
         </div>
       </section>
-      <section className="p-5 border-b border-border">
+      <section className="p-5 border-b border-line-1">
         <Skeleton className="mb-3 h-2.5 w-20" />
         <Skeleton className="h-[68px] w-full rounded-md" />
       </section>

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
+import { MAX_MESSAGE } from "../limits.js";
 import {
   buildAttempt,
   buildCompleteRunPayload,
@@ -14,7 +15,7 @@ const META: RunMeta = {
 };
 
 describe("buildAttempt", () => {
-  it("fills omitted error fields with null", () => {
+  it("fills omitted error + stdio fields with null", () => {
     expect(
       buildAttempt({ attempt: 0, status: "passed", durationMs: 12 }),
     ).toEqual({
@@ -23,10 +24,12 @@ describe("buildAttempt", () => {
       durationMs: 12,
       errorMessage: null,
       errorStack: null,
+      stdout: null,
+      stderr: null,
     });
   });
 
-  it("preserves supplied error fields", () => {
+  it("preserves supplied error + stdio fields", () => {
     expect(
       buildAttempt({
         attempt: 1,
@@ -34,6 +37,8 @@ describe("buildAttempt", () => {
         durationMs: 30,
         errorMessage: "boom",
         errorStack: "at x:1:1",
+        stdout: "hello from the test",
+        stderr: "a warning",
       }),
     ).toEqual({
       attempt: 1,
@@ -41,7 +46,21 @@ describe("buildAttempt", () => {
       durationMs: 30,
       errorMessage: "boom",
       errorStack: "at x:1:1",
+      stdout: "hello from the test",
+      stderr: "a warning",
     });
+  });
+
+  it("truncates over-cap stdout/stderr to MAX_MESSAGE (parity with error text)", () => {
+    const attempt = buildAttempt({
+      attempt: 0,
+      status: "passed",
+      durationMs: 1,
+      stdout: "o".repeat(MAX_MESSAGE + 500),
+      stderr: "e".repeat(MAX_MESSAGE + 500),
+    });
+    expect(attempt.stdout).toHaveLength(MAX_MESSAGE);
+    expect(attempt.stderr).toHaveLength(MAX_MESSAGE);
   });
 });
 
@@ -90,6 +109,8 @@ describe("buildResult", () => {
       durationMs: 20,
       errorMessage: null,
       errorStack: null,
+      stdout: null,
+      stderr: null,
     });
   });
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ALL_BRANCHES,
   parseBranchParam,
-} from "@/components/run-history-branch-filter.shared";
+} from "@/components/run/history-branch-filter.shared";
 
 describe("parseBranchParam", () => {
   it("returns null for the ALL_BRANCHES sentinel", () => {

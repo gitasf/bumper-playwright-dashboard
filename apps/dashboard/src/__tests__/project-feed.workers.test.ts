@@ -27,6 +27,7 @@ function row(over: Partial<RunListRowData> = {}): RunListRowData {
     flaky: 0,
     skipped: 0,
     totalTests: 0,
+    expectedTotalTests: null,
     durationMs: 0,
     completedAt: null,
     createdAt: 1_700_000_000,
@@ -49,6 +50,7 @@ function view(over: Partial<ProjectFeedView> = {}): ProjectFeedView {
 
 const summary = {
   totalTests: 5,
+  expectedTotalTests: null,
   passed: 4,
   failed: 1,
   flaky: 0,

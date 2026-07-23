@@ -1,77 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import {
-  buildPageWindow,
-  resolveOffsetPage,
-  shouldRefetchClampedPage,
-} from "@/lib/page-window";
-
-describe("buildPageWindow", () => {
-  it("returns the full sequence with no ellipses when total <= 7", () => {
-    expect(buildPageWindow(1, 1)).toEqual([1]);
-    expect(buildPageWindow(3, 5)).toEqual([1, 2, 3, 4, 5]);
-    expect(buildPageWindow(4, 7)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-  });
-
-  it("returns an empty sequence for zero pages", () => {
-    expect(buildPageWindow(1, 0)).toEqual([]);
-  });
-
-  it("elides only the right side when current is near the start", () => {
-    expect(buildPageWindow(1, 10)).toEqual([1, 2, "ellipsis", 10]);
-    expect(buildPageWindow(2, 10)).toEqual([1, 2, 3, "ellipsis", 10]);
-    // current=3 → window reaches page 2, so no left ellipsis yet.
-    expect(buildPageWindow(3, 10)).toEqual([1, 2, 3, 4, "ellipsis", 10]);
-  });
-
-  it("elides only the left side when current is near the end", () => {
-    expect(buildPageWindow(10, 10)).toEqual([1, "ellipsis", 9, 10]);
-    expect(buildPageWindow(9, 10)).toEqual([1, "ellipsis", 8, 9, 10]);
-    // current=8 → window reaches page 9, so no right ellipsis.
-    expect(buildPageWindow(8, 10)).toEqual([1, "ellipsis", 7, 8, 9, 10]);
-  });
-
-  it("elides both sides when current is in the middle", () => {
-    expect(buildPageWindow(5, 10)).toEqual([
-      1,
-      "ellipsis",
-      4,
-      5,
-      6,
-      "ellipsis",
-      10,
-    ]);
-    expect(buildPageWindow(50, 100)).toEqual([
-      1,
-      "ellipsis",
-      49,
-      50,
-      51,
-      "ellipsis",
-      100,
-    ]);
-  });
-
-  it("always includes the first and last page", () => {
-    for (const current of [1, 4, 8, 15]) {
-      const window = buildPageWindow(current, 15);
-      expect(window[0]).toBe(1);
-      expect(window[window.length - 1]).toBe(15);
-    }
-  });
-
-  it("kicks in ellipses exactly at total = 8", () => {
-    expect(buildPageWindow(1, 8)).toEqual([1, 2, "ellipsis", 8]);
-    expect(buildPageWindow(4, 8)).toEqual([
-      1,
-      "ellipsis",
-      3,
-      4,
-      5,
-      "ellipsis",
-      8,
-    ]);
-  });
-});
+import { paginateOffsetTable, resolveOffsetPage } from "@/lib/page-window";
 
 describe("resolveOffsetPage", () => {
   it("resolves the first page of a full set", () => {
@@ -236,50 +164,314 @@ describe("resolveOffsetPage", () => {
   });
 });
 
-describe("shouldRefetchClampedPage", () => {
-  it("is true when an over-the-end page fetched empty but rows exist", () => {
-    expect(
-      shouldRefetchClampedPage({
-        total: 120,
-        requestedPage: 99,
-        currentPage: 3,
-        fetchedRowCount: 0,
-      }),
-    ).toBe(true);
-  });
+describe("paginateOffsetTable", () => {
+  interface Row {
+    id: number;
+  }
 
-  it("is false when the requested page returned rows", () => {
-    expect(
-      shouldRefetchClampedPage({
-        total: 120,
-        requestedPage: 3,
-        currentPage: 3,
-        fetchedRowCount: 20,
-      }),
-    ).toBe(false);
-  });
+  /**
+   * Build a fake `pageQuery` over a virtual table of `total` sequential rows.
+   * Records every `(offset)` it's called at so a test can assert the clamp /
+   * refetch behaviour, and slices the virtual table like a real `LIMIT/OFFSET`.
+   */
+  function fakeTable(total: number, pageSize: number) {
+    const offsets: number[] = [];
+    const pageQuery = (offset: number, limit: number): Promise<Row[]> => {
+      offsets.push(offset);
+      expect(limit).toBe(pageSize);
+      const rows: Row[] = [];
+      for (let i = offset; i < Math.min(offset + limit, total); i++) {
+        rows.push({ id: i });
+      }
+      return Promise.resolve(rows);
+    };
+    return { offsets, pageQuery };
+  }
 
-  it("is false on the in-range first page of an empty set", () => {
-    expect(
-      shouldRefetchClampedPage({
+  const identity = (rows: Row[]): Row[] => rows;
+
+  describe("known-number count", () => {
+    it("resolves a middle page's offset, fromRow/toRow, and hasPrev/hasNext", async () => {
+      const { offsets, pageQuery } = fakeTable(120, 50);
+      const page = await paginateOffsetTable({
+        page: 2,
+        pageSize: 50,
+        count: 120,
+        pageQuery,
+        mapRows: identity,
+      });
+      expect(offsets).toEqual([50]);
+      expect(page.rows).toHaveLength(50);
+      expect(page).toMatchObject({
+        total: 120,
+        currentPage: 2,
+        totalPages: 3,
+        fromRow: 51,
+        toRow: 100,
+        hasPrev: true,
+        hasNext: true,
+      });
+    });
+
+    it("skips the query entirely for a known-empty table", async () => {
+      const { offsets, pageQuery } = fakeTable(0, 50);
+      const page = await paginateOffsetTable({
+        page: 1,
+        pageSize: 50,
+        count: 0,
+        pageQuery,
+        mapRows: identity,
+      });
+      // total is known to be 0 → no slice query is issued.
+      expect(offsets).toEqual([]);
+      expect(page.rows).toEqual([]);
+      expect(page).toMatchObject({
         total: 0,
-        requestedPage: 1,
         currentPage: 1,
-        fetchedRowCount: 0,
-      }),
-    ).toBe(false);
+        totalPages: 1,
+        fromRow: 0,
+        toRow: 0,
+        hasPrev: false,
+        hasNext: false,
+      });
+    });
+
+    it("clamps an over-the-end page and fetches ONCE at the clamped offset", async () => {
+      const { offsets, pageQuery } = fakeTable(120, 50);
+      const page = await paginateOffsetTable({
+        page: 99,
+        pageSize: 50,
+        count: 120,
+        pageQuery,
+        mapRows: identity,
+      });
+      // Known total ⇒ clamp-first: the single fetch already runs at the last
+      // page's offset (100), never at the requested (over-the-end) offset.
+      expect(offsets).toEqual([100]);
+      expect(page.rows).toHaveLength(20);
+      expect(page).toMatchObject({
+        currentPage: 3,
+        totalPages: 3,
+        fromRow: 101,
+        toRow: 120,
+        hasNext: false,
+      });
+    });
+
+    it("accepts a `() => Promise<number>` count query", async () => {
+      const { offsets, pageQuery } = fakeTable(45, 20);
+      let counted = 0;
+      const page = await paginateOffsetTable({
+        page: 3,
+        pageSize: 20,
+        count: () => {
+          counted++;
+          return Promise.resolve(45);
+        },
+        pageQuery,
+        mapRows: identity,
+      });
+      expect(counted).toBe(1);
+      expect(offsets).toEqual([40]);
+      expect(page).toMatchObject({
+        total: 45,
+        currentPage: 3,
+        totalPages: 3,
+        fromRow: 41,
+        toRow: 45,
+      });
+    });
+
+    it("derives toRow from the MAPPED length, not the raw slice", async () => {
+      const { pageQuery } = fakeTable(120, 50);
+      const page = await paginateOffsetTable({
+        page: 1,
+        pageSize: 50,
+        count: 120,
+        pageQuery,
+        // Drop odd ids: 50 fetched → 25 mapped, so toRow must be 25 (not 50).
+        mapRows: (rows) => rows.filter((r) => r.id % 2 === 0),
+      });
+      expect(page.rows).toHaveLength(25);
+      expect(page.toRow).toBe(25);
+      expect(page.fromRow).toBe(1);
+    });
   });
 
-  it("is false when the requested page was not clamped", () => {
-    // requestedPage === currentPage → no clamp happened, so an empty slice is
-    // genuine (e.g. a filtered page with no matches), not an over-the-end ask.
-    expect(
-      shouldRefetchClampedPage({
-        total: 50,
-        requestedPage: 1,
+  describe("fromSlice count (windowed count(*) OVER () idiom)", () => {
+    it("derives the total off the slice and never refetches on a genuine last page", async () => {
+      const { offsets, pageQuery } = fakeTable(45, 20);
+      const page = await paginateOffsetTable<Row, Row>({
+        page: 3,
+        pageSize: 20,
+        // A real windowed count rides on the rows; here it's constant so the
+        // last (partial) page still reports the true total.
+        count: { fromSlice: () => 45 },
+        pageQuery,
+        mapRows: identity,
+      });
+      expect(offsets).toEqual([40]);
+      expect(page.rows).toHaveLength(5);
+      expect(page).toMatchObject({
+        total: 45,
+        currentPage: 3,
+        totalPages: 3,
+        fromRow: 41,
+        toRow: 45,
+      });
+    });
+
+    it("refetches the clamped last page when an over-the-end fetch came back empty", async () => {
+      const { offsets } = fakeTable(0, 50);
+      // Total (120) known independently, but an over-the-end offset returns no
+      // rows: the empty first fetch triggers a re-fetch at the clamped offset.
+      const pageQuery = (offset: number, limit: number): Promise<Row[]> => {
+        offsets.push(offset);
+        expect(limit).toBe(50);
+        const rows: Row[] = [];
+        for (let i = offset; i < Math.min(offset + limit, 120); i++) {
+          rows.push({ id: i });
+        }
+        return Promise.resolve(rows);
+      };
+      const page = await paginateOffsetTable<Row, Row>({
+        page: 99,
+        pageSize: 50,
+        count: { fromSlice: () => 120 },
+        pageQuery,
+        mapRows: identity,
+      });
+      // First at the requested over-the-end offset (4900 → empty), then a
+      // refetch at the clamped last-page offset (100).
+      expect(offsets).toEqual([4900, 100]);
+      expect(page.rows).toHaveLength(20);
+      expect(page).toMatchObject({
+        total: 120,
+        currentPage: 3,
+        totalPages: 3,
+        fromRow: 101,
+        toRow: 120,
+      });
+    });
+
+    it("degrades an over-the-end page to empty when the slice carries the count (total reads 0)", async () => {
+      // The catalog's real behaviour: the windowed count is 0 for an empty
+      // slice, so total reads 0 and there's nothing to refetch — a single fetch.
+      const { offsets, pageQuery } = fakeTable(120, 50);
+      const page = await paginateOffsetTable<Row, Row>({
+        page: 99,
+        pageSize: 50,
+        count: { fromSlice: (rows) => (rows[0] ? 120 : 0) },
+        pageQuery,
+        mapRows: identity,
+      });
+      expect(offsets).toEqual([4900]);
+      expect(page.rows).toEqual([]);
+      expect(page).toMatchObject({
+        total: 0,
         currentPage: 1,
-        fetchedRowCount: 0,
-      }),
-    ).toBe(false);
+        totalPages: 1,
+        fromRow: 0,
+        toRow: 0,
+      });
+    });
+
+    it("does not refetch the in-range first page of a genuinely empty set", async () => {
+      // total reads 0 and the requested page (1) is already the clamped
+      // page (1) — not an over-the-end ask, so a single fetch is enough.
+      const offsets: number[] = [];
+      const pageQuery = (offset: number, limit: number): Promise<Row[]> => {
+        offsets.push(offset);
+        expect(limit).toBe(50);
+        return Promise.resolve([]);
+      };
+      const page = await paginateOffsetTable<Row, Row>({
+        page: 1,
+        pageSize: 50,
+        count: { fromSlice: () => 0 },
+        pageQuery,
+        mapRows: identity,
+      });
+      expect(offsets).toEqual([0]);
+      expect(page.rows).toEqual([]);
+      expect(page).toMatchObject({
+        total: 0,
+        currentPage: 1,
+        totalPages: 1,
+        fromRow: 0,
+        toRow: 0,
+      });
+    });
+
+    it("does not refetch a genuinely empty in-range page when the ask wasn't clamped", async () => {
+      // total (50) constant, simulating a filtered search with no matches on an
+      // in-range page: requestedPage === currentPage, so the empty slice is
+      // genuine (not over-the-end) and must not refetch.
+      const offsets: number[] = [];
+      const pageQuery = (offset: number, limit: number): Promise<Row[]> => {
+        offsets.push(offset);
+        expect(limit).toBe(50);
+        return Promise.resolve([]);
+      };
+      const page = await paginateOffsetTable<Row, Row>({
+        page: 1,
+        pageSize: 50,
+        count: { fromSlice: () => 50 },
+        pageQuery,
+        mapRows: identity,
+      });
+      expect(offsets).toEqual([0]);
+      expect(page.rows).toEqual([]);
+      expect(page).toMatchObject({
+        total: 50,
+        currentPage: 1,
+        totalPages: 1,
+        fromRow: 1,
+        toRow: 0,
+      });
+    });
+  });
+
+  describe("?page coercion", () => {
+    it("coerces a raw string page through parsePage", async () => {
+      const { offsets, pageQuery } = fakeTable(100, 10);
+      const page = await paginateOffsetTable({
+        page: "3",
+        pageSize: 10,
+        count: 100,
+        pageQuery,
+        mapRows: identity,
+      });
+      expect(offsets).toEqual([20]);
+      expect(page.currentPage).toBe(3);
+    });
+
+    it("degrades missing / non-numeric / < 1 pages to page 1", async () => {
+      for (const raw of [null, "abc", "0", "-4", ""]) {
+        const { offsets, pageQuery } = fakeTable(100, 10);
+        const page = await paginateOffsetTable({
+          page: raw,
+          pageSize: 10,
+          count: 100,
+          pageQuery,
+          mapRows: identity,
+        });
+        expect(offsets).toEqual([0]);
+        expect(page.currentPage).toBe(1);
+      }
+    });
+
+    it("accepts an already-parsed number page as-is", async () => {
+      const { offsets, pageQuery } = fakeTable(100, 10);
+      const page = await paginateOffsetTable({
+        page: 4,
+        pageSize: 10,
+        count: 100,
+        pageQuery,
+        mapRows: identity,
+      });
+      expect(offsets).toEqual([30]);
+      expect(page.currentPage).toBe(4);
+    });
   });
 });

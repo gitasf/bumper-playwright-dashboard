@@ -798,4 +798,53 @@ describe("WrightfulReporter lifecycle", () => {
     expect(rootWarns).toHaveLength(1);
     expect(rootWarns[0]).toContain(outside[0]);
   });
+
+  it("prunes settled tasks from artifactTasks instead of retaining one per finished test for the life of the run", async () => {
+    const fetchMock = makeFetch([
+      (url) =>
+        url.endsWith("/api/runs")
+          ? jsonResponse(200, { runId: "run_abc" })
+          : undefined,
+      (url) =>
+        url.includes("/results")
+          ? jsonResponse(200, { results: [] })
+          : undefined,
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const tests = Array.from({ length: 25 }, (_, i) =>
+      makeTest({ id: `t${i}`, outcome: "expected", title: `test ${i}` }),
+    );
+    const reporter = new WrightfulReporter({
+      url: "http://dash.example",
+      token: "tok",
+      flushIntervalMs: 5,
+    });
+    reporter.onBegin(makeConfig(), makeSuite(tests));
+
+    for (const t of tests) {
+      reporter.onTestEnd(
+        t,
+        makeResult({ status: "passed", duration: 1, retry: 0 }),
+      );
+    }
+
+    // Give every onTestEnd-tracked task (quarantine await → batcher enqueue)
+    // time to settle without waiting for onEnd's own drain.
+    await new Promise((r) => setTimeout(r, 30));
+
+    const tracked = (
+      reporter as unknown as { artifactTasks: Set<Promise<void>> }
+    ).artifactTasks;
+    // Each settled task removes itself, so the set stays well below one entry
+    // per finished test rather than growing for the whole run.
+    expect(tracked.size).toBeLessThan(tests.length);
+
+    await reporter.onEnd({
+      status: "passed",
+      startTime: new Date(),
+      duration: 0,
+    } as FullResult);
+  });
 });

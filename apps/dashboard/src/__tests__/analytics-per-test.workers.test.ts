@@ -38,16 +38,23 @@ function noBoundArgs(expr: unknown): void {
 }
 
 describe("latestPerTestRn", () => {
+  // The window is wrapped in `cast(… as integer)` so Postgres returns
+  // `row_number()` (an int8, which node-postgres hands back as a STRING) as a
+  // JS number on the raw `runRows` path — flaky.server.ts's
+  // `loadSparklinesAndMeta` reads the alias back in JS and does `r.rn === 1`,
+  // which is silently dead without this cast. Harmless no-op on SQLite/pglite.
+  // Same idiom as `statusCounter` below.
+
   it("defaults to the tr.-qualified columns the flaky/tests loaders partition by", () => {
     // flaky.server.ts loadSparklinesAndMeta / loadRecentFailures used `rn`.
     expect(rawText(latestPerTestRn("rn"))).toBe(
-      'row_number() over (partition by tr."testId" order by tr."createdAt" desc) as rn',
+      'cast(row_number() over (partition by tr."testId" order by tr."createdAt" desc) as integer) as rn',
     );
   });
 
   it("threads a quoted alias verbatim (tests.server.ts runAggregateQuery)", () => {
     expect(rawText(latestPerTestRn(`"rnTime"`))).toBe(
-      'row_number() over (partition by tr."testId" order by tr."createdAt" desc) as "rnTime"',
+      'cast(row_number() over (partition by tr."testId" order by tr."createdAt" desc) as integer) as "rnTime"',
     );
   });
 
@@ -62,7 +69,7 @@ describe("latestPerTestRn", () => {
         }),
       ),
     ).toBe(
-      'row_number() over (partition by "testId" order by "createdAt" desc) as "rnTime"',
+      'cast(row_number() over (partition by "testId" order by "createdAt" desc) as integer) as "rnTime"',
     );
   });
 
@@ -78,7 +85,7 @@ describe("latestPerTestRn", () => {
 
   it("orders DESC so rn = 1 is the most recent result", () => {
     expect(rawText(latestPerTestRn("rn"))).toContain("order by");
-    expect(rawText(latestPerTestRn("rn"))).toContain("desc) as rn");
+    expect(rawText(latestPerTestRn("rn"))).toContain("desc) as integer) as rn");
   });
 });
 

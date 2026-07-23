@@ -39,7 +39,7 @@ export function githubOAuthEnabled(source: {
 /**
  * Whether the GitHub App (check runs) is wired up: APP_ID + PRIVATE_KEY +
  * WEBHOOK_SECRET are all present and non-empty. One source of truth for the
- * ingest-side `maybePostGithubCheck` guard, the webhook route, and the settings
+ * ingest-side `postGithubRunSurfaces` guard, the webhook route, and the settings
  * card, so they can't drift. Distinct from {@link githubOAuthEnabled} (sign-in)
  * — a deployment may run either, both, or neither.
  */

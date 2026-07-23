@@ -1,4 +1,5 @@
-import { triggerScheduled } from "./helpers/dev-trigger";
+import { randomUUID } from "node:crypto";
+import { triggerScheduled } from "./helpers/void-trigger";
 import { expect, test } from "./fixtures";
 
 /**
@@ -9,7 +10,7 @@ import { expect, test } from "./fixtures";
  * `fetch`, so it runs identically in dev/CI/prod. The monitor must target a
  * PUBLIC URL — the `url-policy` SSRF guard rejects loopback/localhost at the
  * form, so we can't point it at the dashboard's own dev URL. We use a stable
- * public host and drive one scheduled cycle via Void's dev triggers. The check's
+ * public host and drive one scheduled cycle via Void's built-worker trigger. The check's
  * outcome is deliberately not pinned (see below), so the test passes whether or
  * not the CI worker has outbound egress: a blocked/failed fetch is still recorded
  * as a terminal `fail` execution, which is all the pipeline assertion needs:
@@ -38,15 +39,16 @@ const ONE_MINUTE = 60;
 // failed fetch records a terminal `fail`).
 const TARGET_URL = "https://example.com";
 
-test.setTimeout(150_000);
+test.setTimeout(90_000);
 
 test.describe("HTTP uptime monitors", () => {
   test("create an uptime check, schedule one cycle, record an inline result", async ({
     monitorsPage,
     page,
     ctx,
+    monitorScheduler,
   }) => {
-    const name = `pw-uptime-${Date.now()}`;
+    const name = `pw-uptime-${randomUUID()}`;
 
     // 1. Create via the http form (pointed at a public URL — url-policy blocks
     // loopback, so the dashboard's own dev URL can't be the target).
@@ -55,6 +57,7 @@ test.describe("HTTP uptime monitors", () => {
       name,
       intervalSeconds: ONE_MINUTE,
       url: TARGET_URL,
+      enabled: false,
     });
 
     // List: the uptime type pill + humanized interval.
@@ -70,29 +73,31 @@ test.describe("HTTP uptime monitors", () => {
     await expect(page.getByText(/^GET$/)).toBeVisible();
     await expect(monitorsPage.emptyExecutions).toBeVisible();
 
-    // 2. Sweep until the monitor is due and the uptime consumer records a
-    // TERMINAL result. Each tick is a no-op until `nextRunAt` passes; once due,
-    // the sweep enqueues to `queues/uptime` and Miniflare delivers it to the
-    // consumer, which runs the fetch and records the result inline. That settle
-    // is async — it completes AFTER the cron call returns — and the row is
+    // 2. Advance the scheduled tick just beyond the interval so the monitor is
+    // immediately due. The sweep enqueues to `queues/uptime` and local queue
+    // delivery runs the consumer. That settle is async — it completes AFTER the
+    // cron call returns — and the row is
     // briefly `queued` before it does. So poll for the result-state badge
     // itself, not merely "not empty": a transient `queued` row would satisfy
     // `emptyExecutions` being hidden before the check has actually run (mirrors
     // how `monitors.spec` waits for the terminal "View run" link, not the row).
     const stateBadge = page.getByText(/^(pass|degraded|fail|error)$/i).first();
-    await expect(async () => {
+    await monitorScheduler.run(monitorId, async () => {
       await triggerScheduled(
         page.request,
         ctx.url,
-        ctx.devTriggerToken,
+        ctx.voidProxyToken,
         SWEEP_CRON,
+        Date.now() + (ONE_MINUTE + 1) * 1_000,
       );
-      await monitorsPage.gotoDetail(monitorId);
-      await expect(stateBadge).toBeVisible({ timeout: 5_000 });
-    }).toPass({ timeout: 130_000 });
+      await expect(async () => {
+        await monitorsPage.gotoDetail(monitorId);
+        await expect(stateBadge).toBeVisible({ timeout: 5_000 });
+      }).toPass({ timeout: 45_000 });
 
-    // An http execution carries an inline result — NOT a run report. The
-    // "View run" deep-link must never appear for an uptime check.
-    await expect(monitorsPage.runLinks).toHaveCount(0);
+      // An http execution carries an inline result — NOT a run report. The
+      // "View run" deep-link must never appear for an uptime check.
+      await expect(monitorsPage.runLinks).toHaveCount(0);
+    });
   });
 });

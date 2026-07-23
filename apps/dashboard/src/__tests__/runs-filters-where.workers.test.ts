@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import { bucketExpr } from "@/lib/analytics/bucketing-sql";
-import { buildRunsWhere, escapeLike } from "@/lib/runs-filters-where";
-import { EMPTY_FILTERS, parseRunsFilters } from "@/lib/runs-filters";
+import { buildRunsWhere, escapeLike } from "@/lib/runs/filters-where";
+import { EMPTY_FILTERS, parseRunsFilters } from "@/lib/runs/filters";
 
 /**
  * `escapeLike` hand-writes the LIKE-metacharacter escaping that the typed

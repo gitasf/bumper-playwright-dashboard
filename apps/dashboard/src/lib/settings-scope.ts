@@ -5,7 +5,9 @@ import {
   resolveTeamBySlug,
   type TeamRole,
 } from "@/lib/authz";
-import { can, type Capability } from "@/lib/roles";
+import type { ResolvedActiveTeam } from "@/lib/shared-bundle";
+import { can, type Capability, type CapabilityGate } from "@/lib/roles";
+import { makeTenantScope, type TenantScope } from "@/lib/scope";
 
 /**
  * Status-agnostic failure raised by the owner-resolution core
@@ -13,10 +15,8 @@ import { can, type Capability } from "@/lib/roles";
  * status and NO redirect URL — every call site decides how to render it:
  * the page seams ({@link requireOwnerScope} / {@link requireOwnedProjectScope})
  * map it to a 404 Response (don't leak existence to non-owners) and build the
- * `here` redirect URL; the JSON API handlers map it to their chosen status.
- * Concentrating the slug-read + owner gate here means the page-vs-API status
- * difference is a single explicit line at each call site instead of two
- * independently hand-rolled gates.
+ * `here` redirect URL; JSON handlers render the same leak-safe 404 as a JSON
+ * response.
  */
 export class AuthzError extends Error {
   constructor(message = "not authorized") {
@@ -37,11 +37,36 @@ export interface MemberTeam extends OwnedTeam {
 }
 
 /**
+ * Resolve `teamSlug`'s membership row for `userId`, preferring the `memberTeams`
+ * list `middleware/01.context.ts` already populated (free — a by-product of
+ * `resolveTenantBundleForUser`'s team-filter-less query) over a fresh
+ * `resolveTeamBySlug` round-trip. Falls back to the DB query when
+ * `c.get("memberTeams")` is absent: `/api/*` routes (which re-check membership
+ * themselves) and unit tests driving these seams without `01.context.ts`. Both
+ * paths return the same `{ id, slug, name, role }` / `null` shape, preserving
+ * the leak-safe 404 semantics.
+ */
+async function resolveMemberTeam(
+  c: Context,
+  userId: string,
+  teamSlug: string,
+): Promise<MemberTeam | null> {
+  // `c.get` on a bare hono `Context` types custom vars as `any`; the middleware
+  // sets this to `ResolvedActiveTeam[]`, structurally a `MemberTeam[]`.
+  const memberTeams: ResolvedActiveTeam[] | undefined = c.get("memberTeams");
+  if (memberTeams) {
+    return memberTeams.find((t) => t.slug === teamSlug) ?? null;
+  }
+  return resolveTeamBySlug(userId, teamSlug);
+}
+
+/**
  * The single non-obvious bit of knowledge the settings-scope seams concentrate:
  * a missing-or-unauthorized team 404s rather than 403s, so we never leak team
  * existence to a non-member. Given the membership-checked team row from
- * `resolveTeamBySlug` (null when the user isn't a member or the team is
- * missing) and an optional REQUIRED CAPABILITY, decide pass-through vs 404.
+ * {@link resolveMemberTeam} / `resolveTeamBySlug` (null when the user isn't a
+ * member or the team is missing) and an optional REQUIRED CAPABILITY, decide
+ * pass-through vs 404.
  *
  * The gate is keyed on a {@link Capability} (via `can(role, …)`), not a raw
  * role string, so the owner-vs-member-vs-viewer ladder lives in one place
@@ -85,8 +110,7 @@ export interface OwnedProject {
  * to `"mintKeys"` — the project-resource capability the API-key page and
  * monitors enforce — which preserves the historical owner-only behaviour
  * (only `owner` holds `mintKeys`). Kept pure so the gate is unit-testable
- * independent of the DB resolve and of how each tier renders the failure
- * (404 page vs 403 JSON).
+ * independent of the DB resolve.
  */
 export function gateOwnedProject(
   project: OwnedProject | null,
@@ -100,8 +124,7 @@ export function gateOwnedProject(
  * Status-agnostic owner-resolution core for a team: read `teamSlug` from the
  * route, require the signed-in user be the team's owner, and return the owned
  * team — or throw {@link AuthzError} on a missing slug / missing team /
- * non-owner. Carries no HTTP status, so the page seam can render 404 (no
- * existence leak) while the JSON API handler renders 403/404 of its choosing.
+ * non-owner. Carries no HTTP status so each caller chooses its response shape.
  */
 export async function resolveOwnedTeam(c: Context): Promise<OwnedTeam> {
   const user = requireAuth(c);
@@ -111,7 +134,7 @@ export async function resolveOwnedTeam(c: Context): Promise<OwnedTeam> {
   // owner role holds `deleteTeam`, so gating on it preserves the exact
   // owner-only semantics every existing caller relies on.
   const member = gateTeamScope(
-    await resolveTeamBySlug(user.id, teamSlug),
+    await resolveMemberTeam(c, user.id, teamSlug),
     "deleteTeam",
   );
   if (!member) throw new AuthzError();
@@ -143,8 +166,9 @@ export async function resolveOwnedProject(
 
 /**
  * Append (or overwrite) a query-string param on `base` and return a redirect
- * Response. Used by settings server actions to surface inline form errors
- * across the no-JS slow-path redirect.
+ * Response — the URL-building mechanic under the no-JS slow-path form flash.
+ * For error slots, go through the typed `defineFlashSlots` seam
+ * (`src/lib/flash.ts`) so the slot name is compile-checked against the loader.
  */
 export function redirectWithParam(
   c: Context,
@@ -178,28 +202,6 @@ export async function requireOwnerScope(
 }
 
 /**
- * Member-role sibling of {@link requireOwnerScope}: resolve the team slug from
- * the route and require only that the signed-in user is a *member* (any role).
- * Same deliberate 404-not-403 rule on a missing team or non-membership.
- *
- * `hereFor` is optional — loaders that only read can omit it (and ignore the
- * returned `here`), while actions pass it to build the redirect-back URL,
- * mirroring how `requireOwnedProjectScope` is reused from both contexts. The
- * returned team carries its `role` so member-gated pages can hide owner-only UI.
- */
-export async function requireMemberScope(
-  c: Context,
-  hereFor?: (team: MemberTeam) => string,
-): Promise<{ team: MemberTeam; here: string | undefined }> {
-  const user = requireAuth(c);
-  const teamSlug = c.req.param("teamSlug");
-  if (!teamSlug) throw new Response("Not Found", { status: 404 });
-  const team = gateTeamScope(await resolveTeamBySlug(user.id, teamSlug));
-  if (!team) throw new Response("Not Found", { status: 404 });
-  return { team, here: hereFor?.(team) };
-}
-
-/**
  * The general, capability-keyed team gate (roadmap 3.1) — the seam every
  * settings page/action should use to express WHAT it needs rather than WHICH
  * role. Resolves the team slug, requires the signed-in user be a member whose
@@ -207,30 +209,32 @@ export async function requireMemberScope(
  * 404s — not 403s — on a missing team, a non-membership, OR an insufficient
  * role. Same leak-safe rule as {@link requireOwnerScope}.
  *
- * Examples:
- *   - settings-page loaders gate on `"viewSettings"` (member + owner pass; a
- *     viewer 404s, so a viewer reads the dashboard but never the settings
- *     surface);
- *   - member-management actions gate on `"manageMembers"` (owner-only today).
+ * `action` is required (no permissive default): pass `"anyMember"` (a
+ * {@link CapabilityGate}) for the bare-membership gate any member passes. Stating
+ * the bar at every call site stops a new mutation route from silently inheriting
+ * viewer-writable access by copying a read call site's arguments.
  *
- * `hereFor` is optional, mirroring {@link requireMemberScope}: read-only
- * loaders omit it; actions pass it to build the redirect-back URL.
- * {@link requireOwnerScope} is left intact for its existing callers — it is the
- * `deleteTeam`-capability special case with the narrower {@link OwnedTeam}
- * return shape.
+ * Examples: loaders gate on `"viewSettings"` (viewers 404); member-management
+ * actions gate on `"manageMembers"` (owner-only today).
+ *
+ * `hereFor` is optional — loaders omit it, actions pass it for the redirect-back
+ * URL. The returned team carries its `role` so gated pages hide privileged UI.
+ * {@link requireOwnerScope} stays for its callers — the `deleteTeam` special
+ * case with the narrower {@link OwnedTeam} shape.
  */
 export async function requireRoleScope(
   c: Context,
-  action: Capability,
+  action: CapabilityGate,
   hereFor?: (team: MemberTeam) => string,
 ): Promise<{ team: MemberTeam; here: string | undefined }> {
   const user = requireAuth(c);
   const teamSlug = c.req.param("teamSlug");
   if (!teamSlug) throw new Response("Not Found", { status: 404 });
-  const team = gateTeamScope(
-    await resolveTeamBySlug(user.id, teamSlug),
-    action,
-  );
+  const resolved = await resolveMemberTeam(c, user.id, teamSlug);
+  const team =
+    action === "anyMember"
+      ? gateTeamScope(resolved)
+      : gateTeamScope(resolved, action);
   if (!team) throw new Response("Not Found", { status: 404 });
   return { team, here: hereFor?.(team) };
 }
@@ -240,12 +244,16 @@ export async function requireRoleScope(
  * the user's role grant `requiredCapability` (default `"mintKeys"` — the
  * key-management bar). Pass `"writeConfig"` for project-config mutations.
  * Same 404-on-failure rule.
+ *
+ * Also hands back the project re-expressed as a branded `TenantScope`, so
+ * actions that call into scoped repos (e.g. the CODEOWNERS write) don't
+ * re-mint one by hand from the already-auth-checked project.
  */
 export async function requireOwnedProjectScope(
   c: Context,
   hereFor: (project: OwnedProject) => string,
   requiredCapability: Capability = "mintKeys",
-): Promise<{ project: OwnedProject; here: string }> {
+): Promise<{ project: OwnedProject; here: string; scope: TenantScope }> {
   let project: OwnedProject;
   try {
     project = await resolveOwnedProject(c, requiredCapability);
@@ -254,5 +262,14 @@ export async function requireOwnedProjectScope(
       throw new Response("Not Found", { status: 404 });
     throw err;
   }
-  return { project, here: hereFor(project) };
+  return {
+    project,
+    here: hereFor(project),
+    scope: makeTenantScope({
+      teamId: project.teamId,
+      projectId: project.id,
+      teamSlug: project.teamSlug,
+      projectSlug: project.slug,
+    }),
+  };
 }

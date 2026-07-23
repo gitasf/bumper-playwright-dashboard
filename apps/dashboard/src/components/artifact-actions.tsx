@@ -29,8 +29,6 @@ export interface ArtifactAction {
   name: string;
   contentType: string;
   downloadHref: string;
-  /** Present only for type === "trace". */
-  traceViewerUrl?: string;
   /** Present only for type === "visual". */
   visualGroup?: VisualDiffGroup;
 }

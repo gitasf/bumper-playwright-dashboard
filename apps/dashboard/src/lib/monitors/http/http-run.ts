@@ -203,9 +203,16 @@ export async function runHttpCheck(
   // url before reading or storing its body — a redirect into a private/loopback/
   // disallowed host is a failed check (the site sent us somewhere we won't
   // monitor), not an infra error. Workers egress already can't reach such a host
-  // (the fetch would have thrown above), so this is belt-and-braces — but it
-  // closes the contract `url-policy` documents for the read path and keeps an
-  // internal URL from ever being treated as a healthy result.
+  // (the fetch would have thrown above), so this is belt-and-braces, and it keeps
+  // an internal final URL from ever being treated as a healthy result.
+  //
+  // Defense-in-depth gap: intermediate redirect hops are traversed by
+  // `fetch(redirect:"follow")` before this runs, so per-hop enforcement relies
+  // on the runtime's egress policy (Workers refuses loopback/private/link-local
+  // at connect). A non-Workers runner must add per-hop validation (a manual
+  // `redirect:"manual"` loop calling checkUrlPolicy on each Location) plus DNS
+  // resolve-and-pin (checkUrlPolicy only blocks literal IPs, not names that
+  // resolve into private ranges) before reusing this module off-Workers.
   if (response.redirected) {
     const redirectCheck = checkUrlPolicy(response.url);
     if (!redirectCheck.ok) {

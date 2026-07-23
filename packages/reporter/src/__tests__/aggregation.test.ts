@@ -296,6 +296,8 @@ describe("buildPayload", () => {
         durationMs: 50,
         errorMessage: null,
         errorStack: null,
+        stdout: null,
+        stderr: null,
       },
     ]);
   });

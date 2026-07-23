@@ -6,7 +6,7 @@ Thanks for helping keep Wrightful and its users safe.
 
 **Please do not open a public issue for security problems.**
 
-Report privately through GitHub's **[Private vulnerability reporting](https://github.com/joefairburn/greenroom/security/advisories/new)**
+Report privately through GitHub's **[Private vulnerability reporting](https://github.com/joefairburn/wrightful/security/advisories/new)**
 (Security → Advisories → _Report a vulnerability_). If you can't use GitHub
 advisories, open a minimal public issue that says only "security report — please
 enable private reporting" with no details, and a maintainer will follow up.

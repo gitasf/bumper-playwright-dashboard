@@ -5,7 +5,7 @@ import {
   GROUP_BY_AXES,
   loadRunGroupSkeleton,
   STATUS_FILTER_VALUES,
-} from "@/lib/run-groups-page";
+} from "@/lib/runs/groups-page";
 import { resolveTenantApiScope } from "@/lib/tenant-api-scope";
 
 const QuerySchema = z.object({

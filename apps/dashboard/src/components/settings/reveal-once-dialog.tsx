@@ -1,5 +1,10 @@
-import { useEffect, useState } from "react";
-import { Dialog, DialogPopup } from "@/components/ui/dialog";
+import { useState } from "react";
+import {
+  Dialog,
+  DialogDescription,
+  DialogPopup,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 /**
  * Modal that pops open when `open` becomes true to surface a freshly-minted
@@ -8,8 +13,9 @@ import { Dialog, DialogPopup } from "@/components/ui/dialog";
  * Caches `children` internally so the previous content keeps rendering while
  * Base UI's exit animation runs after `open` flips to false — otherwise the
  * consumer typically clears its source state in `onClose`, the children
- * collapse mid-fade, and the dialog shrinks visibly. The cache is replaced
- * the next time the dialog opens.
+ * collapse mid-fade, and the dialog shrinks visibly. The cache is refreshed
+ * during render while `open` is true, and frozen (left untouched) once it
+ * flips to false, so the exit animation keeps the last-open content.
  */
 export function RevealOnceDialog({
   open,
@@ -25,9 +31,7 @@ export function RevealOnceDialog({
   children: React.ReactNode;
 }) {
   const [cachedChildren, setCachedChildren] = useState<React.ReactNode>(null);
-  useEffect(() => {
-    if (open) setCachedChildren(children);
-  }, [open, children]);
+  if (open && cachedChildren !== children) setCachedChildren(children);
 
   return (
     <Dialog
@@ -39,10 +43,12 @@ export function RevealOnceDialog({
       <DialogPopup className="max-w-md">
         <div className="flex flex-col gap-4 p-6">
           <div>
-            <div className="font-semibold text-base">{title}</div>
-            <div className="mt-1 text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+            <DialogTitle className="font-sans font-semibold text-base leading-normal">
+              {title}
+            </DialogTitle>
+            <DialogDescription className="mt-1 text-body text-fg-3 leading-relaxed">
               {description}
-            </div>
+            </DialogDescription>
           </div>
           {cachedChildren}
         </div>

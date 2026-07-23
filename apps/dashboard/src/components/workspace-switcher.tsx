@@ -4,7 +4,7 @@ import { useRouter } from "@void/react";
 import { Link } from "@/components/ui/link";
 import { useNavigate } from "@/lib/navigate";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
-import { avatarHue } from "@/lib/avatar-hue";
+import { ActorAvatar } from "@/components/actor-avatar";
 import { cn } from "@/lib/cn";
 import { link } from "@/lib/links";
 import type { WorkspaceListItem } from "@/lib/shared-bundle";
@@ -80,20 +80,20 @@ export function WorkspaceSwitcher({
       <PopoverTrigger
         className={cn(
           "flex w-full items-center gap-2 rounded-md p-1.5 text-left transition-colors",
-          "hover:bg-accent data-[popup-open]:bg-accent",
+          "hover:bg-bg-3 data-[popup-open]:bg-bg-3",
           "min-w-0",
         )}
       >
         <TeamBadge name={selectedTeam.name} />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-[13px] font-medium text-foreground">
+          <span className="truncate text-body font-medium text-fg-1">
             {selectedTeam.name}
           </span>
-          <span className="truncate font-mono text-[11px] text-muted-foreground">
+          <span className="truncate font-mono text-micro text-fg-3">
             {selectedProject.name}
           </span>
         </span>
-        <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+        <ChevronsUpDown className="size-3.5 shrink-0 text-fg-3" />
       </PopoverTrigger>
 
       <PopoverPopup
@@ -107,8 +107,8 @@ export function WorkspaceSwitcher({
               <button
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
-                  "hover:bg-accent",
-                  t.slug === selectedTeam.slug && "bg-accent",
+                  "hover:bg-bg-3",
+                  t.slug === selectedTeam.slug && "bg-bg-3",
                 )}
                 onClick={() => switchTeam(t.slug)}
                 type="button"
@@ -116,14 +116,14 @@ export function WorkspaceSwitcher({
                 <TeamBadge name={t.name} size="sm" />
                 <span className="flex-1 truncate">{t.name}</span>
                 {t.slug === selectedTeam.slug && (
-                  <Check className="size-3.5 text-foreground" />
+                  <Check className="size-3.5 text-fg-1" />
                 )}
               </button>
             </li>
           ))}
         </ul>
 
-        <div className="my-1.5 h-px bg-border" />
+        <div className="my-1.5 h-px bg-line-1" />
 
         <SectionLabel>Projects in {selectedTeam.name}</SectionLabel>
         <ul className="flex flex-col">
@@ -132,17 +132,17 @@ export function WorkspaceSwitcher({
               <button
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left",
-                  "font-mono text-[13px]",
-                  "hover:bg-accent",
-                  p.slug === selectedProject.slug && "bg-accent",
+                  "font-mono text-body",
+                  "hover:bg-bg-3",
+                  p.slug === selectedProject.slug && "bg-bg-3",
                 )}
                 onClick={() => switchProject(p.slug)}
                 type="button"
               >
-                <FlaskConical className="size-3.5 text-muted-foreground" />
+                <FlaskConical className="size-3.5 text-fg-3" />
                 <span className="flex-1 truncate">{p.name}</span>
                 {p.slug === selectedProject.slug && (
-                  <Check className="size-3.5 text-foreground" />
+                  <Check className="size-3.5 text-fg-1" />
                 )}
               </button>
             </li>
@@ -151,9 +151,9 @@ export function WorkspaceSwitcher({
 
         {isOwner && (
           <>
-            <div className="my-1.5 h-px bg-border" />
+            <div className="my-1.5 h-px bg-line-1" />
             <Link
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-fg-3 hover:bg-bg-3 hover:text-fg-1"
               href={link("/settings/teams/:teamSlug/projects/new", {
                 teamSlug: selectedTeam.slug,
               })}
@@ -171,16 +171,17 @@ export function WorkspaceSwitcher({
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-2 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+    <div className="px-2 pb-1 pt-1.5 text-caption font-medium tracking-[0.1px] text-fg-3">
       {children}
     </div>
   );
 }
 
 /**
- * Solid colored tile with the team initial. Color is derived from the team
- * slug so it's stable across renders. Steel-blue / cool-neutral palette to
- * match the prototype's restrained accent direction.
+ * Solid colored tile with the team initial — the same hued-initial treatment
+ * as run actors, so it delegates to {@link ActorAvatar} to stay in lockstep
+ * with it (shape, hue, typography). Color is derived from the team name so
+ * it's stable across renders.
  */
 function TeamBadge({
   name,
@@ -189,20 +190,7 @@ function TeamBadge({
   name: string;
   size?: "sm" | "md";
 }) {
-  const initial = name.charAt(0).toUpperCase();
-  const px = size === "sm" ? "size-4 text-[9.5px]" : "size-[22px] text-[12px]";
-  const hue = avatarHue(name);
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-md font-semibold text-white",
-        px,
-      )}
-      style={{ background: `oklch(0.55 0.10 ${hue})` }}
-    >
-      {initial}
-    </span>
-  );
+  return <ActorAvatar actor={name} size={size === "sm" ? 16 : 22} />;
 }
 
 function escapeRegExp(s: string): string {

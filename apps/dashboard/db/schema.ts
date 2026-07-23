@@ -258,6 +258,8 @@ export const userGithubAccounts = pgTable(
  * "back to where you were" behavior across sessions. Soft-references project
  * + team so deletes don't break sign-in.
  */
+// These FK children are intentionally unindexed: navigation updates them often,
+// while parent deletion is rare and userState has only one row per user.
 export const userState = pgTable("userState", {
   userId: text("userId").primaryKey(),
   lastTeamId: text("lastTeamId").references(() => teams.id, {
@@ -371,6 +373,31 @@ export const githubInstallations = pgTable(
   ],
 );
 
+/** One App-posted sticky comment per project, repository, and pull request. */
+export const githubPrComments = pgTable(
+  "githubPrComments",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("projectId")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    repo: text("repo").notNull(),
+    prNumber: integer("prNumber").notNull(),
+    commentId: big("commentId"),
+    runId: text("runId").references(() => runs.id, { onDelete: "set null" }),
+    claimedAt: big("claimedAt"),
+    createdAt: big("createdAt").notNull(),
+    updatedAt: big("updatedAt").notNull(),
+  },
+  (t) => [
+    uniqueIndex("githubPrComments_project_repo_pr_idx").on(
+      t.projectId,
+      t.repo,
+      t.prNumber,
+    ),
+  ],
+);
+
 // ---------- Test data (runs and children) ----------
 
 export const runs = pgTable(
@@ -405,7 +432,29 @@ export const runs = pgTable(
     repo: text("repo"),
     actor: text("actor"),
     totalTests: integer("totalTests").notNull(),
+    /**
+     * Reporter-declared suite size from `onBegin` — the exact denominator for
+     * "how far through the suite is this run". Null only on rows that predate
+     * the column. For a sharded run this is the SUM over
+     * {@link runs.shardExpectedTests}, re-derived on every shard's open.
+     */
     expectedTotalTests: integer("expectedTotalTests"),
+    /**
+     * Per-shard planned-test counts for a sharded run: a jsonb map of
+     * 1-based shard index → that shard's `onBegin` `suite.allTests()` size,
+     * e.g. `{"1": 100, "2": 120}`. Playwright filters the suite before
+     * reporters see it, so no single shard knows the full suite size — the
+     * exact total only exists as the sum of these slices. `openRun` merges
+     * each shard's count in via `jsonb_set` (keyed by shard index, so a
+     * reporter retry / CI re-run REPLACES a shard's count instead of
+     * double-counting) and re-derives `expectedTotalTests` as the sum in the
+     * same UPDATE. Kept on the run row (not a child table) deliberately: the
+     * retention cron that tidies old runs never has to know about it. Null for
+     * non-sharded runs, whose open count lands directly on
+     * `expectedTotalTests`.
+     */
+    shardExpectedTests:
+      jsonb("shardExpectedTests").$type<Record<string, number>>(),
     /**
      * Total number of Playwright shards contributing to this run, from
      * `config.shard.total` on the open payload. NULL for a non-sharded run (or
@@ -468,10 +517,21 @@ export const runs = pgTable(
     }),
     /**
      * The GitHub check-run id created for this run, or null. Lets the terminal
-     * path (`completeRun` / `finalizeStaleRun` → `maybePostGithubCheck`) PATCH
+     * path (`completeRun` / `finalizeStaleRun` → `postGithubRunSurfaces`) PATCH
      * the existing check on a re-complete instead of POSTing a duplicate.
+     * Always a real check-run id, or null — never a sentinel.
      */
     githubCheckRunId: big("githubCheckRunId"),
+    /**
+     * Epoch-seconds when a caller claimed the right to POST this run's check run,
+     * or null. Makes concurrent `completeRun` + `finalizeStaleRun` race-safe: only
+     * one caller's claim `UPDATE ... WHERE` matches (`claimCheckRunSlot` in
+     * `@/lib/github-checks`), so only one POSTs while the loser backs off. A claim
+     * older than `CHECK_CLAIM_TTL_SECONDS` (same file) is stale/reclaimable — its
+     * poster crashed before finishing. Cleared once the real id lands in
+     * `githubCheckRunId`, or if the POST fails.
+     */
+    githubCheckClaimedAt: big("githubCheckClaimedAt"),
   },
   (t) => [
     uniqueIndex("runs_project_idempotency_key_idx").on(
@@ -492,6 +552,13 @@ export const runs = pgTable(
       .on(t.monitorId)
       .where(sql`${t.monitorId} is not null`),
     index("runs_project_created_at_idx").on(t.projectId, t.createdAt),
+    /**
+     * Serves the usage reconcile's team-scoped period counts (`rollup-usage` cron:
+     * `teams ⟕ runs ON teamId AND createdAt >= periodStart GROUP BY team`). Every
+     * other runs index leads with `projectId`, so without this the team-keyed count
+     * seq-scans the largest table.
+     */
+    index("runs_team_createdAt_idx").on(t.teamId, t.createdAt),
     index("runs_project_branch_created_at_idx").on(
       t.projectId,
       t.branch,
@@ -513,6 +580,23 @@ export const runs = pgTable(
      * index — the watchdog is now keyed on lastActivityAt, not createdAt.)
      */
     index("runs_status_lastActivityAt_idx").on(t.status, t.lastActivityAt),
+    /**
+     * Trigram GINs backing the runs-list free-text `q` search
+     * (`runs-filters-where.ts`): a leading-wildcard `ILIKE '%q%'` OR'd across
+     * commitMessage/commitSha/branch that no b-tree can accelerate. Same pattern as
+     * the `tests` catalog's title/file GINs (same `pg_trgm` extension, created by
+     * migration `20260703092642_slimy_layla_miller.sql`). Write amplification lands
+     * on run open only (one row per run), so the /results ingest hot path is unaffected.
+     */
+    index("runs_commitMessage_trgm_idx").using(
+      "gin",
+      t.commitMessage.op("gin_trgm_ops"),
+    ),
+    index("runs_commitSha_trgm_idx").using(
+      "gin",
+      t.commitSha.op("gin_trgm_ops"),
+    ),
+    index("runs_branch_trgm_idx").using("gin", t.branch.op("gin_trgm_ops")),
   ],
 );
 
@@ -558,6 +642,8 @@ export const runShards = pgTable(
       t.runId,
       t.shardIndex,
     ),
+    /** Supports the `runShards.runId → runs` cascade. */
+    index("runShards_runId_idx").on(t.runId),
   ],
 );
 
@@ -741,6 +827,13 @@ export const testResultAttempts = pgTable(
     durationMs: integer("durationMs").notNull(),
     errorMessage: text("errorMessage"),
     errorStack: text("errorStack"),
+    // Captured per-attempt stdout/stderr (the reporter joins Playwright's
+    // TestResult chunks, each truncated to MAX.MESSAGE = 65536 chars). Stored
+    // inline — attempts per test are few (1–10) and capped — so `get_test_result`
+    // can surface `console.log` CI output. Nullable, NOT indexed (never filtered
+    // or joined on; read only as part of the per-attempt row).
+    stdout: text("stdout"),
+    stderr: text("stderr"),
     createdAt: big("createdAt").notNull(),
   },
   (t) => [
@@ -773,7 +866,7 @@ export const artifacts = pgTable(
     // routes through `numericSql`, so the read side is unaffected.
     sizeBytes: big("sizeBytes").notNull(),
     /**
-     * R2 object key. Built by `buildArtifactR2Key` in `src/lib/artifacts.ts`:
+     * R2 object key. Built by `buildArtifactR2Key` in `src/lib/artifacts/store.ts`:
      * `t/<teamId>/p/<projectId>/runs/<runId>/<testResultId>/<artifactId>/<safe-filename>`.
      */
     r2Key: text("r2Key").notNull(),
@@ -805,7 +898,7 @@ export const artifacts = pgTable(
      * the same artifact set; this tuple is what makes two registrations "the
      * same artifact" so the reporter's PUT overwrites one R2 object instead of
      * minting a duplicate row + double-billing storage/egress. It is the DB
-     * mirror of `artifactIdentity()` in `src/lib/artifacts.ts` — keep the two
+     * mirror of `artifactIdentity()` in `src/lib/artifacts/store.ts` — keep the two
      * in sync (e.g. if `snapshotName` ever joins the identity for visual diffs,
      * add it to BOTH). `role` is nullable and Postgres treats NULLs as distinct
      * in unique indexes (by default), which would let role-less artifacts (the common case)
@@ -977,6 +1070,10 @@ export const monitorExecutions = pgTable(
      * seek the small non-terminal slice in steady state and walk it in createdAt order.
      */
     index("monitorExecutions_state_created_at_idx").on(t.state, t.createdAt),
+    /** Supports `runId` nulling while excluding executions without a run. */
+    index("monitorExecutions_runId_idx")
+      .on(t.runId)
+      .where(sql`${t.runId} is not null`),
   ],
 );
 

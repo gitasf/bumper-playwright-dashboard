@@ -3,13 +3,12 @@ import { env } from "void/env";
 import { getApiKey } from "@/lib/api-auth";
 import {
   buildRunsCsv,
-  csvHeaders,
+  csvExportResponse,
   DEFAULT_RUNS_LIST_LIMIT,
   loadRunsListPage,
 } from "@/lib/export";
-import { parseRunsFilters } from "@/lib/runs-filters";
+import { parseRunsFilters } from "@/lib/runs/filters";
 import { tenantScopeForApiKey } from "@/lib/scope";
-import { logger } from "void/log";
 
 /**
  * GET /api/v1/runs — public, Bearer-authed, project-scoped list of runs.
@@ -36,16 +35,12 @@ export const GET = defineHandler(async (c) => {
   if (url.searchParams.get("format") === "csv") {
     const maxRows = env.WRIGHTFUL_EXPORT_MAX_ROWS;
     const csv = await buildRunsCsv(scope, filters, maxRows);
-    if (csv.truncated) {
-      logger.warn("runs csv export truncated at cap", {
-        projectId: scope.projectId,
-        maxRows,
-        rowCount: csv.rowCount,
-      });
-    }
-    const filename = `${scope.teamSlug}-${scope.projectSlug}-runs`;
-    return new Response(csv.body, {
-      headers: csvHeaders(filename, csv.truncated),
+    return csvExportResponse({
+      scope,
+      csv,
+      maxRows,
+      filenameSuffix: "runs",
+      logMessage: "runs csv export truncated at cap",
     });
   }
 

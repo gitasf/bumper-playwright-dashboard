@@ -1,9 +1,8 @@
 import { defineHandler } from "void";
 import { env } from "void/env";
-import { buildRunsCsv, csvHeaders } from "@/lib/export";
-import { parseRunsFilters } from "@/lib/runs-filters";
+import { buildRunsCsv, csvExportResponse } from "@/lib/export";
+import { parseRunsFilters } from "@/lib/runs/filters";
 import { resolveProjectApiScope } from "@/lib/tenant-api-scope";
-import { logger } from "void/log";
 
 /**
  * GET /api/t/:teamSlug/p/:projectSlug/export/runs[?format=csv&<filters>]
@@ -19,7 +18,7 @@ import { logger } from "void/log";
  * at `WRIGHTFUL_EXPORT_MAX_ROWS`; truncation flagged via header + log.
  */
 export const GET = defineHandler(async (c) => {
-  const ctx = await resolveProjectApiScope(c);
+  const ctx = await resolveProjectApiScope(c, "anyMember");
   if (ctx instanceof Response) return ctx;
   const { scope } = ctx;
 
@@ -27,16 +26,11 @@ export const GET = defineHandler(async (c) => {
   const filters = parseRunsFilters(url.searchParams);
   const maxRows = env.WRIGHTFUL_EXPORT_MAX_ROWS;
   const csv = await buildRunsCsv(scope, filters, maxRows);
-  if (csv.truncated) {
-    logger.warn("dashboard runs csv export truncated at cap", {
-      projectId: scope.projectId,
-      maxRows,
-      rowCount: csv.rowCount,
-    });
-  }
-
-  const filename = `${scope.teamSlug}-${scope.projectSlug}-runs`;
-  return new Response(csv.body, {
-    headers: csvHeaders(filename, csv.truncated),
+  return csvExportResponse({
+    scope,
+    csv,
+    maxRows,
+    filenameSuffix: "runs",
+    logMessage: "dashboard runs csv export truncated at cap",
   });
 });

@@ -85,6 +85,18 @@ export default defineConfig({
       },
   test: {
     environment: "happy-dom",
+    // Component tests assert iframe URLs and postMessage plumbing; they never
+    // need happy-dom to navigate those child frames. Disabling navigation
+    // keeps the trace-viewer bridge/snapshot iframes as usable about:blank
+    // windows without issuing dozens of localhost fetches that bury the test
+    // result in expected ECONNREFUSED/abort noise.
+    environmentOptions: {
+      happyDOM: {
+        settings: {
+          navigation: { disableChildFrameNavigation: true },
+        },
+      },
+    },
     include: ["src/**/__tests__/**/*.test.{ts,tsx}"],
     // Suites tagged `*.workers.test.ts` (workerd lane) and `*.workers-db.test.ts`
     // (real-DB-over-Hyperdrive lane) run in workerd, not here — exclude both so

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "wrightful": {
+      "type": "http",
+      "url": "https://dash.wrightful.dev/api/mcp"
+    }
+  }
+}

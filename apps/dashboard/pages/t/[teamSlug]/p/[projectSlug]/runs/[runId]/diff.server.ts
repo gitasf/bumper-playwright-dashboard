@@ -1,8 +1,5 @@
 import { defer, defineHandler, type InferProps } from "void";
-import { and, db, desc, eq } from "void/db";
-import { runs } from "@schema";
-import { runScopeWhere } from "@/lib/scope";
-import { computeRunDiff, resolveRunDiffTargets } from "@/lib/run-diff";
+import { computeRunDiff, resolveRunDiffTargets } from "@/lib/runs/diff";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -26,35 +23,18 @@ export const loader = defineHandler(async (c) => {
   const { project, scope } = requireTenantContext(c);
 
   const url = new URL(c.req.url);
-  // Eager: the head (404 gate) + the base — both cheap single-row lookups that
-  // drive the always-visible header, RunChips, base selector and the empty
-  // (no-baseline) state. The two heavy per-test scans + diff defer below.
+  // Eager: the head (404 gate), the base, and the base-candidate selector list
+  // — all cheap single-row/indexed lookups that drive the always-visible
+  // header, RunChips, base selector and the empty (no-baseline) state.
+  // `resolveRunDiffTargets` runs these across two parallel waves rather than
+  // three-to-four serial round trips (see its docstring). The two heavy
+  // per-test scans + diff defer below.
   const targets = await resolveRunDiffTargets(scope, runId, {
     baseParam: url.searchParams.get("base"),
+    baseCandidateLimit: BASE_CANDIDATE_LIMIT,
   });
   if ("notFound" in targets) throw new Response("Not Found", { status: 404 });
-  const { head, base } = targets;
-
-  // Candidate base runs for the selector: recent runs on the same branch other
-  // than the head. Cheap, served by `runs_project_branch_created_at_idx`. A
-  // null OR empty/whitespace branch has no "same branch" group (an empty string
-  // must not match every other branchless run via `eq(branch, "")`).
-  const headBranch = head.branch?.trim() ? head.branch : null;
-  const baseCandidates =
-    headBranch === null
-      ? []
-      : await db
-          .select({
-            id: runs.id,
-            status: runs.status,
-            commitSha: runs.commitSha,
-            commitMessage: runs.commitMessage,
-            createdAt: runs.createdAt,
-          })
-          .from(runs)
-          .where(and(runScopeWhere(scope), eq(runs.branch, headBranch)))
-          .orderBy(desc(runs.createdAt))
-          .limit(BASE_CANDIDATE_LIMIT);
+  const { head, base, baseCandidates = [] } = targets;
 
   // A deferred loader streams a variant-specific body (keyed by ?base) — set
   // no-store so the browser can't replay the wrong variant against a stale base.

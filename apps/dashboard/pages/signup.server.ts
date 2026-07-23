@@ -2,7 +2,7 @@ import { defineHandler, type InferProps } from "void";
 import { env } from "void/env";
 import { getSession } from "void/auth";
 import { githubOAuthEnabled, openSignupAllowed } from "@/lib/config";
-import { hrefWithNext, safeNextPath } from "@/lib/safe-next-path";
+import { hrefWithNext, nextFromUrl } from "@/lib/safe-next-path";
 
 export type Props = InferProps<typeof loader>;
 
@@ -17,7 +17,7 @@ export type Props = InferProps<typeof loader>;
  * invited user who lands here never loses the link they were headed to.
  */
 export const loader = defineHandler(async (c) => {
-  const next = safeNextPath(new URL(c.req.url).searchParams.get("next"));
+  const next = nextFromUrl(c.req.url);
   const session = getSession();
   if (session) {
     return c.redirect(next);

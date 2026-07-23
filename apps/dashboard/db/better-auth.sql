@@ -1,4 +1,5 @@
--- Void-owned Better Auth tables (user / session / account / verification).
+-- Void-owned Better Auth tables (user / session / account / verification +
+-- the MCP OAuth plugin's oauthApplication / oauthAccessToken / oauthConsent).
 --
 -- These are NOT in db/migrations/. Void generates them into
 -- .void/better-auth-schema.ts and applies them itself on the dev server,
@@ -65,8 +66,54 @@ CREATE TABLE IF NOT EXISTS "verification" (
   "updatedAt" timestamptz NOT NULL
 );
 
+-- MCP OAuth plugin tables (Better Auth `mcp`/`oidcProvider` plugin). `clientId`
+-- carries an inline UNIQUE constraint because the two child tables FK to it (an
+-- FK target needs a unique/PK constraint, not just an index).
+CREATE TABLE IF NOT EXISTS "oauthApplication" (
+  "id" text PRIMARY KEY NOT NULL,
+  "name" text NOT NULL,
+  "icon" text,
+  "metadata" text,
+  "clientId" text NOT NULL UNIQUE,
+  "clientSecret" text,
+  "redirectUrls" text NOT NULL,
+  "type" text NOT NULL,
+  "disabled" boolean,
+  "userId" text REFERENCES "user"("id") ON DELETE CASCADE,
+  "createdAt" timestamptz NOT NULL,
+  "updatedAt" timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS "oauthAccessToken" (
+  "id" text PRIMARY KEY NOT NULL,
+  "accessToken" text NOT NULL UNIQUE,
+  "refreshToken" text NOT NULL UNIQUE,
+  "accessTokenExpiresAt" timestamptz NOT NULL,
+  "refreshTokenExpiresAt" timestamptz NOT NULL,
+  "clientId" text NOT NULL REFERENCES "oauthApplication"("clientId") ON DELETE CASCADE,
+  "userId" text REFERENCES "user"("id") ON DELETE CASCADE,
+  "scopes" text NOT NULL,
+  "createdAt" timestamptz NOT NULL,
+  "updatedAt" timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS "oauthConsent" (
+  "id" text PRIMARY KEY NOT NULL,
+  "clientId" text NOT NULL REFERENCES "oauthApplication"("clientId") ON DELETE CASCADE,
+  "userId" text NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
+  "scopes" text NOT NULL,
+  "createdAt" timestamptz NOT NULL,
+  "updatedAt" timestamptz NOT NULL,
+  "consentGiven" boolean NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS "user_email_uidx" ON "user" ("email");
 CREATE UNIQUE INDEX IF NOT EXISTS "session_token_uidx" ON "session" ("token");
 CREATE INDEX IF NOT EXISTS "session_userId_idx" ON "session" ("userId");
 CREATE INDEX IF NOT EXISTS "account_userId_idx" ON "account" ("userId");
 CREATE INDEX IF NOT EXISTS "verification_identifier_idx" ON "verification" ("identifier");
+CREATE INDEX IF NOT EXISTS "oauthApplication_userId_idx" ON "oauthApplication" ("userId");
+CREATE INDEX IF NOT EXISTS "oauthAccessToken_clientId_idx" ON "oauthAccessToken" ("clientId");
+CREATE INDEX IF NOT EXISTS "oauthAccessToken_userId_idx" ON "oauthAccessToken" ("userId");
+CREATE INDEX IF NOT EXISTS "oauthConsent_clientId_idx" ON "oauthConsent" ("clientId");
+CREATE INDEX IF NOT EXISTS "oauthConsent_userId_idx" ON "oauthConsent" ("userId");

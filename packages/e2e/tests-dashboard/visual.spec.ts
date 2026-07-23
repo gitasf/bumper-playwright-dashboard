@@ -11,7 +11,7 @@
  *      changed; do NOT commit a macOS PNG.
  *
  *   2. CI ratchet: enable the env var in `.github/workflows/ci.yml`
- *      for the test-e2e-ui job, generate Linux baselines via a
+ *      for the test-e2e-dashboard job, generate Linux baselines via a
  *      one-shot --update-snapshots run, commit them, then re-enable
  *      in the regular CI job.
  */
@@ -24,13 +24,14 @@ test.describe("Visual regression", () => {
 
   test("run-detail page matches the committed baseline", async ({
     page,
-    runsListPage,
     runDetailPage,
+    openSeededRun,
   }) => {
+    // Viewport must be set BEFORE navigating (Playwright resizes the current
+    // page) — openSeededRun navigates lazily when invoked, so this ordering
+    // still holds.
     await page.setViewportSize({ width: 1440, height: 900 });
-    await runsListPage.goto();
-    const runId = await runsListPage.firstRunId();
-    await runDetailPage.goto(runId);
+    await openSeededRun();
 
     // Wait for the synced-state subscription to settle. Anchored on the
     // test-row links being visible — proves data has streamed in.

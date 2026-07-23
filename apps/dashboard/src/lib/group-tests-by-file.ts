@@ -1,4 +1,5 @@
 import type { RunProgressTest } from "@/realtime/run-progress";
+import { basename } from "@/lib/basename";
 import { statusGroupKey, type StatusGroupKey } from "@/lib/status";
 
 /**
@@ -14,8 +15,8 @@ export function parseTitleSegments(
   const segments = title.split(" > ");
   let start = 0;
   if (projectName && segments[start] === projectName) start += 1;
-  const basename = file.includes("/") ? (file.split("/").pop() ?? file) : file;
-  if (segments[start] === file || segments[start] === basename) start += 1;
+  const base = basename(file);
+  if (segments[start] === file || segments[start] === base) start += 1;
   const remaining = segments.slice(start);
   if (remaining.length === 0) {
     return { describeChain: [], testTitle: title };
@@ -185,17 +186,7 @@ export function mergeGroupRows(
   const live = filterTests(liveRows, opts);
   const map = new Map<string, RunProgressTest>();
   for (const r of fetched) map.set(r.id, r);
-  // A live event replaces its server-fetched row by id, but live rows can't
-  // carry `hasTrace` (artifacts register after the results flush), so carry the
-  // server-derived flag forward — otherwise a mid-view live update would drop
-  // the row's "Test Replay" button until the next reload.
-  for (const r of live) {
-    const prev = map.get(r.id);
-    map.set(
-      r.id,
-      prev?.hasTrace && r.hasTrace === undefined ? { ...r, hasTrace: true } : r,
-    );
-  }
+  for (const r of live) map.set(r.id, r);
   return [...map.values()].sort((a, b) => {
     if (opts.statusFilter === "recommended") {
       const rank = recommendedRank(a.status) - recommendedRank(b.status);

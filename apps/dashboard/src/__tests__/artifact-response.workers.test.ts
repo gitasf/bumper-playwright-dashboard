@@ -3,7 +3,7 @@ import {
   type ArtifactRead,
   buildArtifactHeaders,
   buildArtifactResponse,
-} from "@/lib/artifacts";
+} from "@/lib/artifacts/store";
 
 /**
  * The artifact READ pipeline's HTTP-protocol math (`buildArtifactResponse` +
@@ -35,6 +35,7 @@ const baseOpts = {
   allowedOrigin: "https://dash.example.com",
   r2Key: "t/team1/p/proj1/runs/r1/tr1/a1/screenshot.png",
   method: "GET",
+  sharedMaxAgeSeconds: 3600,
 };
 
 describe("buildArtifactHeaders", () => {
@@ -60,8 +61,23 @@ describe("buildArtifactHeaders", () => {
     const headers = buildArtifactHeaders(read({ size: 4096 }), baseOpts);
     expect(headers.get("etag")).toBe('"abc123"');
     expect(headers.get("content-length")).toBe("4096");
+    // s-maxage caps SHARED caches (Workers Cache) to the token's remaining life
+    // so an edge-cached response can't outlive the token that authorized it.
     expect(headers.get("cache-control")).toBe(
-      "public, max-age=31536000, immutable",
+      "public, max-age=31536000, s-maxage=3600, immutable",
+    );
+  });
+
+  it("threads the token's remaining life into s-maxage (not the full mint TTL)", () => {
+    // A token used late in its life leaves less than the full TTL — the shared
+    // cache must expire with the token, so `sharedMaxAgeSeconds` flows straight
+    // into `s-maxage` rather than a fixed constant.
+    const headers = buildArtifactHeaders(read(), {
+      ...baseOpts,
+      sharedMaxAgeSeconds: 42,
+    });
+    expect(headers.get("cache-control")).toBe(
+      "public, max-age=31536000, s-maxage=42, immutable",
     );
   });
 
@@ -114,6 +130,10 @@ describe("buildArtifactResponse", () => {
     expect(res.body).not.toBeNull();
     expect(res.headers.get("content-range")).toBeNull();
     expect(res.headers.get("content-length")).toBe("1000");
+    // A full 200 keeps the shared-cacheable policy (edge-cacheable per token).
+    expect(res.headers.get("cache-control")).toBe(
+      "public, max-age=31536000, s-maxage=3600, immutable",
+    );
   });
 
   it("returns 200 metadata-only (no body) for a HEAD request", () => {
@@ -139,6 +159,12 @@ describe("buildArtifactResponse", () => {
     // offset + length - 1 = 100 + 200 - 1 = 299
     expect(res.headers.get("content-range")).toBe("bytes 100-299/1000");
     expect(res.headers.get("content-length")).toBe("200");
+    // A 206 partial must NOT be shared-cacheable: Workers Cache keys on the URL
+    // and does not vary by `Range`, so it would answer a later full/other-range
+    // GET with this partial. Browser cache stays (`private`); no `s-maxage`.
+    expect(res.headers.get("cache-control")).toBe(
+      "private, max-age=31536000, immutable",
+    );
   });
 
   it("defaults the range length to size - offset for an open-ended range", () => {

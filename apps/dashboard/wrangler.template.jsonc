@@ -24,6 +24,17 @@
   "name": "__CF_WORKER_NAME__",
   "compatibility_date": "2026-05-22",
   "compatibility_flags": ["nodejs_compat"],
+  // Cloudflare Workers Cache: edge-caches responses per their Cache-Control
+  // headers; a cache hit is served without invoking the Worker at all (no
+  // middleware, no CPU billed). Only explicit `public, …` responses are stored
+  // — /assets/* chunks (immutable, via void.json routing.headers + Void's
+  // asset entry) and worker-proxied artifact downloads (s-maxage-capped, see
+  // src/lib/artifacts.ts). Everything else is stamped `private, no-store` by
+  // middleware/00.cache.ts, which is the safety net that makes this flag safe
+  // to enable (Workers Cache heuristically caches responses with NO
+  // Cache-Control header, and session cookies do not bypass the cache).
+  // Requires wrangler >= 4.101 (older versions reject the key).
+  "cache": { "enabled": true },
   // Don't build the monitor sandbox container image on `vite dev`/preview. The
   // `sandbox` block in void.json adds a Cloudflare container binding, and the
   // Cloudflare plugin otherwise builds `Dockerfile.sandbox` (FROM

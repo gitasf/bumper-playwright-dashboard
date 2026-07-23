@@ -5,8 +5,9 @@ import { cn } from "@/lib/cn";
 /**
  * The shared focus-ring + sizing class string for the compact search-filter
  * field. Pulled out as a pure function so the long, fiddly Tailwind string
- * lives in exactly one place (and is unit-testable). Callers pass `inputClassName`
- * to tweak size — e.g. RunsSearchInput bumps `h-7` to `h-8 text-[13px]`.
+ * lives in exactly one place (and is unit-testable). `h-8` is the standard
+ * toolbar control height — the same as the filter triggers and segmented
+ * controls it sits next to; callers should not override sizing.
  *
  * Note this is intentionally NOT the design-system `ui/Input` — that is a
  * heavier bordered+shadow control. This is the bespoke compact search field
@@ -14,7 +15,9 @@ import { cn } from "@/lib/cn";
  */
 export function searchFilterInputClassName(inputClassName?: string): string {
   return cn(
-    "h-7 w-full rounded-md border border-line-1 bg-card pl-8 pr-2.5 text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/24",
+    // text-base below the sm breakpoint: iOS Safari zooms the page when a
+    // focused input's font-size is under 16px.
+    "h-8 w-full rounded-md border border-line-1 bg-bg-1 pl-8 pr-2.5 text-base sm:text-body text-fg-1 outline-none placeholder:text-fg-3/72 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/24 [&::-webkit-search-cancel-button]:appearance-none",
     inputClassName,
   );
 }
@@ -47,7 +50,7 @@ export function SearchFilterInput({
     <div className={cn("relative", className)}>
       <SearchIcon
         aria-hidden
-        className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+        className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-3"
       />
       <input
         className={searchFilterInputClassName(inputClassName)}

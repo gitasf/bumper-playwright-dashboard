@@ -53,6 +53,17 @@ describe("checkTcpHostPolicy — rejected (SSRF block set, shared with http)", (
     expect(ok("[fe80::1]")).toBe(false);
     expect(ok("[fe8f::1]")).toBe(false);
     expect(ok("[febf::1]")).toBe(false);
+    // BARE (unbracketed) form — a tcp host is never wrapped in `new URL()`, so
+    // unlike the http policy it sees the raw literal a user typed directly.
+    // Regression for the bug where a bare IPv6 literal fell through to the
+    // IPv4 parser and was silently allowed.
+    expect(ok("::1")).toBe(false);
+    expect(ok("fe80::1")).toBe(false);
+    expect(ok("fc00::1")).toBe(false);
+  });
+
+  it("accepts a public bare IPv6 literal (no over-blocking)", () => {
+    expect(ok("2606:4700:4700::1111")).toBe(true);
   });
 });
 

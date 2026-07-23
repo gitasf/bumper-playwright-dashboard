@@ -2,6 +2,7 @@ import type React from "react";
 import { scaleLinear } from "@visx/scale";
 import { Line } from "@visx/shape";
 import { cn } from "@/lib/cn";
+import { ChartColumnTooltip, ChartTooltipProvider } from "./chart-tooltip";
 
 export interface BucketBarSegment {
   count: number;
@@ -15,8 +16,8 @@ export interface BucketBarChartBucket {
   segments: BucketBarSegment[];
   /** Sum of segment counts — used to size the bar against the y-axis. */
   total: number;
-  /** Tooltip content rendered on hover. HTML only (no client JS). */
-  tooltip?: React.ReactNode;
+  /** Tooltip content rendered on hover (portaled Base UI tooltip). */
+  tooltip: React.ReactNode;
 }
 
 export interface BucketBarChartProps {
@@ -45,10 +46,11 @@ function pickLabelIndices(count: number): Set<number> {
 }
 
 /**
- * Shared RSC bar chart. One segment → solid bar, multiple segments →
+ * Shared bar chart. One segment → solid bar, multiple segments →
  * stacked. Y-axis uses `scaleLinear().nice(4)`; x-axis labels are sparse
  * (first / third / two-thirds / last) so 30+ bucket views stay readable.
- * Tooltips are HTML-overlays with CSS `group-hover` — no client JS.
+ * Tooltips use the shared `ui/tooltip` (Base UI) — portaled, so the
+ * surrounding `overflow-hidden` cards never clip them.
  */
 export function BucketBarChart({
   buckets,
@@ -61,7 +63,7 @@ export function BucketBarChart({
     return (
       <div
         className={cn(
-          "flex items-center justify-center rounded-lg border border-dashed border-border py-16 text-sm text-muted-foreground",
+          "flex items-center justify-center rounded-lg border border-dashed border-line-1 py-16 text-sm text-fg-3",
           className,
         )}
         style={{ minHeight: height }}
@@ -92,7 +94,7 @@ export function BucketBarChart({
         className="grid gap-2"
         style={{ gridTemplateColumns: "48px 1fr", height }}
       >
-        <div className="relative pr-1 text-right font-mono text-[10px] text-muted-foreground">
+        <div className="relative pr-1 text-right font-mono text-micro text-fg-3">
           {yTicks.map((t) => (
             <span
               key={t}
@@ -132,59 +134,54 @@ export function BucketBarChart({
             />
           </svg>
 
-          <div
-            className="pointer-events-none absolute inset-x-0 top-0 flex items-end"
-            style={{ height: plotH }}
-          >
-            {buckets.map((b) => {
-              const totalPct =
-                niceMax > 0 ? Math.min((b.total / niceMax) * 100, 100) : 0;
-              const denom = b.total || 1;
-              return (
-                <div
-                  key={b.key}
-                  className="group relative flex-1 px-[2px] h-full"
-                >
-                  {b.total > 0 && (
-                    <div
-                      className="absolute inset-x-[2px] bottom-0 flex flex-col-reverse overflow-hidden rounded-t-sm opacity-90 transition-opacity group-hover:opacity-100"
-                      style={{ height: `${totalPct}%` }}
-                    >
-                      {b.segments.map(
-                        (seg, i) =>
-                          seg.count > 0 && (
-                            <div
-                              key={i}
-                              style={{
-                                height: `${(seg.count / denom) * 100}%`,
-                                background: seg.color,
-                              }}
-                            />
-                          ),
-                      )}
-                    </div>
-                  )}
-                  {/* Full-column hitbox so hover still surfaces a
-                   * tooltip when the bar itself is very thin. */}
-                  <div className="pointer-events-auto absolute inset-0" />
-                  {b.tooltip && (
-                    <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-44 -translate-x-1/2 rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg group-hover:block">
-                      {b.tooltip}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <ChartTooltipProvider widthClass="w-40">
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 flex items-end"
+              style={{ height: plotH }}
+            >
+              {buckets.map((b) => {
+                const totalPct =
+                  niceMax > 0 ? Math.min((b.total / niceMax) * 100, 100) : 0;
+                const denom = b.total || 1;
+                return (
+                  <div
+                    key={b.key}
+                    className="group relative flex-1 px-[2px] h-full"
+                  >
+                    {b.total > 0 && (
+                      <div
+                        className="absolute inset-x-[2px] bottom-0 flex flex-col-reverse overflow-hidden rounded-t-sm opacity-90 transition-opacity group-hover:opacity-100"
+                        style={{ height: `${totalPct}%` }}
+                      >
+                        {b.segments.map(
+                          (seg, i) =>
+                            seg.count > 0 && (
+                              <div
+                                key={i}
+                                style={{
+                                  height: `${(seg.count / denom) * 100}%`,
+                                  background: seg.color,
+                                }}
+                              />
+                            ),
+                        )}
+                      </div>
+                    )}
+                    <ChartColumnTooltip tooltip={b.tooltip} />
+                  </div>
+                );
+              })}
+            </div>
+          </ChartTooltipProvider>
 
           <div
-            className="absolute inset-x-0 bottom-0 flex items-start border-t border-border pt-[4px]"
+            className="absolute inset-x-0 bottom-0 flex items-start border-t border-line-1 pt-[4px]"
             style={{ height: X_AXIS_PX }}
           >
             {buckets.map((b, i) => (
               <div
                 key={`xl-${b.key}`}
-                className="flex flex-1 justify-center font-mono text-[10px] text-muted-foreground"
+                className="flex flex-1 justify-center font-mono text-micro text-fg-3"
               >
                 {labelIdx.has(i) ? b.label : ""}
               </div>

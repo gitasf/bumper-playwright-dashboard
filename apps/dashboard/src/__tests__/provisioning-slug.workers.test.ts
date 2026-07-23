@@ -106,12 +106,13 @@ describe("pickUniqueSlug", () => {
  * synthetic monitors running arbitrary code on the operator's account).
  */
 describe("teamCreationAllowed", () => {
-  it("allows anyone when open signup is enabled", () => {
+  it("allows anyone when open signup is enabled (bootstrap flag irrelevant)", () => {
     expect(
       teamCreationAllowed({
         openSignup: true,
         isMemberOfAnyTeam: false,
         anyTeamExists: true,
+        allowFirstTeamBootstrap: false,
       }),
     ).toBe(true);
   });
@@ -122,18 +123,31 @@ describe("teamCreationAllowed", () => {
         openSignup: false,
         isMemberOfAnyTeam: true,
         anyTeamExists: true,
+        allowFirstTeamBootstrap: false,
       }),
     ).toBe(true);
   });
 
-  it("allows the bootstrap case — closed instance with zero teams", () => {
+  it("allows the zero-teams bootstrap ONLY when the operator opted in", () => {
     expect(
       teamCreationAllowed({
         openSignup: false,
         isMemberOfAnyTeam: false,
         anyTeamExists: false,
+        allowFirstTeamBootstrap: true,
       }),
     ).toBe(true);
+  });
+
+  it("REFUSES the zero-teams bootstrap to an anonymous stranger when not opted in", () => {
+    expect(
+      teamCreationAllowed({
+        openSignup: false,
+        isMemberOfAnyTeam: false,
+        anyTeamExists: false,
+        allowFirstTeamBootstrap: false,
+      }),
+    ).toBe(false);
   });
 
   it("refuses a memberless user on a closed instance with existing teams", () => {
@@ -142,6 +156,7 @@ describe("teamCreationAllowed", () => {
         openSignup: false,
         isMemberOfAnyTeam: false,
         anyTeamExists: true,
+        allowFirstTeamBootstrap: true, // bootstrap flag can't grant once teams exist
       }),
     ).toBe(false);
   });

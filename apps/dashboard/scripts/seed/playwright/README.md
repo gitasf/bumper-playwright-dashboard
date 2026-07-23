@@ -16,6 +16,16 @@ build id). Each invocation goes through the real ingest + artifact flow,
 so the seeded runs include actual traces, videos, screenshots, and a
 visual-diff triple in R2.
 
+The specs drive a fake storefront ([`mock-site.ts`](./mock-site.ts)) via
+`gotoShop(page)` rather than static `page.setContent` — everything is
+served from Playwright route handlers (no live server / internet), so each
+trace carries realistic **Console** and **Network** entries (document +
+CSS/JS/image sub-resources, GET/POST `fetch` calls, a deliberate 404) for
+the trace viewer's Console + Network tabs. `trace: "on"` (see
+`playwright.config.ts`) records a trace for **passing** tests too — the
+all-green scenarios would otherwise ship none. `visual-regression.spec.ts`
+keeps its `setContent` render (compared against a committed baseline).
+
 ## Prerequisites
 
 1. `pnpm setup:local` — runs migrations and bootstraps the demo user/team/

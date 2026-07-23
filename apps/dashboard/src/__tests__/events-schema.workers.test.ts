@@ -16,6 +16,7 @@ import {
 
 const summary = {
   totalTests: 2,
+  expectedTotalTests: null,
   passed: 1,
   failed: 1,
   flaky: 0,

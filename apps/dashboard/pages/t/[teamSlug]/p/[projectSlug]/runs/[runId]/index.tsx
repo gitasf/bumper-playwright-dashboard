@@ -2,28 +2,30 @@ import { Link, PREFETCH_REALTIME } from "@/components/ui/link";
 import type React from "react";
 import { use, useMemo } from "react";
 import { ActorAvatar } from "@/components/actor-avatar";
+import { githubAvatarUrl } from "@/lib/github-avatar";
 import { DeferredSection } from "@/components/defer-error-boundary";
 import { DetailHeaderBar, HeaderCrumbs } from "@/components/page-header";
-import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { RunHistoryBranchFilter } from "@/components/run/history-branch-filter";
+import { ALL_BRANCHES } from "@/components/run/history-branch-filter.shared";
 import {
   RunHistoryChart,
   type RunHistoryPoint,
   RunHistoryChartSkeleton,
-} from "@/components/run-history-chart";
+} from "@/components/run/history-chart";
 import {
   RunDurationLive,
   RunStatusGlyphLive,
   RunTestCountLive,
-} from "@/components/run-detail-live";
+} from "@/components/run/detail-live";
 import {
   BranchPill,
   CommitPill,
   EnvPill,
   PrPill,
-} from "@/components/run-meta-pills";
-import { RunProgress } from "@/components/run-progress";
-import { RunSummaryLive } from "@/components/run-summary-live";
+} from "@/components/run/meta-pills";
+import { RunProgress } from "@/components/run/progress";
+import { RunSummaryLive } from "@/components/run/summary-live";
+import { TabBar, TabBarTab } from "@/components/ui/tabs";
 import { cn } from "@/lib/cn";
 import { makeHrefBuilder } from "@/lib/page-links";
 import { branchUrl, commitUrl, prUrl } from "@/lib/pr-url";
@@ -81,7 +83,11 @@ export default function RunDetailPage({
   // Reusing one element across the Suspense boundary keeps the title row
   // byte-identical between states — only the plot body swaps.
   const branchFilter = (
-    <RunHistoryBranchFilter branches={branches} defaultValue={defaultBranch} />
+    <RunHistoryBranchFilter
+      branches={branches}
+      defaultValue={defaultBranch}
+      variant="inline"
+    />
   );
 
   // Memoized on the `run` loader prop so the object identity is stable across
@@ -90,6 +96,7 @@ export default function RunDetailPage({
   const initialSummary = useMemo(
     () => ({
       totalTests: run.totalTests,
+      expectedTotalTests: run.expectedTotalTests,
       passed: run.passed,
       failed: run.failed,
       flaky: run.flaky,
@@ -117,7 +124,10 @@ export default function RunDetailPage({
         {/* Sticky H1 row — fixed 52px height so the tab bar below can pin to a
          * matching `top-[52px]` with zero gap. Padding-based heights aren't
          * deterministic enough (text metrics + border can drift a couple px). */}
-        <DetailHeaderBar className="sticky top-0 z-30 border-b border-border bg-background">
+        <DetailHeaderBar
+          className="sticky top-0 z-30 border-b border-line-1 bg-bg-0"
+          data-testid="run-header"
+        >
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <HeaderCrumbs
               items={[
@@ -125,14 +135,12 @@ export default function RunDetailPage({
               ]}
             />
             <h1
-              className="flex min-w-0 flex-1 items-center gap-2 text-[17px] font-semibold tracking-[-0.2px]"
+              className="flex min-w-0 flex-1 items-center gap-2 text-heading font-semibold tracking-[-0.2px]"
               title={run.commitMessage ?? run.id}
             >
               <span className="min-w-0 truncate">
                 {run.commitMessage ?? (
-                  <span className="italic text-muted-foreground">
-                    No message
-                  </span>
+                  <span className="italic text-fg-3">No message</span>
                 )}
               </span>
               <RunStatusGlyphLive
@@ -141,8 +149,8 @@ export default function RunDetailPage({
                 size={18}
               />
             </h1>
-            <div className="flex shrink-0 items-center gap-3 text-[12px] text-muted-foreground">
-              <span className="font-mono text-[13px] tabular-nums">
+            <div className="flex shrink-0 items-center gap-3 text-caption text-fg-3">
+              <span className="font-mono text-body tabular-nums">
                 #{shortId}
               </span>
               <RunDurationLive
@@ -157,8 +165,8 @@ export default function RunDetailPage({
         </DetailHeaderBar>
 
         {/* Scrolling header — chips + summary, OutcomeBar, duration trend */}
-        <div className="border-b border-border px-6 pt-3 pb-[18px]">
-          <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11.5px]">
+        <div className="border-b border-line-1 px-6 pt-3 pb-[18px]">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-caption">
             {run.branch ? (
               <BranchPill
                 className="max-w-[220px]"
@@ -172,7 +180,11 @@ export default function RunDetailPage({
             {run.environment ? <EnvPill env={run.environment} /> : null}
             {run.actor ? (
               <span className="inline-flex shrink-0 items-center gap-1.5 text-fg-2">
-                <ActorAvatar actor={run.actor} size={14} />
+                <ActorAvatar
+                  actor={run.actor}
+                  imageUrl={githubAvatarUrl(run.actor, run.ciProvider)}
+                  size={14}
+                />
                 <span>{run.actor}</span>
               </span>
             ) : null}
@@ -216,28 +228,19 @@ export default function RunDetailPage({
         {/* Sticky tab bar — `top-[52px]` matches the fixed H1 row height so
          * the two sticky bands butt up against each other with no gap and no
          * overlap. */}
-        <div className="sticky top-[52px] z-20 flex items-end gap-1 border-b border-line-1 bg-background px-6">
+        <TabBar className="sticky top-[52px] z-20 bg-bg-0 px-6">
           {TAB_KEYS.map((key) => (
-            <Link
-              className={cn(
-                "relative -mb-px px-3 py-2 text-[13px] transition-colors",
-                tab === key
-                  ? "text-foreground font-medium after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-[var(--running)] after:content-['']"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              href={tabHref(key)}
-              key={key}
-            >
+            <TabBarTab active={tab === key} href={tabHref(key)} key={key}>
               {TAB_LABEL[key]}
               {key === "tests" ? (
-                <span className="ml-1.5 font-mono text-[11px] tabular-nums text-fg-3">
+                <span className="font-mono text-micro tabular-nums text-fg-3">
                   <RunTestCountLive
                     initialSummary={initialSummary}
                     runId={runId}
                   />
                 </span>
               ) : null}
-            </Link>
+            </TabBarTab>
           ))}
           <div className="flex-1" />
           {/* Compare affordance (roadmap 2.4): diff this run against a baseline
@@ -245,12 +248,12 @@ export default function RunDetailPage({
            * edge of the tab bar so it doesn't shift the tab pills. */}
           <Link
             aria-label="Compare this run against a baseline"
-            className="-mb-px py-2 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
+            className="-mb-px py-2 text-body text-fg-3 transition-colors hover:text-fg-1"
             href={`${base}/runs/${runId}/diff`}
           >
             Compare <span aria-hidden="true">↗</span>
           </Link>
-        </div>
+        </TabBar>
 
         {/* Tab content — scrolls with the rest of the page */}
         {tab === "tests" ? (
@@ -307,15 +310,14 @@ function RunHistoryChartRegion({
     status: h.status,
     current: h.id === runId,
     href: h.id === runId ? undefined : `${base}/runs/${h.id}${hrefQuery}`,
-    hover:
-      h.id === runId
-        ? undefined
-        : {
-            kind: "run" as const,
-            teamSlug,
-            projectSlug,
-            runId: h.id,
-          },
+    // Every bar — including the current run — shows its summary on hover; only
+    // the self-navigating `href` is dropped for the current run.
+    hover: {
+      kind: "run" as const,
+      teamSlug,
+      projectSlug,
+      runId: h.id,
+    },
     label: [
       h.status,
       formatDuration(h.durationMs),
@@ -377,11 +379,11 @@ function EnvironmentTab({ run }: { run: Props["run"] }): React.ReactElement {
 
   return (
     <div className="p-6">
-      <div className="max-w-[720px] overflow-hidden rounded-[8px] border border-line-1 bg-card">
+      <div className="max-w-[720px] overflow-hidden rounded-[9px] border border-line-1 bg-bg-1">
         {rows.map((r, i) => (
           <div
             className={cn(
-              "flex items-center px-4 py-2.5 text-[13px]",
+              "flex items-center px-4 py-2.5 text-body",
               i !== rows.length - 1 && "border-b border-line-1",
             )}
             key={r.label}
@@ -389,7 +391,7 @@ function EnvironmentTab({ run }: { run: Props["run"] }): React.ReactElement {
             <span className="w-[140px] shrink-0 text-fg-3">{r.label}</span>
             <span
               className={cn(
-                "min-w-0 truncate text-foreground",
+                "min-w-0 truncate text-fg-1",
                 r.mono && "font-mono",
               )}
             >

@@ -1,5 +1,7 @@
 import { type Locator, type Page, expect } from "@playwright/test";
 
+import { gotoAndExpect, waitForHydration } from "../helpers/navigation";
+
 /**
  * Page object for `/t/:teamSlug/p/:projectSlug` (the project's runs list).
  * Encapsulates the run-row link contract and the empty-state copy.
@@ -35,7 +37,8 @@ export class RunsListPage {
   }
 
   async goto(query?: string): Promise<void> {
-    await this.page.goto(query ? `${this.path}?${query}` : this.path);
+    const target = query ? `${this.path}?${query}` : this.path;
+    await gotoAndExpect(this.page, target, this.heading);
   }
 
   async expectLoaded(): Promise<void> {
@@ -45,6 +48,9 @@ export class RunsListPage {
   /** Returns the runId of the first row, or throws if none exist. */
   async firstRunId(): Promise<string> {
     const link = this.runLinks.first();
+    await expect(link).toHaveAttribute("href", /\/runs\//, {
+      timeout: 15_000,
+    });
     const href = await link.getAttribute("href");
     if (!href) throw new Error("no run-row-link href on the project page");
     const match = href.match(/\/runs\/([\w]+)/);
@@ -54,7 +60,11 @@ export class RunsListPage {
 
   async clickFirstRun(): Promise<string> {
     const id = await this.firstRunId();
+    await waitForHydration(this.page);
     await this.runLinks.first().click();
+    await expect(this.page).toHaveURL(new RegExp(`/runs/${id}(?:\\?|$)`), {
+      timeout: 15_000,
+    });
     return id;
   }
 

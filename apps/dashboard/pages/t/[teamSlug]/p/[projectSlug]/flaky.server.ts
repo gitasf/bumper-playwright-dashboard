@@ -1,12 +1,12 @@
 import { defer, defineHandler, type InferProps } from "void";
-import { and, db, eq, gte, inArray, sql } from "void/db";
-import { runs, testResults, testTags } from "@schema";
+import { and, db, eq, inArray, sql } from "void/db";
+import { testResults, testTags } from "@schema";
 import {
   branchFragment,
   ciRunsJoinFragment,
-  ciRunsJoinOn,
   testResultsScopeJoin,
 } from "@/lib/analytics/filters";
+import { rankFlakyTests } from "@/lib/analytics/flaky-ranking";
 import {
   normalizeBranchFilter,
   resolveAnalyticsWindow,
@@ -14,18 +14,19 @@ import {
 import { latestPerTestRn } from "@/lib/analytics/per-test";
 import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
-import { numericSql } from "@/lib/db/sql-ops";
-import { runRows } from "@/lib/db-run";
-import { rate } from "@/lib/rate";
+import { runRows } from "@/lib/runs/db";
 import { type OwnerEntry, resolveTestOwners } from "@/lib/owners-repo";
-import { childProjectScopeWhere, type TenantScope } from "@/lib/scope";
+import { deferredNoStore, pageProjectFields } from "@/lib/page-loader";
+import { type TenantScope } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
 
 const TOP_N = 50;
 const SPARKLINE_SIZE = 20;
-const RECENT_FAILURES = 3;
+// Only the latest failure per test is ever rendered (flaky-test-row.tsx reads
+// recentFailures[0]), so this fetches exactly 1 row per testId.
+const RECENT_FAILURES = 1;
 
 type RangeKey = "7d" | "14d" | "30d";
 const RANGES: readonly RangeKey[] = ["7d", "14d", "30d"];
@@ -76,7 +77,6 @@ export interface RecentFailureRow {
   actor: string | null;
   createdAt: number;
   errorMessage: string | null;
-  errorStack: string | null;
 }
 
 /**
@@ -84,7 +84,7 @@ export interface RecentFailureRow {
  *  1. Aggregate per testId across the window — flakyCount / passedCount /
  *     total. Filter to tests that have at least one flaky result.
  *  2. Sparkline (last 20 statuses) + latest title/file for the page slice.
- *  3. Recent failures (last 3 flaky/failed/timedout) per testId.
+ *  3. Recent failures (latest flaky/failed/timedout) per testId.
  */
 export const loader = defineHandler(async (c) => {
   const { project, scope } = requireTenantContext(c);
@@ -98,45 +98,21 @@ export const loader = defineHandler(async (c) => {
   const { windowStartSec, days } = resolveAnalyticsWindow(range);
   const rangeDays = days ?? 0;
 
-  // 1. Aggregates (in parallel with the independent branch-list query).
-  const aggConditions = [
-    childProjectScopeWhere(testResults.projectId, scope),
-    gte(testResults.createdAt, windowStartSec),
-  ];
-  if (branchFilter) aggConditions.push(eq(runs.branch, branchFilter));
-
   // The branch list is a cheap index-covered DISTINCT that drives the eager
   // toolbar filter, so it stays eager. Every heavy pass (the aggregate + the
   // per-test fan-out) defers together below.
   const branches = await loadProjectBranches(scope);
 
-  // A deferred loader streams a variant-specific body (NDJSON on SPA nav /
-  // chunked HTML on document load, keyed by `Vary: X-VoidPages`); SWR/max-age
-  // caching would let the browser replay the wrong variant. Deferred pages must
-  // not be stored. (Was `private, max-age=300, stale-while-revalidate=900`.)
-  c.header("Cache-Control", "private, no-store");
+  deferredNoStore(c);
   return {
-    project: {
-      id: project.id,
-      teamId: project.teamId,
-      slug: project.slug,
-      name: project.name,
-      teamSlug: project.teamSlug,
-      // Owner-gating for the manual test-ownership assign/remove controls; the
-      // mutation is owner-gated server-side too, so non-owners just see chips.
-      canManageOwners: project.role === "owner",
-    },
+    project: pageProjectFields(project),
     range,
     branchParam,
     branchAll,
     branchFilter,
     branches,
     rangeDays,
-    // Set by the owner mutation route on a validation / conflict failure
-    // (it redirects back here with ?ownerError=…). Surfaced as a banner.
-    ownerError: url.searchParams.get("ownerError"),
     pathname: url.pathname,
-    fullPath: url.pathname + url.search,
     ranges: RANGES,
 
     // The whole flaky payload streams as ONE grouped resolver behind the KPI
@@ -147,38 +123,20 @@ export const loader = defineHandler(async (c) => {
     // These are the heaviest reads in the app — keeping them eager would defeat
     // the conversion. Returns plain serializable JSON (maps → objects).
     flaky: defer(async () => {
-      // Join `runs` unconditionally via ciRunsJoinOn: the ON clause carries the
-      // `origin <> 'synthetic'` exclusion, so monitor tests can't rank on the
-      // flaky page even with no branch filter active. (The join used to be
-      // branch-conditional as a perf nicety — skipping a `runs` PK probe per
-      // scanned row — but it's now load-bearing for correctness.)
-      const aggRows = await db
-        .select({
-          testId: testResults.testId,
-          total: numericSql(
-            sql`sum(case when ${testResults.status} != 'skipped' then 1 else 0 end)`,
-          ),
-          flakyCount: numericSql(
-            sql`sum(case when ${testResults.status} = 'flaky' then 1 else 0 end)`,
-          ),
-          passedCount: numericSql(
-            sql`sum(case when ${testResults.status} = 'passed' then 1 else 0 end)`,
-          ),
-        })
-        .from(testResults)
-        .innerJoin(runs, ciRunsJoinOn())
-        .where(and(...aggConditions))
-        .groupBy(testResults.testId)
-        .having(
-          sql`sum(case when ${testResults.status} = 'flaky' then 1 else 0 end) >= 1`,
-        );
-
-      const rankedAll: RankedTest[] = aggRows
-        .map((r) => ({
-          ...r,
-          pct: rate(r.flakyCount, r.flakyCount + r.passedCount),
-        }))
-        .sort((a, b) => b.pct - a.pct || b.flakyCount - a.flakyCount);
+      // PASS 1: the flakiest-tests ranking, shared verbatim with the MCP
+      // `list_flaky_tests` tool via `rankFlakyTests` so the page and an agent
+      // can't disagree about "the flakiest tests" for the same window. It joins
+      // `runs` unconditionally (ciRunsJoinOn) so its `origin <> 'synthetic'`
+      // exclusion keeps monitor tests from ranking even with no branch filter.
+      const rankedAll: RankedTest[] = (
+        await rankFlakyTests(scope, { windowStartSec, branch: branchFilter })
+      ).map((r) => ({
+        testId: r.testId,
+        total: r.total,
+        flakyCount: r.flakyCount,
+        passedCount: r.passedCount,
+        pct: r.flakeRatePct,
+      }));
 
       const totalFlakyTests = rankedAll.length;
       const ranked = rankedAll.slice(0, TOP_N);
@@ -235,7 +193,6 @@ export const loader = defineHandler(async (c) => {
             actor: r.actor,
             createdAt: r.createdAt,
             errorMessage: r.errorMessage,
-            errorStack: r.errorStack,
           });
         }
       }
@@ -313,7 +270,6 @@ interface RecentFailureSqlRow {
   runId: string;
   createdAt: number;
   errorMessage: string | null;
-  errorStack: string | null;
   commitSha: string | null;
   branch: string | null;
   actor: string | null;
@@ -334,9 +290,13 @@ async function loadRecentFailures(
         tr."testId" as "testId",
         tr.id as "testResultId",
         tr."runId" as "runId",
-        tr."createdAt" as "createdAt",
+        -- createdAt is int8: this raw runRows read bypasses Drizzle's decoders,
+        -- so node-postgres returns it as a STRING (pglite returns a number,
+        -- hiding it). Cast to double precision so createdAt is a JS number on
+        -- real pg -- RecentFailureRow.createdAt is typed number and feeds
+        -- formatRelativeTime, which does arithmetic on it.
+        cast(tr."createdAt" as double precision) as "createdAt",
         tr."errorMessage" as "errorMessage",
-        tr."errorStack" as "errorStack",
         runs."commitSha" as "commitSha",
         runs.branch as branch,
         runs.actor as actor,
@@ -351,7 +311,7 @@ async function loadRecentFailures(
         ${branchSql}
     )
     select "testId", "testResultId", "runId", "createdAt",
-           "errorMessage", "errorStack", "commitSha", branch, actor, rn
+           "errorMessage", "commitSha", branch, actor, rn
     from ranked
     where rn <= ${count}
     order by "testId" asc, rn asc

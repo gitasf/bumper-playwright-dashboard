@@ -2,7 +2,12 @@ import { defineHandler } from "void";
 import { getApiKey } from "@/lib/api-auth";
 import { tenantScopeForApiKey } from "@/lib/scope";
 import { OpenRunPayloadSchema } from "@/lib/schemas";
-import { backdatingAllowed, openRun } from "@/lib/ingest";
+import {
+  backdatingAllowed,
+  openRun,
+  RunQuotaOvershootError,
+  RunRowCapExceededError,
+} from "@/lib/ingest";
 import { checkQuota } from "@/lib/usage";
 
 function runUrl(scope: { teamSlug: string; projectSlug: string }, id: string) {
@@ -35,8 +40,8 @@ export const POST = defineHandler.withValidator({
   // A duplicate re-open of an existing run is gated too; the narrow case of a
   // late shard re-opening the run that sat exactly at the limit is acceptable.
   const quota = await checkQuota(scope.teamId, "runs", 1, nowSeconds);
-  if (quota.status === "blocked") {
-    return c.json(
+  const quotaError = () =>
+    c.json(
       {
         error:
           "Monthly run quota exceeded for this team. Upgrade the plan or wait for the next billing period.",
@@ -45,9 +50,32 @@ export const POST = defineHandler.withValidator({
       },
       429,
     );
+  if (quota.status === "blocked") {
+    return quotaError();
   }
 
-  const { runId, duplicate } = await openRun(scope, payload, nowSeconds);
+  let runId: string;
+  let duplicate: boolean;
+  try {
+    ({ runId, duplicate } = await openRun(scope, payload, nowSeconds, {
+      runsQuotaLimit: quota.limit,
+    }));
+  } catch (err) {
+    if (err instanceof RunQuotaOvershootError) return quotaError();
+    // Same 413 contract as /results' rowCapExceeded — the reporter drops the
+    // run instead of retrying an open that can never fit.
+    if (err instanceof RunRowCapExceededError) {
+      return c.json(
+        {
+          error: `Planned test set exceeds this instance's ${err.limit}-row per-run test-result ceiling.`,
+          limit: err.limit,
+          count: err.count,
+        },
+        413,
+      );
+    }
+    throw err;
+  }
 
   if (quota.status === "softWarn") {
     c.header(

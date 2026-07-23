@@ -143,7 +143,7 @@ describe("numAggExpr — numeric → double precision coercion", () => {
  * the wrapping text off `strings` and assert the inner fragment (with its own
  * bound params) is threaded through as an interpolated arg, never flattened into
  * a raw string. End-to-end param preservation is covered against pglite in
- * `pg-integration.test.ts` (the stub doesn't flatten nested fragments).
+ * `pg-integration/` (the stub doesn't flatten nested fragments).
  */
 
 /** A tagged-template `sql\`…\`` node records `strings` (chunks) + `args` (interps). */

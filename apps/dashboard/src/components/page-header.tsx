@@ -37,10 +37,10 @@ interface PageHeaderProps {
  */
 export function PageHeader({ title, crumbs = [], right }: PageHeaderProps) {
   return (
-    <DetailHeaderBar className="justify-between gap-4 border-b border-border">
+    <DetailHeaderBar className="justify-between gap-4 border-b border-line-1">
       <div className="flex min-w-0 items-center gap-1.5">
         <HeaderCrumbs items={crumbs} />
-        <h1 className="min-w-0 truncate text-[17px] font-semibold tracking-[-0.2px]">
+        <h1 className="min-w-0 truncate text-heading font-semibold tracking-[-0.2px]">
           {title}
         </h1>
       </div>
@@ -65,12 +65,18 @@ export function PageHeader({ title, crumbs = [], right }: PageHeaderProps) {
 export function DetailHeaderBar({
   className,
   children,
+  "data-testid": dataTestId,
 }: {
   className?: string;
   children: React.ReactNode;
+  /** Optional test hook for e2e locators (e.g. the run-detail sticky header). */
+  "data-testid"?: string;
 }): React.ReactElement {
   return (
-    <div className={cn("flex h-[52px] shrink-0 items-center px-6", className)}>
+    <div
+      className={cn("flex h-[52px] shrink-0 items-center px-6", className)}
+      data-testid={dataTestId}
+    >
       {children}
     </div>
   );
@@ -97,7 +103,7 @@ export function HeaderCrumbs({
           {item.href ? (
             <Link
               cacheFor={item.cacheFor}
-              className="max-w-[280px] shrink-0 truncate text-[17px] font-semibold tracking-[-0.2px] text-fg-3 transition-colors hover:text-foreground"
+              className="max-w-[280px] shrink-0 truncate text-heading font-semibold tracking-[-0.2px] text-fg-3 transition-colors hover:text-fg-1"
               href={item.href}
               title={item.label}
             >
@@ -105,7 +111,7 @@ export function HeaderCrumbs({
             </Link>
           ) : (
             <span
-              className="max-w-[280px] shrink-0 truncate text-[17px] font-semibold tracking-[-0.2px] text-fg-3"
+              className="max-w-[280px] shrink-0 truncate text-heading font-semibold tracking-[-0.2px] text-fg-3"
               title={item.label}
             >
               {item.label}

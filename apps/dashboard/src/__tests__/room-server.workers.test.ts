@@ -23,8 +23,16 @@ describe("resolveInternalSecret", () => {
     ).toBe("dedicated");
   });
 
-  it("honors an explicit empty override (presence, not truthiness)", () => {
-    expect(resolveInternalSecret({ REALTIME_INTERNAL_SECRET: "" })).toBe("");
+  it("treats an explicit empty override as ABSENT, never returning empty", () => {
+    // REALTIME_INTERNAL_SECRET="" is a plausible self-host "I meant to unset
+    // it" misconfig. Honoring it as the literal secret would let a request
+    // with an equally-empty (i.e. absent) header pass isInternalRequest's
+    // compare, disabling the ONLY gate against a forged cross-tenant
+    // broadcast — so it must fall back (here: to throwing, since no
+    // build-time secret is injected under test), never resolve to "".
+    expect(() =>
+      resolveInternalSecret({ REALTIME_INTERNAL_SECRET: "" }),
+    ).toThrow(/internal secret unavailable/i);
   });
 
   it("THROWS when no override and no build-time secret are available (never the auth secret)", () => {
@@ -65,6 +73,14 @@ describe("isInternalRequest", () => {
 
   it("rejects a request with no internal header", () => {
     expect(isInternalRequest(reqWith(null), SECRET)).toBe(false);
+  });
+
+  it("rejects an empty header even against a (misconfigured) empty secret", () => {
+    // Defense in depth: even if a caller somehow resolved an empty secret,
+    // an empty provided header must never be treated as a match — both would
+    // otherwise encode to zero-length byte arrays and pass the compare.
+    expect(isInternalRequest(reqWith(""), "")).toBe(false);
+    expect(isInternalRequest(reqWith(""), SECRET)).toBe(false);
   });
 });
 

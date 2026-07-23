@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures";
+import { FAILURES_BRANCH } from "./global-setup";
 
 test.describe("Authed navigation", () => {
   test("project page renders the Runs heading and at least one run row", async ({
@@ -11,13 +12,14 @@ test.describe("Authed navigation", () => {
   });
 
   test("clicking a run row navigates to the run-detail page", async ({
-    page,
     runsListPage,
   }) => {
-    await runsListPage.goto();
-    const runId = await runsListPage.firstRunId();
-    await runsListPage.runLinks.first().click();
-    await expect(page).toHaveURL(new RegExp(`/runs/${runId}(\\?|$)`));
+    // Branch-filtered: the unfiltered list live-inserts rows via the project
+    // WS room, so with parallel workers a run created by realtime.spec or
+    // monitors.spec can slide in between reading the first row's href and
+    // clicking it. The failures branch only ever holds the seeded run.
+    await runsListPage.goto(`branch=${encodeURIComponent(FAILURES_BRANCH)}`);
+    await runsListPage.clickFirstRun();
   });
 
   test("404 on a project that doesn't exist (no team-existence leak)", async ({

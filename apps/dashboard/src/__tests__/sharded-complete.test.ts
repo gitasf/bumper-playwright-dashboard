@@ -8,6 +8,7 @@ import {
   it,
   vi,
 } from "vite-plus/test";
+import type { OpenRunPayload } from "@/lib/schemas";
 
 /**
  * Deferred-finalize behavior for sharded runs, executed against a real Postgres
@@ -43,7 +44,7 @@ vi.mock("void/db", async () => {
   const ops = await vi.importActual<Record<string, unknown>>("void/_db");
   return { ...ops, db: h.db };
 });
-// Empty env → GitHub App off, so `maybePostGithubCheck` is a no-op (no network).
+// Empty env → GitHub App off, so `postGithubRunSurfaces` is a no-op (no network).
 vi.mock("void/env", () => ({ env: {} }));
 // The realtime broadcasts are out of scope here — swallow them.
 vi.mock("@/realtime/publish", () => ({
@@ -51,7 +52,8 @@ vi.mock("@/realtime/publish", () => ({
   broadcastProjectRoom: () => Promise.resolve(),
 }));
 
-const { completeRun, finalizeStaleRun } = await import("@/lib/ingest");
+const { completeRun, finalizeStaleRun, reopenRunForWrites } =
+  await import("@/lib/ingest");
 const { makeTenantScope } = await import("@/lib/scope");
 const { runs, runShards, teams, testResults } = await import("../../db/schema");
 const { and, eq } = await import("void/_db");
@@ -60,6 +62,9 @@ const { getTableConfig } = await import("void/schema-pg");
 function pgType(columnType: string): string {
   if (columnType.includes("BigInt")) return "bigint";
   if (columnType.includes("Integer")) return "integer";
+  // The sharded re-open path merges into runs.shardExpectedTests with real
+  // jsonb operators, so the column must not degrade to text here.
+  if (columnType.includes("Json")) return "jsonb";
   return "text";
 }
 
@@ -219,6 +224,19 @@ describe("completeRun — sharded deferred finalize", () => {
     expect((await readRun("run-c")).status).toBe("failed");
   });
 
+  it("rejects shard metadata that disagrees with the run's authoritative total", async () => {
+    await seedRun("run-invalid-shard", 3);
+
+    await expect(
+      completeShard("run-invalid-shard", 4, 4, "passed", 4500),
+    ).resolves.toEqual({ kind: "invalidShard", expectedShards: 3 });
+    expect(await shardCount("run-invalid-shard")).toBe(0);
+    expect(await readRun("run-invalid-shard")).toEqual({
+      status: "running",
+      completedAt: null,
+    });
+  });
+
   it("does NOT wait on shards for a non-sharded run (legacy immediate finalize)", async () => {
     await seedRun("run-d", null);
     // No shard field, expectedShards null → the run flips on this single
@@ -235,6 +253,119 @@ describe("completeRun — sharded deferred finalize", () => {
       completedAt: 5001,
     });
     expect(await shardCount("run-d")).toBe(0);
+  });
+});
+
+describe("reopenRunForWrites — re-run shard-state reset", () => {
+  // These use real-clock-adjacent timestamps: the runs under test are TERMINAL,
+  // so `completeRun`'s idle-closure guard (which compares against the real
+  // clock) must see recent activity.
+  const NOW = Math.floor(Date.now() / 1000);
+
+  async function readShardState(id: string) {
+    const rows = await h.db
+      .select({
+        expectedShards: runs.expectedShards,
+        shardExpectedTests: runs.shardExpectedTests,
+      })
+      .from(runs)
+      .where(eq(runs.id, id));
+    return rows[0]!;
+  }
+
+  it("an unsharded re-open of a terminal sharded run clears stale shard state for the legacy /complete path", async () => {
+    await seedRun("run-rerun", 2);
+    // The previous (sharded) run finished: terminal row + both shard rows.
+    await completeShard("run-rerun", 1, 2, "failed", NOW - 60);
+    await completeShard("run-rerun", 2, 2, "passed", NOW - 50);
+    expect((await readRun("run-rerun")).status).toBe("failed");
+    expect(await shardCount("run-rerun")).toBe(2);
+
+    // CI re-runs the suite UNSHARDED, reusing the idempotency key. The
+    // duplicate open must clear the stale shard state — otherwise the re-run's
+    // shardless /complete takes the deferred-finalize path against shard rows
+    // it can never satisfy or update.
+    await reopenRunForWrites(SCOPE, "run-rerun", NOW, {
+      idempotencyKey: "run-rerun",
+      run: {},
+    } as OpenRunPayload);
+    expect(await readShardState("run-rerun")).toEqual({
+      expectedShards: null,
+      shardExpectedTests: null,
+    });
+    expect(await shardCount("run-rerun")).toBe(0);
+
+    // The shardless /complete now finalizes immediately (legacy path; the
+    // severity merge keeps the worst status across the runs, as it always has).
+    const r = await completeRun(
+      SCOPE,
+      "run-rerun",
+      { status: "passed", durationMs: 50 },
+      NOW,
+    );
+    expect(r.kind).toBe("ok");
+    expect(await shardCount("run-rerun")).toBe(0);
+  });
+
+  it("a terminal SAME-total re-run cannot finalize off the previous run's shard rows", async () => {
+    await seedRun("run-sametotal", 2);
+    // The previous run finished: terminal row + both completion rows.
+    await completeShard("run-sametotal", 1, 2, "failed", NOW - 60);
+    await completeShard("run-sametotal", 2, 2, "passed", NOW - 50);
+    expect((await readRun("run-sametotal")).status).toBe("failed");
+    expect(await shardCount("run-sametotal")).toBe(2);
+
+    // CI re-runs the suite with the SAME shard total, reusing the idempotency
+    // key (the most common re-run shape). The duplicate open must drop the
+    // previous run's completion rows and re-arm the run as in-flight —
+    // otherwise the re-run's FIRST shard /complete sees a full count and
+    // finalizes against the dead siblings' results.
+    await reopenRunForWrites(SCOPE, "run-sametotal", NOW - 40, {
+      idempotencyKey: "run-sametotal",
+      run: { expectedTotalTests: 3 },
+      shard: { index: 1, total: 2 },
+    } as OpenRunPayload);
+    expect(await shardCount("run-sametotal")).toBe(0);
+    expect(await readRun("run-sametotal")).toEqual({
+      status: "running",
+      completedAt: null,
+    });
+
+    // First new shard completes — the run must stay running (count 1 of 2).
+    const r1 = await completeShard("run-sametotal", 1, 2, "passed", NOW - 20);
+    expect(r1).toEqual({ kind: "ok", status: "running" });
+    expect(await readRun("run-sametotal")).toEqual({
+      status: "running",
+      completedAt: null,
+    });
+
+    // The second shard finalizes the re-run on ITS OWN results only: both new
+    // shards passed, so the previous run's 'failed' must not leak through.
+    await completeShard("run-sametotal", 2, 2, "passed", NOW - 10);
+    expect(await readRun("run-sametotal")).toEqual({
+      status: "passed",
+      completedAt: NOW - 10,
+    });
+    expect(await shardCount("run-sametotal")).toBe(2);
+  });
+
+  it("a shardless duplicate open of a still-RUNNING sharded run clears nothing", async () => {
+    await seedRun("run-mixedfleet", 2);
+    await completeShard("run-mixedfleet", 1, 2, "passed", NOW - 60);
+    expect((await readRun("run-mixedfleet")).status).toBe("running");
+
+    // A mixed-version fleet's shardless open retry mid-flight: the run is not
+    // terminal, so the reset arms must not fire.
+    await reopenRunForWrites(SCOPE, "run-mixedfleet", NOW, {
+      idempotencyKey: "run-mixedfleet",
+      run: {},
+    } as OpenRunPayload);
+    expect((await readShardState("run-mixedfleet")).expectedShards).toBe(2);
+    expect(await shardCount("run-mixedfleet")).toBe(1);
+
+    // The straggler shard still finalizes the run normally.
+    await completeShard("run-mixedfleet", 2, 2, "passed", NOW - 10);
+    expect((await readRun("run-mixedfleet")).status).toBe("passed");
   });
 });
 

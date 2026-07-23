@@ -31,7 +31,7 @@ export function numericSql(fragment: SqlFragment) {
 
 /**
  * The raw-read counterpart to {@link numericSql}, for the `runRows`/`runRow`
- * path (`src/lib/db-run.ts`).
+ * path (`src/lib/runs/db.ts`).
  *
  * That path runs hand-written `sql\`…\`` queries straight through `db.execute`,
  * bypassing Drizzle's field decoders — so `.mapWith(Number)` never fires and the

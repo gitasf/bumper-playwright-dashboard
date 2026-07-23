@@ -1,18 +1,17 @@
 import { defineHandler } from "void";
-import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { AuthzError, resolveOwnedTeam } from "@/lib/settings-scope";
 import { readBodyField } from "@/lib/form";
 import { mutationErrorMessage } from "@/lib/action-errors";
-import { createProjectForTeam, SlugDerivationError } from "@/lib/provisioning";
+import { createProjectAudited, SlugDerivationError } from "@/lib/provisioning";
 
 /**
  * POST /api/teams/:teamSlug/projects
  *
  * Owner-only. Creates a project within the team named by the route and returns
  * `{ projectSlug }`. The JSON sibling of the `.../projects/new` form action —
- * both delegate to the shared `createProjectForTeam` provisioning seam, so
- * bootstrap callers consume a typed contract instead of comparing the form
- * action's success/error 302 `Location` paths.
+ * both delegate to the shared `createProjectAudited` provisioning seam (create
+ * + PROJECT_CREATE audit row), so bootstrap callers consume a typed contract
+ * instead of comparing the form action's success/error 302 `Location` paths.
  */
 export const POST = defineHandler(async (c) => {
   let team: Awaited<ReturnType<typeof resolveOwnedTeam>>;
@@ -29,14 +28,7 @@ export const POST = defineHandler(async (c) => {
   }
 
   try {
-    const { slug } = await createProjectForTeam(team.id, name);
-    await recordAudit(c, {
-      teamId: team.id,
-      action: AUDIT_ACTIONS.PROJECT_CREATE,
-      targetType: "project",
-      targetId: slug,
-      metadata: { projectName: name },
-    });
+    const { slug } = await createProjectAudited(c, team.id, name);
     return c.json({ projectSlug: slug });
   } catch (err) {
     if (err instanceof SlugDerivationError) {

@@ -18,10 +18,21 @@ let capturedWhere: unknown = null;
 let capturedConflict: unknown = null;
 let capturedSet: unknown = null;
 let setCalled = false;
-// The single row the `select(...).limit(1)` read resolves to. Drives the
-// unchanged-guard in `setCodeownersFile`; default `[]` (no current row → null
-// current value), tests override it.
+let capturedValues: unknown = null;
+let valuesCalled = false;
+// Row the `select(...).limit(1)` read resolves to; drives the unchanged-guard
+// in `setCodeownersFile` and `assignOwner`'s conflict-path fallback SELECT.
+// Default `[]` (no current row); tests override it.
 let selectResult: unknown[] = [];
+// Set by a test to simulate the conflict path: `onConflictDoNothing` hit an
+// existing row, `.returning()` is empty, so `assignOwner` falls back to the
+// SELECT rather than fabricating a row from the discarded insert values.
+let insertReturningResult: unknown[] | null = null;
+// Which top-level `db.*` call opened the current chain — insert and its
+// conflict-path follow-up SELECT share the same `node`/`.then`, so `.then`
+// resolves insert (echoes `.values(...)` / `insertReturningResult`) vs. select
+// (`selectResult`) accordingly.
+let mode: "insert" | "select" | null = null;
 
 vi.mock("void/db", async () => {
   const stub = await import("./helpers/void-db-stub");
@@ -35,7 +46,11 @@ vi.mock("void/db", async () => {
   node.orderBy = chain;
   node.groupBy = chain;
   node.limit = chain;
-  node.values = chain;
+  node.values = (v: unknown) => {
+    capturedValues = v;
+    valuesCalled = true;
+    return node;
+  };
   node.set = (v: unknown) => {
     capturedSet = v;
     setCalled = true;
@@ -45,20 +60,45 @@ vi.mock("void/db", async () => {
     capturedConflict = cfg;
     return node;
   };
-  (node as { then: unknown }).then = (onFulfilled?: (v: unknown) => unknown) =>
-    Promise.resolve(onFulfilled ? onFulfilled(selectResult) : selectResult);
+  node.returning = () => node;
+  (node as { then: unknown }).then = (
+    onFulfilled?: (v: unknown) => unknown,
+  ) => {
+    const result =
+      mode === "insert"
+        ? (insertReturningResult ?? (capturedValues ? [capturedValues] : []))
+        : selectResult;
+    return Promise.resolve(onFulfilled ? onFulfilled(result) : result);
+  };
 
+  const select = () => {
+    mode = "select";
+    return node;
+  };
+  const insert = () => {
+    mode = "insert";
+    return node;
+  };
   const db = {
-    select: chain,
-    insert: chain,
+    select,
+    insert,
     delete: chain,
     update: chain,
+    // `runBatch` builds its statements against the transaction executor; the
+    // stub hands the same chainable node back so captures keep working.
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ select: chain, insert: chain, delete: chain, update: chain }),
   };
   return { ...stub, db };
 });
 
-const { assignOwner, mergeOwners, removeOwner, setCodeownersFile } =
-  await import("@/lib/owners-repo");
+const {
+  assignOwner,
+  mergeOwners,
+  removeOwner,
+  setCodeownersFile,
+  setManualOwners,
+} = await import("@/lib/owners-repo");
 
 type RecordedOp = { __op: string; args: readonly unknown[] };
 
@@ -88,7 +128,11 @@ beforeEach(() => {
   capturedConflict = null;
   capturedSet = null;
   setCalled = false;
+  capturedValues = null;
+  valuesCalled = false;
   selectResult = [];
+  insertReturningResult = null;
+  mode = null;
 });
 
 describe("mergeOwners (manual-wins union)", () => {
@@ -147,6 +191,28 @@ describe("assignOwner", () => {
       "owner",
     ]);
   });
+
+  it("falls back to the existing persisted row when onConflictDoNothing no-ops (conflict path), not a fabricated one", async () => {
+    // Re-assigning an existing owner: the INSERT conflicts, `.returning()` is
+    // empty, so `assignOwner` must read the real persisted row (original
+    // `id`/`createdAt`), not the locally-built ulid+`now` that was never written.
+    insertReturningResult = [];
+    const persistedRow = {
+      id: "existing_owner_id",
+      projectId: "proj_xyz",
+      testId: "t1",
+      owner: "@web",
+      source: "manual" as const,
+      createdAt: 1000,
+    };
+    selectResult = [persistedRow];
+
+    const row = await assignOwner(scope, { testId: "t1", owner: "@web" }, 1700);
+
+    expect(row).toEqual(persistedRow);
+    expect(row.id).toBe("existing_owner_id");
+    expect(row.createdAt).toBe(1000);
+  });
 });
 
 describe("removeOwner", () => {
@@ -173,6 +239,59 @@ describe("removeOwner", () => {
     const [projectEq] = and.args as [RecordedOp];
     expect(readEq(projectEq).value).toBe("proj_OTHER");
     expect(readEq(projectEq).value).not.toBe("proj_xyz");
+  });
+});
+
+describe("setManualOwners", () => {
+  it("deletes the manual rows scoped by (projectId, testId, source) then inserts the new set", async () => {
+    await setManualOwners(scope, "t1", ["@web", "a@b.c"], 1700);
+    // The delete's WHERE is captured first; the insert has no WHERE, so the
+    // last-captured predicate is still the delete's.
+    const and = capturedWhere as RecordedOp;
+    expect(and.__op).toBe("and");
+    const [projectEq, testEq, sourceEq] = and.args as [
+      RecordedOp,
+      RecordedOp,
+      RecordedOp,
+    ];
+    expect(readEq(projectEq)).toEqual({
+      column: "projectId",
+      value: "proj_xyz",
+    });
+    expect(readEq(testEq)).toEqual({ column: "testId", value: "t1" });
+    expect(readEq(sourceEq)).toEqual({ column: "source", value: "manual" });
+
+    const rows = capturedValues as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.owner)).toEqual(["@web", "a@b.c"]);
+    for (const row of rows) {
+      expect(row.projectId).toBe("proj_xyz");
+      expect(row.testId).toBe("t1");
+      expect(row.source).toBe("manual");
+      expect(row.createdAt).toBe(1700);
+    }
+  });
+
+  it("de-duplicates the incoming owners, preserving order", async () => {
+    await setManualOwners(scope, "t1", ["@a", "@b", "@a"], 1700);
+    const rows = capturedValues as Array<Record<string, unknown>>;
+    expect(rows.map((r) => r.owner)).toEqual(["@a", "@b"]);
+  });
+
+  it("an empty set only deletes (clears manual ownership, no insert)", async () => {
+    await setManualOwners(scope, "t1", [], 1700);
+    expect(valuesCalled).toBe(false);
+    const and = capturedWhere as RecordedOp;
+    expect(and.__op).toBe("and");
+  });
+
+  it("a different scope binds a different projectId (cross-tenant isolation)", async () => {
+    await setManualOwners(otherScope, "t1", ["@web"], 1700);
+    const and = capturedWhere as RecordedOp;
+    const [projectEq] = and.args as [RecordedOp];
+    expect(readEq(projectEq).value).toBe("proj_OTHER");
+    const rows = capturedValues as Array<Record<string, unknown>>;
+    expect(rows[0]?.projectId).toBe("proj_OTHER");
   });
 });
 

@@ -8,10 +8,11 @@ import {
   mintAppJwt,
   parseRepoOwner,
   verifyWebhookSignature,
-} from "@/lib/github-app";
+} from "@/lib/github-http";
 
 /**
- * GitHub App auth primitives. The pure repo-owner parse, the webhook HMAC
+ * GitHub App auth primitives (the env-free `github-http.ts` core). The pure
+ * repo-owner parse, the webhook HMAC
  * verify (against a Node-computed reference signature), and the RS256 App-JWT
  * shape + signature (verified with a throwaway keypair's public half). The
  * actual GitHub API exchanges are integration-only (need a live App install).

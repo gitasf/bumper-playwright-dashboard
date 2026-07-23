@@ -115,6 +115,20 @@ describe("buildAuditRow (pure row shape)", () => {
     });
     expect(row.projectId).toBe("proj_9");
   });
+
+  it("records GitHub installation disconnects as team configuration mutations", () => {
+    const row = buildAuditRow("u", {
+      teamId: "team_1",
+      action: AUDIT_ACTIONS.GITHUB_INSTALLATION_DISCONNECT,
+      targetType: "github_installation",
+      targetId: "acme",
+      metadata: { installationId: 42 },
+    });
+    expect(row.action).toBe("github_installation.disconnect");
+    expect(row.targetType).toBe("github_installation");
+    expect(row.targetId).toBe("acme");
+    expect(row.metadata).toEqual({ installationId: 42 });
+  });
 });
 
 describe("recordAudit (best-effort writer)", () => {

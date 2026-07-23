@@ -32,3 +32,19 @@ export const RemoveOwnerSchema = z.object({
   owner: z.string().trim().min(1, "Owner is required.").max(OWNER_LABEL_MAX),
 });
 export type RemoveOwnerInput = z.infer<typeof RemoveOwnerSchema>;
+
+/** Cap on how many manual owners one test can carry in a `set` replace. */
+export const OWNERS_PER_TEST_MAX = 20;
+
+/**
+ * Body for replacing a test's manual owner set (the assign popover posts the
+ * full desired selection). An empty list is valid — it clears every manual
+ * owner, letting CODEOWNERS-derived ownership show through again.
+ */
+export const SetOwnersSchema = z.object({
+  testId: z.string().min(1).max(OWNER_TEST_ID_MAX),
+  owners: z
+    .array(z.string().trim().min(1, "Owner is required.").max(OWNER_LABEL_MAX))
+    .max(OWNERS_PER_TEST_MAX, `At most ${OWNERS_PER_TEST_MAX} owners.`),
+});
+export type SetOwnersInput = z.infer<typeof SetOwnersSchema>;

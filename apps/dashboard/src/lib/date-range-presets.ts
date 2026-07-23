@@ -2,7 +2,7 @@
  * Pure date-range preset computation for the runs filter bar's `DateRangeFilter`.
  *
  * The filter stores `from`/`to` as `yyyy-MM-dd` strings, which
- * `buildRunsWhere` (`@/lib/runs-filters-where`) interprets at the UTC day
+ * `buildRunsWhere` (`@/lib/runs/filters-where`) interprets at the UTC day
  * boundary — `from` at `T00:00:00.000Z`, `to` at `T23:59:59.999Z`. To stay in
  * lockstep with that interpretation, the bounds here are computed against the
  * UTC calendar day, not the viewer's local day. (A local-day boundary would

@@ -3,7 +3,7 @@ import { and, db, eq, gte, sql } from "void/db";
 import { env } from "void/env";
 import { effectiveTier } from "@/lib/billing/tier";
 import { billingEnabled } from "@/lib/config";
-import type { BatchExecutor } from "@/lib/db-batch";
+import type { BatchExecutor } from "@/lib/db/batch";
 import { numericSql } from "@/lib/db/sql-ops";
 import {
   artifacts,
@@ -25,11 +25,12 @@ import {
  *     `registerArtifacts` for `artifactBytes`/`artifactCount`). Atomic with the
  *     data, no extra round-trip. Counts FRESH rows only (a new run, newly-inserted
  *     artifacts) so an idempotent re-stream/re-registration doesn't double-count.
- *     The `testResults` dimension is the EXCEPTION: it is NOT bumped on the
- *     /results hot path. That upsert serialized every concurrent flush of a team
- *     on the single team-month row; since testResults is never quota-gated, its
- *     count is instead derived on read (`countTeamTestResults` → `loadTeamUsage`)
- *     and re-based by the `rollup-usage` cron — no live counter is needed.
+ *     The `testResults` dimension is the exception: not bumped on the /results
+ *     hot path (that upsert serialized every concurrent flush of a team on the
+ *     single team-month row) and never quota-gated. It's derived on read
+ *     instead (`countTeamTestResults`, called by `checkQuota` and the usage
+ *     page's own `defer()`, kept out of `loadTeamUsage` so its `count(*)` scan
+ *     can't gate the cheap runs/artifact meters) and re-based by `rollup-usage`.
  *
  *   - **Enforcement** is a read-then-gate (`checkQuota`) at the cheap entry
  *     points, compared against the team's `tier` limits. The runs dimension is
@@ -71,32 +72,32 @@ export interface TierLimits {
 }
 
 /**
- * Limit set for a tier. When billing is OFF (`!billingEnabled(env)` — the OSS /
- * self-host default), EVERY tier is UNLIMITED: a self-hoster never hits a quota.
- * This billing-off short-circuit is the ONLY uncapped path. Caps exist ONLY when
- * billing is configured (the hosted deployment): with billing ON, `'free'` reads
- * the `WRIGHTFUL_FREE_*` ceilings and every other tier (`'pro'` / trial-pro) reads
- * the high, configurable FINITE `WRIGHTFUL_PRO_*` ceilings (NOT Infinity) — Pro is
- * enforced exactly like free (the existing soft-warn-then-block machinery), just at
- * a higher ceiling. The tier→limit mapping is the only place tiers are interpreted.
+ * Limit set for a tier, the only place tiers are interpreted. Billing off
+ * (`!billingEnabled(env)`, the OSS/self-host default) is the only uncapped path:
+ * every tier is unlimited. With billing on, `'pro'` (incl. trial-pro) reads the
+ * high, configurable finite `WRIGHTFUL_PRO_*` ceilings; every other value —
+ * `'free'` and any unrecognized/corrupt string — reads `WRIGHTFUL_FREE_*`, so
+ * unknown tiers fail closed to the low cap. Pro is enforced like free
+ * (soft-warn-then-block), just at a higher ceiling.
  */
 export function tierLimits(tier: string): TierLimits {
-  // OSS / self-host: billing unconfigured → no caps for anyone. THE ONLY unlimited path.
+  // OSS / self-host: billing unconfigured → no caps for anyone. The only unlimited path.
   if (!billingEnabled(env)) {
     return { runs: Infinity, testResults: Infinity, artifactBytes: Infinity };
   }
-  if (tier === "free") {
+  if (tier === "pro") {
+    // pro (incl. trial-pro): high, configurable FINITE caps (was Infinity).
     return {
-      runs: env.WRIGHTFUL_FREE_MONTHLY_RUNS,
-      testResults: env.WRIGHTFUL_FREE_MONTHLY_TEST_RESULTS,
-      artifactBytes: env.WRIGHTFUL_FREE_ARTIFACT_BYTES,
+      runs: env.WRIGHTFUL_PRO_MONTHLY_RUNS,
+      testResults: env.WRIGHTFUL_PRO_MONTHLY_TEST_RESULTS,
+      artifactBytes: env.WRIGHTFUL_PRO_ARTIFACT_BYTES,
     };
   }
-  // pro (incl. trial-pro): high, configurable FINITE caps (was Infinity).
+  // 'free', and any unrecognized/corrupt tier value: fail closed to the Free caps.
   return {
-    runs: env.WRIGHTFUL_PRO_MONTHLY_RUNS,
-    testResults: env.WRIGHTFUL_PRO_MONTHLY_TEST_RESULTS,
-    artifactBytes: env.WRIGHTFUL_PRO_ARTIFACT_BYTES,
+    runs: env.WRIGHTFUL_FREE_MONTHLY_RUNS,
+    testResults: env.WRIGHTFUL_FREE_MONTHLY_TEST_RESULTS,
+    artifactBytes: env.WRIGHTFUL_FREE_ARTIFACT_BYTES,
   };
 }
 
@@ -169,6 +170,67 @@ export function usageBumpStatement(
     });
 }
 
+/**
+ * Atomically increments an enforced dimension when the result stays within its
+ * limit. Callers use the returned row to detect a rejected update.
+ */
+export function usageGuardedBumpStatement(
+  teamId: string,
+  periodStart: number,
+  delta: UsageDelta,
+  guard: { dimension: "runs" | "artifactBytes"; limit: number },
+  nowSeconds: number,
+  exec: BatchExecutor,
+) {
+  const runsDelta = delta.runs ?? 0;
+  const artifactBytesDelta = delta.artifactBytes ?? 0;
+  const artifactCountDelta = delta.artifactCount ?? 0;
+  const set = {
+    runsCount: sql`${usageCounters.runsCount} + ${runsDelta}`,
+    artifactBytes: sql`${usageCounters.artifactBytes} + ${artifactBytesDelta}`,
+    artifactCount: sql`${usageCounters.artifactCount} + ${artifactCountDelta}`,
+    updatedAt: nowSeconds,
+  };
+  const base = exec.insert(usageCounters).values({
+    id: ulid(),
+    teamId,
+    periodStart,
+    runsCount: runsDelta,
+    artifactBytes: artifactBytesDelta,
+    artifactCount: artifactCountDelta,
+    updatedAt: nowSeconds,
+  });
+  const target = [usageCounters.teamId, usageCounters.periodStart];
+  if (!Number.isFinite(guard.limit)) {
+    return base
+      .onConflictDoUpdate({ target, set })
+      .returning({ applied: usageCounters.id });
+  }
+  const col =
+    guard.dimension === "runs"
+      ? usageCounters.runsCount
+      : usageCounters.artifactBytes;
+  const guardDelta =
+    guard.dimension === "runs" ? runsDelta : artifactBytesDelta;
+  // `setWhere` only guards the ON CONFLICT update. A delta larger than the
+  // entire allowance can never be accepted (counters are non-negative), so
+  // return an executable no-op before the INSERT path can create an
+  // over-limit first row.
+  if (guardDelta > guard.limit) {
+    return exec
+      .select({ applied: usageCounters.id })
+      .from(usageCounters)
+      .where(sql`false`);
+  }
+  return base
+    .onConflictDoUpdate({
+      target,
+      set,
+      setWhere: sql`${col} + ${guardDelta} <= ${guard.limit}`,
+    })
+    .returning({ applied: usageCounters.id });
+}
+
 export interface QuotaResult {
   status: QuotaStatus;
   dimension: QuotaDimension;
@@ -231,11 +293,15 @@ export async function checkQuota(
   return { status, dimension, used, limit };
 }
 
+/**
+ * Current-period usage excluding testResults — that dimension loads separately
+ * via {@link countTeamTestResults} (a `defer()`ed prop) so its heavier
+ * `count(*)` scan never gates the cheap `runsCount`/`artifactBytes` meters.
+ */
 export interface TeamUsage {
   tier: string;
   periodStart: number;
   runsCount: number;
-  testResultsCount: number;
   artifactBytes: number;
   artifactCount: number;
   limits: TierLimits;
@@ -272,7 +338,13 @@ export async function countTeamTestResults(
   return rows[0]?.n ?? 0;
 }
 
-/** Current-period usage + tier limits for the team usage settings page. */
+/**
+ * Current-period usage (runs + artifact bytes/count, live counters) + tier
+ * limits for the usage settings page. Omits `testResultsCount` — that has no
+ * live counter (module doc) so deriving it costs a `count(*)` fact-table scan;
+ * the page loads it separately via {@link countTeamTestResults} in its own
+ * `defer()`, letting this cheap indexed query paint the meters first.
+ */
 export async function loadTeamUsage(
   teamId: string,
   nowSeconds: number,
@@ -304,15 +376,10 @@ export async function loadTeamUsage(
     row?.currentPeriodEnd ?? null,
     nowSeconds,
   );
-  // testResults has no live counter (see the module doc / `appendRunResults`):
-  // count it from the authoritative rows so the page stays exact without the
-  // hot-path bump. runs + artifact bytes are still live counters.
-  const testResultsCount = await countTeamTestResults(teamId, periodStart);
   return {
     tier,
     periodStart,
     runsCount: row?.runsCount ?? 0,
-    testResultsCount,
     artifactBytes: row?.artifactBytes ?? 0,
     artifactCount: row?.artifactCount ?? 0,
     limits: tierLimits(tier),
@@ -324,13 +391,68 @@ export interface ReconcileUsageResult {
   teamsReconciled: number;
 }
 
+interface UsageCounterSnapshot {
+  runsCount: number;
+  artifactBytes: number;
+  artifactCount: number;
+}
+
+interface ReconciledUsageCounterRow extends UsageCounterSnapshot {
+  id: string;
+  teamId: string;
+  periodStart: number;
+  updatedAt: number;
+}
+
+/**
+ * Upsert one authoritative usage row while retaining increments committed
+ * after the reconciliation snapshot. If the stored value still equals the
+ * snapshot, it is stale drift and may move either up or down to the aggregate.
+ * Otherwise only the post-snapshot delta is carried onto the aggregate.
+ */
+export function reconcileUsageCounterRowStatement(
+  row: ReconciledUsageCounterRow,
+  snapshot: UsageCounterSnapshot,
+  exec: BatchExecutor,
+) {
+  return exec
+    .insert(usageCounters)
+    .values(row)
+    .onConflictDoUpdate({
+      target: [usageCounters.teamId, usageCounters.periodStart],
+      set: {
+        runsCount: sql`case when ${usageCounters.runsCount} = ${snapshot.runsCount} then excluded."runsCount" else greatest(0, excluded."runsCount" + ${usageCounters.runsCount} - ${snapshot.runsCount}) end`,
+        artifactBytes: sql`case when ${usageCounters.artifactBytes} = ${snapshot.artifactBytes} then excluded."artifactBytes" else greatest(0, excluded."artifactBytes" + ${usageCounters.artifactBytes} - ${snapshot.artifactBytes}) end`,
+        artifactCount: sql`case when ${usageCounters.artifactCount} = ${snapshot.artifactCount} then excluded."artifactCount" else greatest(0, excluded."artifactCount" + ${usageCounters.artifactCount} - ${snapshot.artifactCount}) end`,
+        updatedAt: sql`excluded."updatedAt"`,
+      },
+    });
+}
+
+function isSerializationFailure(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; current != null && depth < 8; depth++) {
+    if ((current as { code?: unknown }).code === "40001") return true;
+    const next = (current as { cause?: unknown }).cause;
+    if (next === current) break;
+    current = next;
+  }
+  return false;
+}
+
 /**
  * Recompute every team's current-period counters from the authoritative
- * `runs` / `testResults` / `artifacts` rows and overwrite the live counter.
- * The live in-batch counters can drift from truth — chiefly when a retention
- * sweep deletes rows inside the current window — so this is the safety net that
- * re-bases them. Runs carry `teamId` directly; testResults/artifacts are scoped
- * to the team through their `projectId`.
+ * `runs` / `artifacts` rows and overwrite the live counter (testResults has no
+ * live counter to reconcile — see the module doc). The live in-batch counters
+ * can drift from truth — chiefly when a retention sweep deletes rows inside
+ * the current window — so this is the safety net that re-bases them.
+ *
+ * Set-based, not a per-team loop: two aggregate queries (each `teams LEFT JOIN
+ * …`, so a team with no current-period activity still gets a zero-count row —
+ * that rebase-to-zero after a retention delete is the point) plus one bulk
+ * upsert. The joins stay in separate queries: chaining `runs` and `artifacts`
+ * off the same `teams` row would fan out (each run × each artifact per team),
+ * corrupting both counts.
  *
  * Pre-launch this recomputes all teams in one pass (team count is tiny). When
  * the fleet grows this should switch to a bounded slice like `sweepStaleRuns`.
@@ -339,57 +461,92 @@ export async function reconcileUsage(
   nowSeconds: number,
 ): Promise<ReconcileUsageResult> {
   const periodStart = monthStartSeconds(nowSeconds);
-  const teamRows = await db.select({ id: teams.id }).from(teams);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await db.transaction(
+        async (tx) => {
+          // The baseline and aggregates share one MVCC snapshot. A usage bump
+          // committed later is visible only as a changed conflict row, so its
+          // delta can be retained without double-counting its source row.
+          const counterRows = await tx
+            .select({
+              teamId: usageCounters.teamId,
+              runsCount: usageCounters.runsCount,
+              artifactBytes: usageCounters.artifactBytes,
+              artifactCount: usageCounters.artifactCount,
+            })
+            .from(usageCounters)
+            .where(eq(usageCounters.periodStart, periodStart));
+          const countersByTeam = new Map(counterRows.map((r) => [r.teamId, r]));
 
-  for (const team of teamRows) {
-    const teamProjectIds = db
-      .select({ id: projects.id })
-      .from(projects)
-      .where(eq(projects.teamId, team.id));
+          const runCountRows = await tx
+            .select({
+              teamId: teams.id,
+              runsCount: numericSql(sql`count(${runs.id})`),
+            })
+            .from(teams)
+            .leftJoin(
+              runs,
+              and(eq(runs.teamId, teams.id), gte(runs.createdAt, periodStart)),
+            )
+            .groupBy(teams.id);
 
-    const runRows = await db
-      .select({ n: numericSql(sql`count(*)`) })
-      .from(runs)
-      .where(and(eq(runs.teamId, team.id), gte(runs.createdAt, periodStart)));
+          const artifactRows = await tx
+            .select({
+              teamId: teams.id,
+              artifactBytes: numericSql(
+                sql`coalesce(sum(${artifacts.sizeBytes}), 0)`,
+              ),
+              artifactCount: numericSql(sql`count(${artifacts.id})`),
+            })
+            .from(teams)
+            .leftJoin(projects, eq(projects.teamId, teams.id))
+            .leftJoin(
+              artifacts,
+              and(
+                eq(artifacts.projectId, projects.id),
+                gte(artifacts.createdAt, periodStart),
+              ),
+            )
+            .groupBy(teams.id);
 
-    const artRows = await db
-      .select({
-        bytes: numericSql(sql`coalesce(sum(${artifacts.sizeBytes}), 0)`),
-        n: numericSql(sql`count(*)`),
-      })
-      .from(artifacts)
-      .where(
-        and(
-          gte(artifacts.createdAt, periodStart),
-          sql`${artifacts.projectId} in ${teamProjectIds}`,
-        ),
-      );
+          const artifactsByTeam = new Map(
+            artifactRows.map((r) => [r.teamId, r]),
+          );
+          const zero: UsageCounterSnapshot = {
+            runsCount: 0,
+            artifactBytes: 0,
+            artifactCount: 0,
+          };
+          const rows = runCountRows.map((r) => {
+            const art = artifactsByTeam.get(r.teamId);
+            return {
+              id: ulid(),
+              teamId: r.teamId,
+              periodStart,
+              runsCount: r.runsCount,
+              artifactBytes: art?.artifactBytes ?? 0,
+              artifactCount: art?.artifactCount ?? 0,
+              updatedAt: nowSeconds,
+            };
+          });
 
-    const runsCount = runRows[0]?.n ?? 0;
-    const artifactBytes = artRows[0]?.bytes ?? 0;
-    const artifactCount = artRows[0]?.n ?? 0;
-
-    await db
-      .insert(usageCounters)
-      .values({
-        id: ulid(),
-        teamId: team.id,
-        periodStart,
-        runsCount,
-        artifactBytes,
-        artifactCount,
-        updatedAt: nowSeconds,
-      })
-      .onConflictDoUpdate({
-        target: [usageCounters.teamId, usageCounters.periodStart],
-        set: {
-          runsCount,
-          artifactBytes,
-          artifactCount,
-          updatedAt: nowSeconds,
+          for (const row of rows) {
+            await reconcileUsageCounterRowStatement(
+              row,
+              countersByTeam.get(row.teamId) ?? zero,
+              tx,
+            );
+          }
+          return { teamsReconciled: rows.length };
         },
-      });
+        { isolationLevel: "repeatable read" },
+      );
+    } catch (err) {
+      // At repeatable-read, a usage bump that commits after our snapshot makes
+      // the conflicting upsert fail with 40001 instead of overwriting it. A
+      // fresh snapshot includes both the source row and its counter bump.
+      if (attempt >= 4 || !isSerializationFailure(err)) throw err;
+    }
   }
-
-  return { teamsReconciled: teamRows.length };
 }

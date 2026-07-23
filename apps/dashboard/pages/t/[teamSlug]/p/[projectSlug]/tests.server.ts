@@ -2,7 +2,7 @@ import { defer, defineHandler, type InferProps } from "void";
 import { sql } from "void/db";
 import { loadProjectBranches } from "@/lib/branches-query";
 import { loadProjectTags } from "@/lib/tags-query";
-import { runRows } from "@/lib/db-run";
+import { runRows } from "@/lib/runs/db";
 import { intAggExpr, numAggExpr } from "@/lib/db/sql-ops";
 import {
   branchFragment,
@@ -21,9 +21,16 @@ import {
   statusCounter,
 } from "@/lib/analytics/per-test";
 import { makeRangeParser } from "@/lib/analytics/range";
-import { resolveOffsetPage, shouldRefetchClampedPage } from "@/lib/page-window";
+import { deferredNoStore, pageProjectFields } from "@/lib/page-loader";
+import { paginateOffsetTable } from "@/lib/page-window";
+import { parsePage } from "@/lib/runs/filters";
 import type { TenantScope } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
+import {
+  parseTestsSort,
+  testsCatalogSortSql,
+  type TestsSortState,
+} from "@/lib/tests-catalog-sort";
 
 export type Props = InferProps<typeof loader>;
 
@@ -68,8 +75,8 @@ interface AggregateRow {
 
 /**
  * Test catalog loader. Two-pass query:
- *  1. Paginate testIds by `max(testResults.createdAt) DESC` with a windowed
- *     `count(*) OVER ()` to fold pagination math into the same statement.
+ *  1. Paginate testIds by the selected aggregate with a windowed `count(*)
+ *     OVER ()` to fold pagination math into the same statement.
  *  2. Aggregate per-test counters + latest title/file/status for the page slice.
  *
  * Plain `defineHandler` with manual `searchParams` parsing (matching the
@@ -96,9 +103,11 @@ export const loader = defineHandler(async (c) => {
   const groupRaw = url.searchParams.get("group");
   const group: CatalogGroupMode | null =
     groupRaw === "file" || groupRaw === "suite" ? groupRaw : null;
-  const pageParam = parseInt(url.searchParams.get("page") ?? "1", 10);
-  const requestedPage =
-    Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
+  const requestedPage = parsePage(url.searchParams.get("page"));
+  const sort = parseTestsSort(
+    url.searchParams.get("sort"),
+    url.searchParams.get("direction"),
+  );
 
   const [branches, availableTags] = await Promise.all([
     loadProjectBranches(scope),
@@ -110,17 +119,9 @@ export const loader = defineHandler(async (c) => {
   const qSql = searchFragment(q || null, scope.projectId);
   const tagSql = tagFragment(tags);
 
-  // A deferred loader streams a variant-specific body — set no-store so the
-  // browser can't replay the wrong (NDJSON vs HTML) variant.
-  c.header("Cache-Control", "private, no-store");
+  deferredNoStore(c);
   return {
-    project: {
-      id: project.id,
-      teamId: project.teamId,
-      slug: project.slug,
-      name: project.name,
-      teamSlug: project.teamSlug,
-    },
+    project: pageProjectFields(project),
     range,
     branchParam,
     branchFilter,
@@ -130,6 +131,7 @@ export const loader = defineHandler(async (c) => {
     tags,
     availableTags,
     group,
+    sort,
     // The URL page (raw, eager) drives the toolbar hrefs that preserve the
     // current page across a group toggle; the clamped `currentPage` streams
     // with the deferred slice.
@@ -144,96 +146,68 @@ export const loader = defineHandler(async (c) => {
     // the empty-vs-table decision all derive from the page query, so they
     // resolve here too. Returns plain serializable rows.
     catalog: defer(async () => {
-      // First fetch runs at the *requested* offset so the windowed
-      // `count(*) OVER ()` can report the true total (we don't know it until the
-      // page query returns). Then resolve the page math against that total.
-      let pageRows = await runPageQuery(
-        scope,
-        windowStartSec,
-        branchSql,
-        qSql,
-        tagSql,
-        (requestedPage - 1) * PAGE_SIZE,
-      );
-
-      const totalUniqueTests = pageRows[0]?.totalDistinct ?? 0;
-      const { currentPage, totalPages, offset } = resolveOffsetPage({
-        total: totalUniqueTests,
+      // Offset pagination — the count rides on the slice (the windowed
+      // `count(*) OVER ()` in runPageQuery isn't known until the page returns),
+      // so `paginateOffsetTable` fetches at the requested offset, derives the
+      // total from the rows, and re-fetches the clamped last page on an
+      // over-the-end `?page=`. `mapRows` runs the per-test aggregate for the
+      // page slice; `toRow` is derived from the mapped length.
+      const page = await paginateOffsetTable<PageQueryRow, TestsPageRow>({
+        page: requestedPage,
         pageSize: PAGE_SIZE,
-        requestedPage,
-      });
-
-      // Over-the-end `?page=`: the first fetch (at the requested offset) came
-      // back empty even though rows exist. Re-fetch at the clamped last-page
-      // offset so the table shows the last page rather than an empty slice.
-      // This is the one adopter that opts into the refetch dance.
-      if (
-        shouldRefetchClampedPage({
-          total: totalUniqueTests,
-          requestedPage,
-          currentPage,
-          fetchedRowCount: pageRows.length,
-        })
-      ) {
-        pageRows = await runPageQuery(
-          scope,
-          windowStartSec,
-          branchSql,
-          qSql,
-          tagSql,
-          offset,
-        );
-      }
-
-      let rows: TestsPageRow[] = [];
-      if (pageRows.length > 0) {
-        const lastSeenById = new Map(
-          pageRows.map((r) => [r.testId, r.lastSeen]),
-        );
-        const testIds = pageRows.map((r) => r.testId);
-        const aggById = await runAggregateQuery(
-          scope,
-          windowStartSec,
-          branchSql,
-          tagSql,
-          testIds,
-        );
-        rows = testIds.flatMap((id) => {
-          const a = aggById.get(id);
-          const lastSeen = lastSeenById.get(id) ?? 0;
-          if (!a) return [];
-          return [
-            {
-              testId: id,
-              title: a.title ?? "",
-              file: a.file ?? "",
-              latestStatus: a.latestStatus ?? "",
-              lastSeen,
-              n: a.n,
-              avgDurationMs: a.avgDurationMs,
-              passedCount: a.passedCount,
-              flakyCount: a.flakyCount,
-              failCount: a.failCount,
-              skippedCount: a.skippedCount,
-            },
-          ];
-        });
-      }
-
-      const { fromRow, toRow } = resolveOffsetPage({
-        total: totalUniqueTests,
-        pageSize: PAGE_SIZE,
-        requestedPage,
-        rowCount: rows.length,
+        count: { fromSlice: (rows) => rows[0]?.totalDistinct ?? 0 },
+        pageQuery: (offset) =>
+          runPageQuery(
+            scope,
+            windowStartSec,
+            branchSql,
+            qSql,
+            tagSql,
+            sort,
+            offset,
+          ),
+        mapRows: async (pageRows) => {
+          const lastSeenById = new Map(
+            pageRows.map((r) => [r.testId, r.lastSeen]),
+          );
+          const testIds = pageRows.map((r) => r.testId);
+          const aggById = await runAggregateQuery(
+            scope,
+            windowStartSec,
+            branchSql,
+            tagSql,
+            testIds,
+          );
+          return testIds.flatMap((id) => {
+            const a = aggById.get(id);
+            const lastSeen = lastSeenById.get(id) ?? 0;
+            if (!a) return [];
+            return [
+              {
+                testId: id,
+                title: a.title ?? "",
+                file: a.file ?? "",
+                latestStatus: a.latestStatus ?? "",
+                lastSeen,
+                n: a.n,
+                avgDurationMs: a.avgDurationMs,
+                passedCount: a.passedCount,
+                flakyCount: a.flakyCount,
+                failCount: a.failCount,
+                skippedCount: a.skippedCount,
+              },
+            ];
+          });
+        },
       });
 
       return {
-        rows,
-        totalUniqueTests,
-        currentPage,
-        totalPages,
-        fromRow,
-        toRow,
+        rows: page.rows,
+        totalUniqueTests: page.total,
+        currentPage: page.currentPage,
+        totalPages: page.totalPages,
+        fromRow: page.fromRow,
+        toRow: page.toRow,
       };
     }),
   };
@@ -245,28 +219,40 @@ async function runPageQuery(
   branchSql: ReturnType<typeof sql>,
   qSql: ReturnType<typeof sql>,
   tagSql: ReturnType<typeof sql>,
+  sort: TestsSortState,
   offset: number,
 ): Promise<PageQueryRow[]> {
+  // Keep the default last-seen query as lean as it was before sorting: the
+  // selected heading's descriptor opts into the one extra aggregate (or catalog
+  // join) its ORDER BY needs, and only that. Those values never cross the loader
+  // boundary — the second-pass aggregate query recomputes the columns the page
+  // actually renders. The descriptor's fragments come from a closed vocabulary
+  // (see tests-catalog-sort.ts), so `sql.raw` here is safe.
+  const { projection, join, group, orderBy } = testsCatalogSortSql(sort);
   return runRows<PageQueryRow>(sql`
     with grouped as (
       select
         tr."testId" as "testId",
-        max(tr."createdAt") as "lastSeen",
-        ${intAggExpr("count(*) over ()", { alias: `"totalDistinct"` })}
+        -- createdAt is int8: a raw runRows read bypasses Drizzle's decoders, so
+        -- node-postgres returns max() as a STRING (pglite returns a number,
+        -- hiding it). numAggExpr casts it so lastSeen is a JS number on real pg.
+        ${numAggExpr(`max(tr."createdAt")`, { alias: `"lastSeen"` })}
+        ${sql.raw(projection)}
       from "testResults" tr
+      ${sql.raw(join)}
       ${testResultsScopeJoin(scope)}
         and runs."createdAt" >= ${windowStartSec}
         ${branchSql}
         ${qSql}
         ${tagSql}
-      group by tr."testId"
+      group by tr."testId"${sql.raw(group)}
     )
-    select "testId", "lastSeen", "totalDistinct"
+    select
+      "testId",
+      "lastSeen",
+      ${intAggExpr("count(*) over ()", { alias: `"totalDistinct"` })}
     from grouped
-    -- "testId" is a unique per-project tiebreaker so OFFSET pagination is stable:
-    -- without it, tests sharing a max(createdAt) can be skipped or duplicated
-    -- across page boundaries.
-    order by "lastSeen" desc, "testId"
+    order by ${sql.raw(orderBy)}
     limit ${PAGE_SIZE}
     offset ${offset}
   `);

@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import type { ResolvedActiveProject } from "@/lib/authz";
-import { getActiveProject, requireActiveProject } from "@/lib/active-project";
+import { requireActiveProject } from "@/lib/active-project";
 import { can } from "@/lib/roles";
 import { makeTenantScope, type TenantScope } from "@/lib/scope";
 
@@ -29,12 +29,6 @@ function toScope(project: ResolvedActiveProject): TenantScope {
     teamSlug: project.teamSlug,
     projectSlug: project.slug,
   });
-}
-
-export function getTenantContext(c: Context): TenantContext | null {
-  const project = getActiveProject(c);
-  if (!project) return null;
-  return { project, scope: toScope(project) };
 }
 
 /**

@@ -2,7 +2,7 @@ import { HttpExecutor } from "@/lib/monitors/http/http-executor";
 import { SandboxExecutor } from "@/lib/monitors/sandbox-executor";
 import { StubExecutor } from "@/lib/monitors/stub-executor";
 import { TcpExecutor } from "@/lib/monitors/tcp/tcp-executor";
-import type { MonitorExecutor } from "@/lib/monitors/types";
+import { type MonitorExecutor, monitorFamily } from "@/lib/monitors/types";
 
 /**
  * Resolve a TYPE-DISPATCHING `MonitorExecutor` for the queue consumers. The
@@ -17,10 +17,11 @@ import type { MonitorExecutor } from "@/lib/monitors/types";
  *     schedule→queue→ingest pipeline without a container); anything else
  *     (default `"sandbox"`) is the production `SandboxExecutor`.
  *
- * The sweep routes http + tcp/ping jobs to `queues/uptime.ts` and browser jobs
- * to `queues/monitors.ts`, so each consumer normally only sees its own family —
- * but dispatching here is belt-and-braces: a job that somehow lands on the other
- * queue is still executed correctly for its type.
+ * The sweep routes uptime jobs to `queues/uptime.ts` and browser jobs to
+ * `queues/monitors.ts` via the same `monitorFamily` partition this dispatch
+ * forks on, so the two can't drift. Each consumer normally only sees its own
+ * family, but dispatching here is belt-and-braces: a job that somehow lands on
+ * the other queue is still executed correctly for its type.
  *
  * NOTE: importing `SandboxExecutor` pulls in `void/sandbox` (Docker on local
  * `vp dev`); `TcpExecutor` pulls in `cloudflare:sockets`. This is the ONLY module
@@ -35,15 +36,14 @@ export function resolveExecutor(name: string): MonitorExecutor {
   const tcpExecutor = new TcpExecutor();
   return {
     execute: (input) => {
-      switch (input.monitor.type) {
-        case "http":
-          return httpExecutor.execute(input);
-        case "tcp":
-        case "ping":
-          return tcpExecutor.execute(input);
-        default:
-          return browserExecutor.execute(input);
+      // Family fork from the shared partition; the uptime family then splits
+      // http vs tcp/ping (an executor concern, not a queue-routing one).
+      if (monitorFamily(input.monitor.type) === "browser") {
+        return browserExecutor.execute(input);
       }
+      return input.monitor.type === "http"
+        ? httpExecutor.execute(input)
+        : tcpExecutor.execute(input);
     },
   };
 }

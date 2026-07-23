@@ -97,15 +97,15 @@ export function CodeEditor({
       {/* Toolbar: filename, language pill, read-only tag, line count. */}
       <div className="flex items-center gap-2 border-b border-line-1 bg-bg-1 px-3 py-2">
         <SquareCode aria-hidden="true" className="size-3 text-fg-3" />
-        <span className="font-mono text-[11.5px] text-fg-2">
+        <span className="font-mono text-caption text-fg-2">
           monitor.spec.ts
         </span>
-        <span className="rounded-[4px] bg-bg-3 px-1.5 py-px font-mono text-[10px] uppercase tracking-[0.4px] text-fg-3">
+        <span className="rounded-[4px] bg-bg-3 px-1.5 py-px font-mono text-micro uppercase tracking-[0.4px] text-fg-3">
           TypeScript
         </span>
-        {readOnly && <span className="text-[11px] text-fg-4">read-only</span>}
+        {readOnly && <span className="text-micro text-fg-4">read-only</span>}
         <div className="flex-1" />
-        <span className="font-mono text-[11px] text-fg-4">
+        <span className="font-mono text-micro text-fg-4">
           {lineCount} {lineCount === 1 ? "line" : "lines"}
         </span>
       </div>
@@ -164,7 +164,7 @@ function EditorFallback({
       {/* Line-number gutter feel. */}
       <div
         aria-hidden="true"
-        className="shrink-0 select-none overflow-hidden border-r border-line-1 bg-bg-1 py-3 text-right font-mono text-[12.5px] leading-5 text-fg-4"
+        className="shrink-0 select-none overflow-hidden border-r border-line-1 bg-bg-1 py-3 text-right font-mono text-body leading-5 text-fg-4"
         style={{ width: 46 }}
       >
         {Array.from({ length: lineCount }, (_, i) => (
@@ -175,7 +175,7 @@ function EditorFallback({
       </div>
       <textarea
         aria-label={ariaLabel}
-        className="block min-w-0 flex-1 resize-none whitespace-pre bg-transparent px-3.5 py-3 font-mono text-[12.5px] leading-5 text-fg-1 outline-none placeholder:text-muted-foreground/72"
+        className="block min-w-0 flex-1 resize-none whitespace-pre bg-transparent px-3.5 py-3 font-mono text-body leading-5 text-fg-1 outline-none placeholder:text-muted-foreground/72"
         onChange={(e) => onValueChange(e.target.value)}
         placeholder={placeholder}
         readOnly={readOnly}

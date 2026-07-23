@@ -1,15 +1,10 @@
 import { defineHandler } from "void";
 import { env } from "void/env";
 import type { Context } from "hono";
-import { verifyArtifactToken } from "@/lib/artifact-tokens";
-import {
-  artifactContentDisposition,
-  buildArtifactResponse,
-  readArtifact,
-} from "@/lib/artifacts";
-import { signGetUrl } from "@/lib/artifacts/presign";
+import { verifyArtifactToken } from "@/lib/artifacts/tokens";
+import { serveArtifactBytes } from "@/lib/artifacts/serve";
 import { r2DirectConfig } from "@/lib/config";
-import { safeContentType } from "@/lib/content-types";
+import { traceViewerOrigin } from "@/trace-viewer/origin";
 
 const ALLOWED_CROSS_ORIGINS = new Set(["https://trace.playwright.dev"]);
 
@@ -18,12 +13,14 @@ const ALLOWED_CROSS_ORIGINS = new Set(["https://trace.playwright.dev"]);
  *
  * Token-authenticated artifact stream. The HMAC token (signed with
  * `ARTIFACT_TOKEN_SECRET`, falling back to `BETTER_AUTH_SECRET` when unset —
- * see `lib/artifact-tokens.ts#getKey`) carries the R2 key + content-type
- * directly, so we skip the DB on the hot path. CORS narrowed to the dashboard
- * + the Playwright trace viewer.
+ * see `lib/artifacts/tokens.ts#getKey`) carries the R2 key + content-type
+ * directly, so we skip the DB on the hot path. CORS narrowed to the dashboard,
+ * the configured separate trace-viewer origin (when set), and the Playwright
+ * trace viewer.
  */
-// Exported for unit testing the flag-conditional branch (302-mint vs
-// worker-proxy fall-through); the Void router only binds the `GET` export below.
+// Exported for unit testing the token gate + delegation; the Void router only
+// binds the `GET` export below. Auth + translation only — the proxy-vs-302
+// fork and the origin-safety policy live in `serveArtifactBytes`.
 export async function handle(c: Context): Promise<Response> {
   const url = new URL(c.req.url);
   const token = url.searchParams.get("t");
@@ -35,44 +32,22 @@ export async function handle(c: Context): Promise<Response> {
   const corsOrigin = resolveAllowedOrigin(c.req.raw, url.origin);
   const { r2Key, contentType, exp } = payload;
 
-  // Direct-R2 (ADR 0003): once the token is verified, hand the byte transfer to
-  // R2 itself — 302 to a short-lived presigned GET so the worker moves zero
-  // bytes. The same-origin dashboard initiator means only the final R2 response
-  // needs CORS (the trace viewer uses a direct-embedded presigned URL instead of
-  // this redirect — see `test-artifact-actions.ts`). HEAD stays on the worker
-  // path below (metadata only, no bytes) — a presigned GET URL is method-bound,
-  // so a HEAD against it would 403.
-  const directCfg = r2DirectConfig(env);
-  if (directCfg && c.req.method === "GET") {
-    // Cap the presigned URL to the token's REMAINING life so the R2 capability
-    // can't outlive the token that authorized it (≥1s; the token is already
-    // verified non-expired above).
-    const expiresIn = Math.max(1, exp - Math.floor(Date.now() / 1000));
-    const location = await signGetUrl(directCfg, r2Key, {
-      responseContentType: safeContentType(contentType),
-      responseContentDisposition: artifactContentDisposition(r2Key),
-      expiresIn,
-    });
-    return new Response(null, {
-      status: 302,
-      headers: {
-        location,
-        // The redirect carries a short-lived presigned URL — never cache it.
-        "cache-control": "private, no-store",
-        "access-control-allow-origin": corsOrigin,
-        vary: "Origin",
-      },
-    });
-  }
+  // Seconds of token life left (≥1s; the token is already verified non-expired
+  // above). `serveArtifactBytes` caps every request-outliving capability to
+  // this (the presigned URL additionally to the standard artifact-token TTL).
+  const remainingTokenSeconds = Math.max(
+    1,
+    exp - Math.floor(Date.now() / 1000),
+  );
 
-  const read = await readArtifact(r2Key, c.req.raw.headers, c.req.method);
-  if (!read) return new Response("Not found", { status: 404 });
-
-  return buildArtifactResponse(read, {
-    tokenContentType: contentType,
-    allowedOrigin: corsOrigin,
+  return serveArtifactBytes({
     r2Key,
+    tokenContentType: contentType,
     method: c.req.method,
+    requestHeaders: c.req.raw.headers,
+    allowedOrigin: corsOrigin,
+    remainingTokenSeconds,
+    directConfig: r2DirectConfig(env),
   });
 }
 
@@ -104,8 +79,8 @@ const EXPIRED_ARTIFACT_HTML = `<!doctype html>
   <style>
     :root { color-scheme: light dark; }
     html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-    body { display: flex; align-items: center; justify-content: center; background: #fafafa; color: #0a0a0a; }
-    @media (prefers-color-scheme: dark) { body { background: #0a0a0a; color: #fafafa; } }
+    body { display: flex; align-items: center; justify-content: center; background: oklch(0.99 0.003 260); color: oklch(0.18 0.008 260); }
+    @media (prefers-color-scheme: dark) { body { background: oklch(0.135 0.004 260); color: oklch(0.975 0.003 260); } }
     main { max-width: 28rem; padding: 1.5rem; text-align: center; }
     h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.5rem; }
     p { font-size: 0.875rem; line-height: 1.5; opacity: 0.7; margin: 0 0 1.5rem; }
@@ -129,6 +104,11 @@ function resolveAllowedOrigin(
   const origin = request.headers.get("origin");
   if (!origin) return dashboardOrigin;
   if (origin === dashboardOrigin) return origin;
+  // Separate-origin trace-viewer isolation: bridge.html on the configured
+  // cookieless host fetches the signed trace URL cross-origin, so that origin
+  // must be allowed or every separate-origin replay dies before parsing.
+  // `traceViewerOrigin()` is "" when unset, and `origin` is never "" here.
+  if (origin === traceViewerOrigin()) return origin;
   if (ALLOWED_CROSS_ORIGINS.has(origin)) return origin;
   return dashboardOrigin;
 }

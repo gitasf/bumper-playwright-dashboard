@@ -207,6 +207,7 @@ describe("useFeedRoom (generic seed + fold)", () => {
         runId: "run-x",
         summary: {
           totalTests: 1,
+          expectedTotalTests: null,
           passed: 1,
           failed: 0,
           flaky: 0,

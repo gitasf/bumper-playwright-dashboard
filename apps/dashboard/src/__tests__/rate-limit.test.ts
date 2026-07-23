@@ -59,11 +59,19 @@ function fakeContext(
   path: string,
   env: unknown,
   apiKey?: { id: string },
+  mcpAuth?: { userId: string },
+  ip?: string,
 ): never {
   return {
-    req: { path, raw: new Request(`http://localhost${path}`) },
+    req: {
+      path,
+      raw: new Request(`http://localhost${path}`, {
+        headers: ip ? { "CF-Connecting-IP": ip } : undefined,
+      }),
+    },
     env,
-    get: (k: string) => (k === "apiKey" ? apiKey : undefined),
+    get: (k: string) =>
+      k === "apiKey" ? apiKey : k === "mcpAuth" ? mcpAuth : undefined,
   } as never;
 }
 
@@ -108,6 +116,60 @@ describe("03.rate-limit middleware", () => {
     expect((res as Response).status).toBe(429);
   });
 
+  it("keys /api/mcp by the OAuth token's userId when no API key is stashed", async () => {
+    // The query-surface branch resolves apiKey.id ?? mcpAuth.userId ?? IP.
+    // OAuth-authed MCP requests carry no apiKey, so a user's agents must
+    // share the user budget — not hide behind per-IP keys.
+    const seen: string[] = [];
+    const env = {
+      QUERY_RATE_LIMITER: {
+        limit: (input: { key: string }) => {
+          seen.push(input.key);
+          return Promise.resolve({ success: true });
+        },
+      },
+    };
+    await rateLimitMiddleware(
+      fakeContext("/api/mcp", env, undefined, { userId: "user_42" }),
+      async () => {},
+    );
+    expect(seen).toEqual(["user_42"]);
+  });
+
+  it("keys /api/mcp by apiKey.id when the request is key-authed (wins over mcpAuth)", async () => {
+    const seen: string[] = [];
+    const env = {
+      QUERY_RATE_LIMITER: {
+        limit: (input: { key: string }) => {
+          seen.push(input.key);
+          return Promise.resolve({ success: true });
+        },
+      },
+    };
+    await rateLimitMiddleware(
+      fakeContext("/api/mcp", env, { id: "key_9" }, { userId: "user_42" }),
+      async () => {},
+    );
+    expect(seen).toEqual(["key_9"]);
+  });
+
+  it("returns a 429 on /api/mcp for an over-budget OAuth user", async () => {
+    const env = {
+      QUERY_RATE_LIMITER: {
+        limit: (_input: { key: string }) => Promise.resolve({ success: false }),
+      },
+    };
+    let nextCalled = false;
+    const res = await rateLimitMiddleware(
+      fakeContext("/api/mcp", env, undefined, { userId: "user_42" }),
+      async () => {
+        nextCalled = true;
+      },
+    );
+    expect(nextCalled).toBe(false);
+    expect((res as Response).status).toBe(429);
+  });
+
   it("does not throttle unmatched (non-API) paths", async () => {
     const c = fakeContext("/t/team/p/proj", envWith(false));
     let nextCalled = false;
@@ -115,6 +177,90 @@ describe("03.rate-limit middleware", () => {
       nextCalled = true;
     });
     expect(nextCalled).toBe(true);
+  });
+
+  it("keys the artifact download by IP + artifactId, not the id alone", async () => {
+    const seen: string[] = [];
+    const env = {
+      ARTIFACT_RATE_LIMITER: {
+        limit: (input: { key: string }) => {
+          seen.push(input.key);
+          return Promise.resolve({ success: true });
+        },
+      },
+    };
+    await rateLimitMiddleware(
+      fakeContext(
+        "/api/artifacts/art_1/download",
+        env,
+        undefined,
+        undefined,
+        "203.0.113.9",
+      ),
+      async () => {},
+    );
+    expect(seen).toEqual(["203.0.113.9:art_1"]);
+  });
+
+  it("returns a 429 on an over-budget artifact download", async () => {
+    const env = {
+      ARTIFACT_RATE_LIMITER: {
+        limit: (_input: { key: string }) => Promise.resolve({ success: false }),
+      },
+    };
+    let nextCalled = false;
+    const res = await rateLimitMiddleware(
+      fakeContext("/api/artifacts/art_1/download", env),
+      async () => {
+        nextCalled = true;
+      },
+    );
+    expect(nextCalled).toBe(false);
+    expect((res as Response).status).toBe(429);
+  });
+
+  it("throttles the session tenant API (incl. the CSV export) under QUERY, keyed by IP", async () => {
+    // The /api/t/* family is cookie-authed — no Bearer key is ever stashed —
+    // and previously fell through this middleware entirely, leaving the
+    // expensive export/runs cursor walk (up to WRIGHTFUL_EXPORT_MAX_ROWS at
+    // 500/page) unthrottled.
+    const seen: string[] = [];
+    const env = {
+      QUERY_RATE_LIMITER: {
+        limit: (input: { key: string }) => {
+          seen.push(input.key);
+          return Promise.resolve({ success: true });
+        },
+      },
+    };
+    await rateLimitMiddleware(
+      fakeContext(
+        "/api/t/acme/p/web/export/runs",
+        env,
+        undefined,
+        undefined,
+        "203.0.113.9",
+      ),
+      async () => {},
+    );
+    expect(seen).toEqual(["203.0.113.9"]);
+  });
+
+  it("returns a 429 on an over-budget tenant-API export request", async () => {
+    const env = {
+      QUERY_RATE_LIMITER: {
+        limit: (_input: { key: string }) => Promise.resolve({ success: false }),
+      },
+    };
+    let nextCalled = false;
+    const res = await rateLimitMiddleware(
+      fakeContext("/api/t/acme/p/web/export/runs", env),
+      async () => {
+        nextCalled = true;
+      },
+    );
+    expect(nextCalled).toBe(false);
+    expect((res as Response).status).toBe(429);
   });
 });
 

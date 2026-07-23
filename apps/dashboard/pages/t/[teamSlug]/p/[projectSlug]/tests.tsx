@@ -1,12 +1,15 @@
 import { Link, PREFETCH_STABLE } from "@/components/ui/link";
+import { RowLink } from "@/components/row-link";
+import { ChevronsUpDown, ChevronDown, ChevronUp } from "lucide-react";
 import { Fragment, use } from "react";
 import { AnalyticsButtonGroup } from "@/components/analytics/button-group";
 import { DeferredSection } from "@/components/defer-error-boundary";
+import { NavBusyGuard } from "@/components/nav-busy-guard";
 import { OutcomeBar } from "@/components/outcome-bar";
 import { PageHeader } from "@/components/page-header";
 import { PageToolbar } from "@/components/page-toolbar";
-import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { RunHistoryBranchFilter } from "@/components/run/history-branch-filter";
+import { ALL_BRANCHES } from "@/components/run/history-branch-filter.shared";
 import { SearchFilterInput } from "@/components/search-filter-input";
 import { TablePaginationFooterSkeleton } from "@/components/skeletons";
 import { TablePaginationFooter } from "@/components/table-pagination-footer";
@@ -29,7 +32,13 @@ import { cn } from "@/lib/cn";
 import { groupCatalogRows } from "@/lib/group-catalog-rows";
 import { makeHrefBuilder } from "@/lib/page-links";
 import { statusToken } from "@/lib/status";
+import {
+  defaultTestsSortDirection,
+  type TestsSortDirection,
+  type TestsSortKey,
+} from "@/lib/tests-catalog-sort";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
+import { useIsNavigating } from "@/lib/use-is-navigating";
 import type { Props, TestsPageRow } from "./tests.server";
 
 const GROUP_OPTIONS = ["none", "file", "suite"] as const;
@@ -61,6 +70,7 @@ export default function TestsPage({
   tags,
   availableTags,
   group,
+  sort,
   catalog,
   requestedPage,
   pathname,
@@ -74,6 +84,11 @@ export default function TestsPage({
     q,
     tag: tagParam,
     group,
+    sort: sort.key === "last-seen" ? null : sort.key,
+    direction:
+      sort.direction === defaultTestsSortDirection(sort.key)
+        ? null
+        : sort.direction,
     // The raw URL page (eager) preserves the current page across a group
     // toggle; the clamped page streams with the deferred slice.
     page: requestedPage > 1 ? String(requestedPage) : null,
@@ -91,25 +106,36 @@ export default function TestsPage({
     });
   };
   const groupValue: GroupOption = group ?? "none";
+  const sortHref = (key: TestsSortKey): string => {
+    const direction: TestsSortDirection =
+      sort.key === key
+        ? sort.direction === "asc"
+          ? "desc"
+          : "asc"
+        : defaultTestsSortDirection(key);
+    return hrefWith({ sort: key, direction, page: null });
+  };
 
   // A deferred region that fails latches its error boundary; clear it when the
   // filters/page change so the SPA-nav re-fetch re-attempts the region.
-  const resetKey = `${range}:${branchParam ?? ""}:${q}:${tagParam ?? ""}:${requestedPage}`;
+  const resetKey = `${range}:${branchParam ?? ""}:${q}:${tagParam ?? ""}:${sort.key}:${sort.direction}:${requestedPage}`;
 
   return (
     <>
       <PageHeader title="Tests catalog" />
 
       <PageToolbar sticky>
-        <form className="max-w-[360px] flex-1" method="get">
+        <form className="w-[240px]" method="get">
           <input name="range" type="hidden" value={range} />
           {branchParam ? (
             <input name="branch" type="hidden" value={branchParam} />
           ) : null}
+          <input name="sort" type="hidden" value={sort.key} />
+          <input name="direction" type="hidden" value={sort.direction} />
           <SearchFilterInput
             defaultValue={q}
             name="q"
-            placeholder="Search by test name or path…"
+            placeholder="Search tests…"
           />
         </form>
         <RunHistoryBranchFilter
@@ -118,7 +144,6 @@ export default function TestsPage({
         />
         <div className="flex-1" />
         <AnalyticsButtonGroup
-          className="capitalize"
           hrefFor={(g) => hrefWith({ group: g === "none" ? null : g })}
           labelFor={(g) => GROUP_LABEL[g]}
           options={GROUP_OPTIONS}
@@ -132,33 +157,38 @@ export default function TestsPage({
       </PageToolbar>
 
       {availableTags.length > 0 && (
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border bg-background px-6 py-2">
-          <span className="mr-1 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line-1 bg-bg-0 px-6 py-2">
+          <span className="mr-1 text-caption font-medium tracking-[0.1px] text-fg-3">
             Tags
           </span>
-          {availableTags.map((tag) => {
-            const active = selectedTags.has(tag);
-            return (
-              <Link
-                aria-label={`${active ? "Remove" : "Add"} tag filter: ${tag}`}
-                aria-pressed={active}
-                className={cn(
-                  "rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors",
-                  active
-                    ? "border-accent bg-accent-soft text-accent"
-                    : "border-border text-muted-foreground hover:text-foreground",
-                )}
-                href={tagHref(tag)}
-                key={tag}
-              >
-                {tag}
-              </Link>
-            );
-          })}
+          <NavBusyGuard>
+            {availableTags.map((tag) => {
+              const active = selectedTags.has(tag);
+              return (
+                <Link
+                  aria-label={`${active ? "Remove" : "Add"} tag filter: ${tag}`}
+                  aria-pressed={active}
+                  className={cn(
+                    "rounded-full border px-2.5 py-0.5 font-mono text-micro transition-colors",
+                    active
+                      ? "border-bg-3 bg-accent-soft text-info"
+                      : "border-line-1 text-fg-3 hover:text-fg-1",
+                  )}
+                  href={tagHref(tag)}
+                  key={tag}
+                >
+                  {tag}
+                </Link>
+              );
+            })}
+          </NavBusyGuard>
         </div>
       )}
 
-      <DeferredSection resetKey={resetKey} skeleton={<TestsCatalogSkeleton />}>
+      <DeferredSection
+        resetKey={resetKey}
+        skeleton={<TestsCatalogSkeleton sort={sort} sortHref={sortHref} />}
+      >
         <TestsCatalogRegion
           base={base}
           branchFilter={branchFilter}
@@ -167,6 +197,8 @@ export default function TestsPage({
           pageHref={pageHref}
           q={q}
           range={range}
+          sort={sort}
+          sortHref={sortHref}
         />
       </DeferredSection>
     </>
@@ -184,6 +216,8 @@ function TestsCatalogRegion({
   q,
   range,
   branchFilter,
+  sort,
+  sortHref,
 }: {
   catalog: Props["catalog"];
   base: string;
@@ -192,6 +226,8 @@ function TestsCatalogRegion({
   q: string;
   range: string;
   branchFilter: string | null;
+  sort: Props["sort"];
+  sortHref: (key: TestsSortKey) => string;
 }) {
   const { rows, totalUniqueTests, currentPage, totalPages, fromRow, toRow } =
     use(catalog);
@@ -220,8 +256,8 @@ function TestsCatalogRegion({
   return (
     <>
       <div className="flex-1 overflow-y-auto min-h-0">
-        <Table className="table-fixed">
-          <TestsCatalogHead />
+        <Table className="table-fixed" stickyHeader>
+          <TestsCatalogHead sort={sort} sortHref={sortHref} />
           <TableBody>
             {group
               ? groupCatalogRows(rows, group).map((g) => (
@@ -230,12 +266,12 @@ function TestsCatalogRegion({
                       <TableCell className="w-10 px-4 py-2" />
                       <TableCell className="px-4 py-2 align-middle">
                         <span
-                          className="truncate font-mono text-[11px] font-semibold text-foreground"
+                          className="truncate font-mono text-micro font-semibold text-fg-1"
                           title={g.key}
                         >
                           {g.key}
                         </span>
-                        <span className="ml-2 text-[11px] text-muted-foreground">
+                        <span className="ml-2 text-micro text-fg-3">
                           {g.testCount} test{g.testCount === 1 ? "" : "s"}
                         </span>
                       </TableCell>
@@ -281,28 +317,126 @@ function TestsCatalogRegion({
 
 /** Shared 6-column header used by the live table and its skeleton so the
  *  fixed column widths can't drift between states. */
-function TestsCatalogHead() {
+function TestsCatalogHead({
+  sort,
+  sortHref,
+}: {
+  sort: Props["sort"];
+  sortHref: (key: TestsSortKey) => string;
+}) {
+  // Disable the sort links while a navigation is in flight (this head renders
+  // in both the live table and the streaming skeleton, so both are covered):
+  // re-sorting before the current visit's deferred props resolve would dispose
+  // it and reject them (see `useIsNavigating`).
+  const busy = useIsNavigating();
   return (
-    <TableHeader className="sticky top-0 z-10 bg-bg-0/95 backdrop-blur-sm">
+    <TableHeader
+      className="sticky top-0 z-20 bg-bg-0/95 backdrop-blur-sm"
+      inert={busy}
+    >
       <TableRow>
         <TableHead className="w-10 px-4" />
-        <TableHead className="px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Test
-        </TableHead>
-        <TableHead className="w-[90px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Total runs
-        </TableHead>
-        <TableHead className="w-[200px] px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Mix
-        </TableHead>
-        <TableHead className="w-[110px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Avg duration
-        </TableHead>
-        <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Last seen
-        </TableHead>
+        <SortableHead
+          href={sortHref("test")}
+          label="Test"
+          sort={sort}
+          sortKey="test"
+        />
+        <SortableHead
+          align="right"
+          className="w-[90px]"
+          href={sortHref("runs")}
+          label="Total runs"
+          sort={sort}
+          sortKey="runs"
+        />
+        <TableHead className="w-[200px] px-4">Mix</TableHead>
+        <SortableHead
+          align="right"
+          className="w-[110px]"
+          href={sortHref("duration")}
+          label="Avg duration"
+          sort={sort}
+          sortKey="duration"
+        />
+        <SortableHead
+          align="right"
+          className="w-[100px]"
+          href={sortHref("last-seen")}
+          label="Last seen"
+          sort={sort}
+          sortKey="last-seen"
+        />
       </TableRow>
     </TableHeader>
+  );
+}
+
+// Deliberately separate from the trace viewer's SortableHead
+// (src/trace-viewer/components/network-tab.tsx): that one is a client
+// button-onClick tri-state (asc→desc→natural) toggle over an in-memory array;
+// this one is a server-driven two-state Link that navigates the URL to re-run
+// the loader's SQL sort. Unifying them would need a button-vs-link + tri-vs-two
+// mode flag that hides more than it shares.
+function SortableHead({
+  label,
+  sortKey,
+  sort,
+  href,
+  align = "left",
+  className,
+}: {
+  label: string;
+  sortKey: TestsSortKey;
+  sort: Props["sort"];
+  href: string;
+  align?: "left" | "right";
+  className?: string;
+}) {
+  const active = sort.key === sortKey;
+  const nextDirection = active
+    ? sort.direction === "asc"
+      ? "descending"
+      : "ascending"
+    : defaultTestsSortDirection(sortKey) === "asc"
+      ? "ascending"
+      : "descending";
+  return (
+    <TableHead
+      aria-sort={
+        active
+          ? sort.direction === "asc"
+            ? "ascending"
+            : "descending"
+          : undefined
+      }
+      className={cn("p-0", className)}
+    >
+      <Link
+        aria-label={`Sort by ${label}, ${nextDirection}`}
+        className={cn(
+          "flex h-10 w-full items-center gap-1 px-4 text-fg-3 transition-colors hover:text-fg-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          align === "right" && "justify-end",
+        )}
+        href={href}
+      >
+        {label}
+        <span
+          aria-hidden
+          className="inline-flex size-3 items-center justify-center"
+        >
+          {active ? (
+            sort.direction === "asc" ? (
+              <ChevronUp className="size-3" />
+            ) : (
+              <ChevronDown className="size-3" />
+            )
+          ) : (
+            <ChevronsUpDown className="size-3 opacity-45" />
+          )}
+        </span>
+      </Link>
+    </TableHead>
   );
 }
 
@@ -310,12 +444,18 @@ function TestsCatalogHead() {
  *  single-line under `leading-none` (`h-[13px]` ≈ 38px row). Row count is a
  *  fixed placeholder — the real count only exists post-query; the table is the
  *  terminal region, so it resizes in place without shifting anything above. */
-function TestsCatalogSkeleton() {
+function TestsCatalogSkeleton({
+  sort,
+  sortHref,
+}: {
+  sort: Props["sort"];
+  sortHref: (key: TestsSortKey) => string;
+}) {
   return (
     <>
       <div className="flex-1 overflow-y-auto min-h-0">
-        <Table className="table-fixed">
-          <TestsCatalogHead />
+        <Table className="table-fixed" stickyHeader>
+          <TestsCatalogHead sort={sort} sortHref={sortHref} />
           <TableBody>
             {Array.from({ length: SKELETON_ROWS }, (_, i) => (
               <TableRow key={i}>
@@ -360,36 +500,29 @@ function TestRow({ row, base }: { row: TestsPageRow; base: string }) {
   return (
     <TableRow>
       <TableCell className="w-10 px-4 py-3 align-middle">
-        {/* Stretched-link pattern — the `<Link>` is position: static so its
-         * `after:inset-0` pseudo fills the nearest positioned ancestor (the
-         * TableRow with `relative`). Whole row becomes the click target. */}
-        <Link
-          cacheFor={PREFETCH_STABLE}
-          className="flex items-center justify-center focus-visible:outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring"
-          href={href}
-        >
+        <RowLink cacheFor={PREFETCH_STABLE} href={href}>
           <span className="sr-only">View {title}</span>
           <span
             aria-hidden
             className="inline-block size-2 rounded-full"
             style={{ backgroundColor: dotColor }}
           />
-        </Link>
+        </RowLink>
       </TableCell>
       <TableCell className="px-4 py-3 align-middle">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[13px] text-foreground" title={title}>
+          <span className="truncate text-body text-fg-1" title={title}>
             {title}
           </span>
           <span
-            className="truncate font-mono text-[11px] text-muted-foreground"
+            className="truncate font-mono text-micro text-fg-3"
             title={row.file}
           >
             {row.file}
           </span>
         </div>
       </TableCell>
-      <TableCell className="w-[90px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-muted-foreground">
+      <TableCell className="w-[90px] px-4 py-3 text-right align-middle font-mono text-caption tabular-nums text-fg-3">
         {row.n.toLocaleString()}
       </TableCell>
       <TableCell className="w-[200px] px-4 py-3 align-middle">
@@ -404,12 +537,12 @@ function TestRow({ row, base }: { row: TestsPageRow; base: string }) {
           skipped={row.skippedCount}
         />
       </TableCell>
-      <TableCell className="w-[110px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-foreground">
+      <TableCell className="w-[110px] px-4 py-3 text-right align-middle font-mono text-caption tabular-nums text-fg-1">
         {row.avgDurationMs === null
           ? "—"
           : formatDuration(Math.round(row.avgDurationMs))}
       </TableCell>
-      <TableCell className="w-[100px] px-4 py-3 text-right align-middle text-[12px] text-muted-foreground">
+      <TableCell className="w-[100px] px-4 py-3 text-right align-middle text-caption text-fg-3">
         {formatRelativeTime(row.lastSeen)}
       </TableCell>
     </TableRow>

@@ -1,9 +1,10 @@
+import { all } from "better-all";
 import { defer, defineHandler, type InferProps } from "void";
 import { and, db, desc, eq } from "void/db";
 import { runs } from "@schema";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { ALL_BRANCHES } from "@/components/run/history-branch-filter.shared";
 import { loadProjectBranches } from "@/lib/branches-query";
-import { RUN_PUBLIC_COLUMNS } from "@/lib/run-columns";
+import { RUN_PUBLIC_COLUMNS } from "@/lib/runs/columns";
 import { runByIdWhere, runScopeWhere } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
 
@@ -28,13 +29,26 @@ export const loader = defineHandler(async (c) => {
 
   const { project, scope } = requireTenantContext(c);
 
-  const runRows = await db
-    // Explicit projection — omits idempotencyKey (the write-reopen credential)
-    // from the serialized props. See RUN_PUBLIC_COLUMNS.
-    .select(RUN_PUBLIC_COLUMNS)
-    .from(runs)
-    .where(runByIdWhere(scope, runId))
-    .limit(1);
+  // Run row (404 gate) and branch list depend only on `scope`, so they run in
+  // one parallel wave rather than two serial round trips. 404 check follows.
+  const { runRows, branches } = await all({
+    async runRows() {
+      // Explicit projection — omits idempotencyKey (the write-reopen
+      // credential) from the serialized props. See RUN_PUBLIC_COLUMNS.
+      return db
+        .select(RUN_PUBLIC_COLUMNS)
+        .from(runs)
+        .where(runByIdWhere(scope, runId))
+        .limit(1);
+    },
+    // Cheap index-covered DISTINCT driving the always-visible branch filter in
+    // the chart's title row. Eager so the skeleton renders the real filter +
+    // title row while only the history plot streams — identical markup in both
+    // states, no shift.
+    async branches() {
+      return loadProjectBranches(scope);
+    },
+  });
   const run = runRows[0];
   if (!run) throw new Response("Not Found", { status: 404 });
 
@@ -70,18 +84,13 @@ export const loader = defineHandler(async (c) => {
     .orderBy(desc(runs.createdAt))
     .limit(HISTORY_LIMIT);
 
-  // `branches` is a cheap index-covered DISTINCT and drives the always-visible
-  // branch filter in the chart's title row. Loading it EAGER lets the chart's
-  // skeleton render the real filter + title row while only the history plot
-  // streams in — so the title row is identical markup in both states and can't
-  // shift.
-  const branches = await loadProjectBranches(scope);
-
-  // This loader sets no Cache-Control, so nothing changes there: a deferred
-  // loader streams its body (NDJSON on SPA nav / chunked HTML on document load),
-  // and the absence of a stored SWR/max-age response means the browser can't
-  // replay the wrong variant. (See suite-size.server.ts for the case where a
-  // pre-existing max-age header had to become `private, no-store`.)
+  // This loader sets no explicit Cache-Control: a deferred loader streams its
+  // body (NDJSON on SPA nav / chunked HTML on document load), and the absence
+  // of a stored SWR/max-age response means the browser can't replay the wrong
+  // variant. middleware/00.cache.ts stamps the response `private, no-store`,
+  // which also keeps Workers Cache from heuristically storing it at the edge.
+  // (See suite-size.server.ts for the case where a pre-existing max-age header
+  // had to become `private, no-store`.)
   return {
     project: {
       id: project.id,

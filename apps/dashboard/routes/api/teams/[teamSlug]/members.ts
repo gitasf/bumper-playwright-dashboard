@@ -16,7 +16,11 @@ import { AuthzError, resolveOwnedTeam } from "@/lib/settings-scope";
  *
  * The last-owner invariant rides inside `setMemberRole`'s guarded UPDATE (an
  * owner-count subquery in the WHERE), so demoting the team's sole owner matches
- * 0 rows and surfaces here as `lastOwner` — never a check-then-write race.
+ * 0 rows and surfaces here as `lastOwner` — never a same-row check-then-write
+ * race. `setMemberRole` also locks the team's owner rows first (inside a
+ * transaction) before a demote's guarded UPDATE runs, closing the cross-row
+ * case too — two owners demoting each other concurrently can't both slip past
+ * the guard (see the `members-repo` module doc).
  */
 export const PATCH = defineHandler(async (c) => {
   const actor = requireAuth(c);
@@ -24,7 +28,7 @@ export const PATCH = defineHandler(async (c) => {
   try {
     team = await resolveOwnedTeam(c);
   } catch (err) {
-    if (err instanceof AuthzError) return c.json({ error: "Forbidden" }, 403);
+    if (err instanceof AuthzError) return c.json({ error: "Not found" }, 404);
     throw err;
   }
 

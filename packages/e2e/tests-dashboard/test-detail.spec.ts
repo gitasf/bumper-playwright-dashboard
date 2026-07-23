@@ -4,23 +4,19 @@ import { FAILURES_BRANCH } from "./global-setup";
 test.describe("Test detail page", () => {
   test("clicking a test row from run-detail navigates to test-detail", async ({
     page,
-    runsListPage,
     runDetailPage,
+    openSeededRun,
   }) => {
-    await runsListPage.goto();
-    const runId = await runsListPage.firstRunId();
-    await runDetailPage.goto(runId);
+    const runId = await openSeededRun();
     await runDetailPage.clickFirstTest();
     await expect(page).toHaveURL(new RegExp(`/runs/${runId}/tests/`));
   });
 
   test("test-detail renders the spec-title heading", async ({
-    runsListPage,
     runDetailPage,
+    openSeededRun,
   }) => {
-    await runsListPage.goto();
-    const runId = await runsListPage.firstRunId();
-    await runDetailPage.goto(runId);
+    await openSeededRun();
     await runDetailPage.clickFirstTest();
     await expect(runDetailPage.testTitleHeading).toBeVisible({
       timeout: 10_000,
@@ -29,12 +25,10 @@ test.describe("Test detail page", () => {
 
   test("test-detail URL renders the back-link to the parent run", async ({
     page,
-    runsListPage,
     runDetailPage,
+    openSeededRun,
   }) => {
-    await runsListPage.goto();
-    const runId = await runsListPage.firstRunId();
-    await runDetailPage.goto(runId);
+    const runId = await openSeededRun();
     await runDetailPage.clickFirstTest();
 
     const runBackLink = page.locator(`a[href$="/runs/${runId}"]`);
@@ -43,14 +37,12 @@ test.describe("Test detail page", () => {
 
   test("visual diff dialog opens with all four mode tabs", async ({
     page,
-    runsListPage,
     runDetailPage,
+    openSeededRun,
   }) => {
     // Filter to the failures-scenario run that carries the visual diff
     // (seeded by upload-fixtures.mjs → 02-feature-flaky).
-    await runsListPage.goto(`branch=${encodeURIComponent(FAILURES_BRANCH)}`);
-    const runId = await runsListPage.firstRunId();
-    await runDetailPage.goto(runId);
+    await openSeededRun(FAILURES_BRANCH);
 
     // The failures run holds tests across multiple files; expand the (paginated)
     // groups, then navigate to the visual-regression test specifically rather

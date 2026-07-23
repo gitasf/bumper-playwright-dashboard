@@ -62,9 +62,39 @@ export function isIngestRoute(path: string): boolean {
  * routes (`/api/runs/*`, `/api/artifacts/*`) or the session-authed `/api/t/*`,
  * so the two predicates are disjoint over every `/api/*` path — asserted in
  * `src/__tests__/ingest-routes.test.ts`.
+ *
+ * `/api/mcp` (the MCP server endpoint, `routes/api/mcp/index.ts`) is part of
+ * this SAME surface, not a third one: an MCP client sends
+ * `Authorization: Bearer <key>` exactly like a query CLI, there is no
+ * `X-Wrightful-Version` handshake (MCP negotiates its own protocol version
+ * inside the JSON-RPC layer), and its read tools are the same project-scoped
+ * queries the `/api/v1/*` routes serve — so it wants the same auth branch and
+ * the same per-key `QUERY_RATE_LIMITER` budget.
  */
-const QUERY_API_RE = /^\/api\/v1(?:\/|$)/;
+const QUERY_API_RE = /^\/api\/(?:v1|mcp)(?:\/|$)/;
 
 export function isQueryApiRoute(path: string): boolean {
   return QUERY_API_RE.test(path);
+}
+
+/**
+ * The MCP endpoint alone, as a sub-predicate of {@link isQueryApiRoute}
+ * (every MCP path IS a query path — asserted in `ingest-routes.test.ts`).
+ * 02.api-auth branches on it because /api/mcp accepts TWO Bearer credentials
+ * — a project API key OR a Better Auth MCP OAuth access token — and its 401s
+ * must carry the `WWW-Authenticate: Bearer resource_metadata=…` challenge
+ * that triggers an MCP client's OAuth flow. The plain `/api/v1/*` query
+ * routes stay key-only with a bare 401.
+ */
+const MCP_RE = /^\/api\/mcp(?:\/|$)/;
+
+export function isMcpRoute(path: string): boolean {
+  return MCP_RE.test(path);
+}
+
+/** Session-authenticated tenant API routes, throttled by client IP. */
+const TENANT_API_RE = /^\/api\/t\/[^/]+\/p\/[^/]+(?:\/|$)/;
+
+export function isTenantApiRoute(path: string): boolean {
+  return TENANT_API_RE.test(path);
 }

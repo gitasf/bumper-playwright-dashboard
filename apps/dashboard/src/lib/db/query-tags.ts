@@ -6,7 +6,7 @@
  * which emits anonymous SQL: Insights can group by query pattern but can't
  * attribute a pattern to a feature, route, or deploy. Drizzle has no
  * first-party SQLCommenter package, so we tag **opt-in at the raw-SQL boundary**
- * (`runRows` / `runRow` in `src/lib/db-run.ts`): a call passes {@link QueryTags}
+ * (`runRows` / `runRow` in `src/lib/runs/db.ts`): a call passes {@link QueryTags}
  * and the helper appends a `key='value'` block comment to the statement.
  *
  * Scope (deliberate): builder queries (`db.select()…`) are NOT tagged — they're

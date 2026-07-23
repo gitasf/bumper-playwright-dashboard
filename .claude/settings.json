@@ -4,5 +4,8 @@
       "command": "npx",
       "args": ["void", "mcp"]
     }
+  },
+  "enabledPlugins": {
+    "security-guidance@claude-plugins-official": true
   }
 }

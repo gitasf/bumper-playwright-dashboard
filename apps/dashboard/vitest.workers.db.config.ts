@@ -9,8 +9,8 @@ import { MINIFLARE_BASE } from "./vitest.shared";
 // Real-DB-in-workerd lane. A smoke test that the PRODUCTION data path —
 // node-postgres over a Hyperdrive binding, inside the real Workers runtime —
 // loads and connects. (The data seam + result shapes are covered against
-// node-postgres in pg-integration.test.ts; this lane only adds the workerd +
-// Hyperdrive dimension nothing else exercises.)
+// node-postgres in src/__tests__/pg-integration/; this lane only adds the
+// workerd + Hyperdrive dimension nothing else exercises.)
 //
 // Needs a live Postgres; the Hyperdrive binding points miniflare at it. If no
 // URL is found the binding is omitted and the test self-skips on the

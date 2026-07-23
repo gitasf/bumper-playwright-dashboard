@@ -261,6 +261,31 @@ describe("drainRetention", () => {
     expect(visited).toEqual(projects); // every project reached despite budget=5
   });
 
+  it("never re-probes a project once found idle (probe cost O(projects), not O(projects×rounds))", async () => {
+    const visits: Record<string, number> = { busy: 0, idle: 0 };
+    await drainRetention(
+      ["busy", "idle"],
+      (p) => {
+        visits[p] = (visits[p] ?? 0) + 1;
+        if (p === "busy") {
+          return Promise.resolve(
+            visits.busy! <= 3
+              ? {
+                  artifactsDeleted: 0,
+                  artifactObjectsDeleted: 0,
+                  testResultsDeleted: 5,
+                }
+              : EMPTY,
+          );
+        }
+        return Promise.resolve(EMPTY);
+      },
+      budget(1_000_000),
+    );
+    expect(visits.idle).toBe(1);
+    expect(visits.busy).toBe(4);
+  });
+
   it("a productive head does not starve the idle tail: the tail is reached before the budget is spent", async () => {
     // p-busy always has work; the rest are idle. Because idle sweeps don't charge
     // the budget, round 1 reaches the WHOLE list (both idle projects) before the

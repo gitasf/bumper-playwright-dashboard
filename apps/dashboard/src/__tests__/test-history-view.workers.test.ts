@@ -87,7 +87,7 @@ describe("buildTestHistoryView", () => {
     expect(points[0]?.current).toBeUndefined();
   });
 
-  it("makes the current point inert — highlighted, no self-link or hover", () => {
+  it("highlights the current point and drops its self-link, but keeps its hovercard", () => {
     const { points } = buildTestHistoryView(
       [row({ testResultId: "cur" }), row({ testResultId: "other" })],
       { ...OPTS, currentTestResultId: "cur" },
@@ -96,7 +96,10 @@ describe("buildTestHistoryView", () => {
     const other = points.find((p) => p.id === "other");
     expect(cur?.current).toBe(true);
     expect(cur?.href).toBeUndefined();
-    expect(cur?.hover).toBeUndefined();
+    expect(cur?.hover).toMatchObject({
+      kind: "testResult",
+      testResultId: "cur",
+    });
     expect(other?.current).toBeUndefined();
     expect(other?.href).toBeDefined();
   });

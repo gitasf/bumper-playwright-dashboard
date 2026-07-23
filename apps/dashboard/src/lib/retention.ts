@@ -1,7 +1,7 @@
 import { and, db, eq, inArray, lt, sql } from "void/db";
 import { artifacts, projects, teams, testResults } from "@schema";
-import { deleteArtifactObjectsByKeys } from "@/lib/artifacts";
-import { runBatch } from "@/lib/db-batch";
+import { deleteArtifactObjectsByKeys } from "@/lib/artifacts/store";
+import { runBatch } from "@/lib/db/batch";
 import { chunkByParams, PG_MAX_BOUND_PARAMS } from "@/lib/ingest";
 
 /**
@@ -123,6 +123,7 @@ export function createSweepBudget(opts: {
  * those tenants). The wall-clock deadline (still checked every project) remains
  * the hard bound that terminates an all-idle-but-slow scan. Fairness across
  * invocations is provided by `sweepRetention`'s randomized project order.
+ * Projects that delete nothing are not probed again during the same invocation.
  */
 export async function drainRetention<P>(
   projectList: readonly P[],
@@ -135,10 +136,12 @@ export async function drainRetention<P>(
     testResultsDeleted: 0,
   };
 
+  const idle = new Set<P>();
   let progressed = true;
   while (progressed && budget.hasRemaining()) {
     progressed = false;
     for (const project of projectList) {
+      if (idle.has(project)) continue;
       // Re-check between projects so a budget that runs out mid-round stops
       // immediately rather than finishing the round.
       if (!budget.hasRemaining()) break;
@@ -146,11 +149,12 @@ export async function drainRetention<P>(
       total.artifactsDeleted += chunk.artifactsDeleted;
       total.artifactObjectsDeleted += chunk.artifactObjectsDeleted;
       total.testResultsDeleted += chunk.testResultsDeleted;
-      // Charge the chunk ceiling only when the chunk did real work; an idle
-      // project must not consume the budget (see docstring).
+      // An idle project does not consume the chunk budget.
       if (chunk.artifactsDeleted > 0 || chunk.testResultsDeleted > 0) {
         budget.recordChunk();
         progressed = true;
+      } else {
+        idle.add(project);
       }
     }
   }

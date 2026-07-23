@@ -4,7 +4,7 @@ import { and, db, eq, gt } from "void/db";
 import { ulid } from "ulid";
 import { memberships, teamInvites, teams, type MembershipRole } from "@schema";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
-import { runBatch } from "@/lib/db-batch";
+import { runBatch } from "@/lib/db/batch";
 import { inviteIsDirected, inviteMatchesUser } from "@/lib/invite-identity";
 import { hashInviteToken } from "@/lib/invite-tokens";
 

@@ -1,7 +1,7 @@
 import { PageHeader } from "@/components/page-header";
 import { PageToolbar } from "@/components/page-toolbar";
-import { RunListRow } from "@/components/run-list-row";
-import { RunsFilterBar } from "@/components/runs-filter-bar";
+import { RunListRow } from "@/components/run/list-row";
+import { RunsFilterBar } from "@/components/run/filter-bar";
 import { TablePaginationFooter } from "@/components/table-pagination-footer";
 import {
   Empty,
@@ -22,7 +22,7 @@ import {
   DEFAULT_ORIGIN_FILTER,
   hasAnyFilter,
   toSearchParams,
-} from "@/lib/runs-filters";
+} from "@/lib/runs/filters";
 import type { Props } from "./index.server";
 
 /**
@@ -44,14 +44,17 @@ export default function RunsListPage({
   project,
   runs,
   totalRuns,
-  currentPage,
-  totalPages,
+  currentCursor,
+  historyStack,
+  nextCursor,
   offset,
+  pageSize,
   filters,
   options,
   pathname,
 }: Props) {
   const base = `/t/${project.teamSlug}/p/${project.slug}`;
+  const isFirstPage = currentCursor === null;
 
   // Live run feed for the whole list over ONE shared connection: in-flight rows
   // stream in place and brand-new runs prepend without a refresh. New runs are
@@ -66,19 +69,50 @@ export default function RunsListPage({
     origin: DEFAULT_ORIGIN_FILTER,
   });
   const liveRows = useProjectRoom(project.id, runs, {
-    acceptNewRuns: currentPage === 1 && !nonOriginFiltersActive,
+    acceptNewRuns: isFirstPage && !nonOriginFiltersActive,
     origin: filters.origin,
   });
   // Rows the feed prepended beyond the SSR page — shifts #N and the footer.
+  // Always 0 past the first page (`acceptNewRuns` is false there).
   const newCount = liveRows.length - runs.length;
 
   const fromRow = totalRuns + newCount === 0 ? 0 : offset + 1;
   const toRow = offset + liveRows.length;
+  // Orientation label only ("Page 2 of 61") — keyset knows where you are but
+  // can't link to an arbitrary page. Live prepends fold into the denominator.
+  const currentPage = Math.floor(offset / pageSize) + 1;
+  const totalPages = Math.max(1, Math.ceil((totalRuns + newCount) / pageSize));
 
-  const pageHref = (page: number): string => {
-    const qs = toSearchParams({ ...filters, page }).toString();
+  // Href carrying filter-bar state plus a keyset cursor + its ancestor stack
+  // (`?history=`, comma-joined, oldest first). `toSearchParams(filters)` never
+  // includes `cursor`/`history` (outside `RunsFilters`), so changing a filter
+  // drops back to the first page — see `run/filter-bar.tsx`'s `applyFilters`.
+  const hrefForCursor = (cursor: string | null, history: string[]): string => {
+    const params = toSearchParams(filters);
+    if (cursor) params.set("cursor", cursor);
+    if (history.length > 0) params.set("history", history.join(","));
+    const qs = params.toString();
     return qs ? `${pathname}?${qs}` : pathname;
   };
+
+  // "Previous" pops the stack tail; an empty stack means the prior page is the
+  // first (no cursor).
+  const prevHref = isFirstPage
+    ? null
+    : (() => {
+        const stack = [...historyStack];
+        const prevCursor = stack.pop() ?? null;
+        return hrefForCursor(prevCursor, stack);
+      })();
+
+  // "Next" pushes the current cursor onto the stack (none on the first page)
+  // and swaps in the server-minted cursor from this page's last row.
+  const nextHref = nextCursor
+    ? hrefForCursor(
+        nextCursor,
+        currentCursor ? [...historyStack, currentCursor] : historyStack,
+      )
+    : null;
 
   return (
     <>
@@ -106,20 +140,16 @@ export default function RunsListPage({
             </Empty>
           </div>
         ) : (
-          <Table className="table-fixed">
-            <TableHeader className="sticky top-0 z-10 bg-bg-0/95 backdrop-blur-sm">
+          <Table className="table-fixed" stickyHeader>
+            <TableHeader className="sticky top-0 z-20 bg-bg-0/95 backdrop-blur-sm">
               <TableRow>
                 <TableHead className="w-10 px-4" />
-                <TableHead className="px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-                  Commit
-                </TableHead>
-                <TableHead className="w-[220px] px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-                  Outcome
-                </TableHead>
-                <TableHead className="w-[90px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+                <TableHead className="px-4">Commit</TableHead>
+                <TableHead className="w-[220px] px-4">Outcome</TableHead>
+                <TableHead className="w-[90px] px-4 text-right">
                   Duration
                 </TableHead>
-                <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
+                <TableHead className="w-[100px] px-4 text-right">
                   When
                 </TableHead>
               </TableRow>
@@ -145,11 +175,12 @@ export default function RunsListPage({
 
       {liveRows.length > 0 && (
         <TablePaginationFooter
-          className="bg-background"
+          className="bg-bg-0"
           currentPage={currentPage}
           fromRow={fromRow}
           itemNoun="run"
-          pageHref={pageHref}
+          nextHref={nextHref}
+          prevHref={prevHref}
           toRow={toRow}
           totalCount={totalRuns + newCount}
           totalPages={totalPages}

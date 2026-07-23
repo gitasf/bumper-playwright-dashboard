@@ -7,17 +7,17 @@ import { getUsersByIds } from "@/lib/auth-users";
 import { type TeamRole } from "@/lib/authz";
 import { leaveTeamGuarded, removeMemberGuarded } from "@/lib/members-repo";
 import { ASSIGNABLE_ROLES, ROLE_DESCRIPTIONS } from "@/lib/roles";
+import { defineFlashSlots } from "@/lib/flash";
 import { readField } from "@/lib/form";
-import {
-  redirectWithParam,
-  requireMemberScope,
-  requireRoleScope,
-} from "@/lib/settings-scope";
+import { requireRoleScope } from "@/lib/settings-scope";
 
 export type Props = InferProps<typeof loader>;
 
 const hereFor = (team: { slug: string }) =>
   `/settings/teams/${team.slug}/members`;
+
+/** This page's form-flash slots — shared by the actions below and the loader. */
+export const MEMBERS_FLASH = defineFlashSlots(["membersError"]);
 
 interface MemberRow {
   userId: string;
@@ -38,7 +38,7 @@ interface MemberRow {
 export const loader = defineHandler(async (c) => {
   const { team } = await requireRoleScope(c, "viewSettings");
   const user = requireAuth(c);
-  const membersError = new URL(c.req.url).searchParams.get("membersError");
+  const { membersError } = MEMBERS_FLASH.read(new URL(c.req.url));
 
   const [membershipRows, inviteRows] = await Promise.all([
     db
@@ -133,9 +133,10 @@ export const actions = {
    * through `leaveTeam` instead (which carries its own last-owner guard).
    *
    * The removal is itself last-owner-safe (`removeMemberGuarded`: owner-count
-   * subquery in the DELETE WHERE), so even though self-removal is blocked here,
-   * removing another *owner* can never strand the team ownerless — removing the
-   * sole owner matches 0 rows and surfaces the inline error.
+   * subquery in the DELETE WHERE plus an owner-row lock for the cross-row
+   * write-skew case — see the `members-repo` module doc), so even with
+   * self-removal blocked here, removing another *owner* can't strand the team
+   * ownerless — removing the sole owner matches 0 rows and errors inline.
    */
   removeMember: defineHandler(async (c) => {
     const { team, here } = await requireRoleScope(c, "manageMembers", hereFor);
@@ -146,7 +147,7 @@ export const actions = {
     const userId = readField(form, "userId").trim();
     if (!userId) return c.redirect(redirectTo);
     if (userId === actor.id) {
-      return redirectWithParam(
+      return MEMBERS_FLASH.fail(
         c,
         redirectTo,
         "membersError",
@@ -155,7 +156,7 @@ export const actions = {
     }
     const result = await removeMemberGuarded(team.id, userId);
     if (!result.ok && result.reason === "lastOwner") {
-      return redirectWithParam(
+      return MEMBERS_FLASH.fail(
         c,
         redirectTo,
         "membersError",
@@ -180,18 +181,19 @@ export const actions = {
    * a team without an owner has no one who can manage members, keys, or delete
    * it; they must delete the team (or promote someone first).
    *
-   * The last-owner guard lives INSIDE the DELETE (the `notLastOwner` owner-count
-   * subquery in the WHERE, verified via `.returning()`), not as a separate
-   * SELECT: a check-then-delete pair would let the last two owners leave
-   * concurrently — both reads see 2 owners, both deletes land, and the team is
-   * permanently ownerless. With the guard in the statement, D1 serializes the
-   * writes and the second delete matches 0 rows. That guarded-DELETE plumbing
-   * lives behind `leaveTeamGuarded` in `members-repo` (the same home and test
-   * surface as the member-role and member-remove guarded writes) rather than
-   * being open-coded here.
+   * The last-owner guard lives inside the DELETE (the `notLastOwner`
+   * owner-count subquery in the WHERE, verified via `.returning()`), not a
+   * separate SELECT. That alone only closes the same-row race, not two
+   * different owners leaving concurrently — under Postgres READ COMMITTED both
+   * read "2 owners" and both commit, stranding the team. `leaveTeamGuarded`
+   * closes that cross-row case by locking the owner rows first inside a txn
+   * before the guarded DELETE (see the `members-repo` module doc), which is
+   * also where this plumbing lives (shared home + tests with the role/remove
+   * guarded writes) rather than being open-coded here.
    */
   leaveTeam: defineHandler(async (c) => {
-    const { team, here } = await requireMemberScope(c, hereFor);
+    // "anyMember": any member — viewer included — may leave the team.
+    const { team, here } = await requireRoleScope(c, "anyMember", hereFor);
     const actor = requireAuth(c);
 
     const result = await leaveTeamGuarded(team.id, actor.id);
@@ -199,7 +201,7 @@ export const actions = {
     if (!result.ok) {
       // The only guard that can match 0 rows for a live membership is the
       // owner-count subquery — the actor is the last owner.
-      return redirectWithParam(
+      return MEMBERS_FLASH.fail(
         c,
         here ?? "/",
         "membersError",

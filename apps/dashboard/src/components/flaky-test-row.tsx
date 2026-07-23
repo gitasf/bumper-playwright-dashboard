@@ -1,4 +1,5 @@
-import { Link, PREFETCH_STABLE } from "@/components/ui/link";
+import { PREFETCH_STABLE } from "@/components/ui/link";
+import { RowLink } from "@/components/row-link";
 import type React from "react";
 import { OwnerCell, type OwnerChip } from "@/components/owner-cell";
 import { Sparkline, type SparklinePoint } from "@/components/sparkline";
@@ -15,11 +16,9 @@ export interface FlakyRecentFailure {
   actor: string | null;
   createdAt: number;
   errorMessage: string | null;
-  errorStack: string | null;
 }
 
 export interface FlakyTestRowProps {
-  testId: string;
   title: string;
   file: string;
   tags: string[];
@@ -32,15 +31,12 @@ export interface FlakyTestRowProps {
   rowHref: string;
   /** Resolved owners for this test (manual + CODEOWNERS, manual-wins). */
   owners: OwnerChip[];
-  ownerActionPath: string;
-  ownerRedirectTo: string;
-  canManageOwners: boolean;
 }
 
 function pctTone(pct: number): string {
   if (pct >= 20) return "var(--fail)";
   if (pct >= 5) return "var(--flaky)";
-  return "var(--muted-foreground)";
+  return "var(--fg-3)";
 }
 
 /**
@@ -57,9 +53,9 @@ function displayTitle(title: string, file: string): string {
 
 /**
  * Flaky test row. Layout mirrors the design bundle's `FlakyRow`
- * (`wrightful/project/screen-flaky-tests.jsx:84-122`), with the Owner column
- * widened to host the ownership chips + owner-gated assign/remove control
- * (roadmap 2.3):
+ * (`wrightful/project/screen-flaky-tests.jsx:84-122`), with an Owner column
+ * showing the test's ownership chips read-only (assignment lives in the
+ * per-test page's popover, roadmap 2.3):
  *   [glyph 40] [Test flex] [Flake rate 110 r] [Nd trend 180] [Last failure 280] [Owner 210] [Last seen 90 r]
  *
  * Test cell is two lines:
@@ -71,7 +67,6 @@ function displayTitle(title: string, file: string): string {
  * X-padding matches the runs table (`px-4`).
  */
 export function FlakyTestRow({
-  testId,
   title,
   file,
   tags,
@@ -81,9 +76,6 @@ export function FlakyTestRow({
   recentFailures,
   rowHref,
   owners,
-  ownerActionPath,
-  ownerRedirectTo,
-  canManageOwners,
 }: FlakyTestRowProps): React.ReactElement {
   const tone = pctTone(pct);
   const latest = recentFailures[0];
@@ -92,24 +84,20 @@ export function FlakyTestRow({
   return (
     <TableRow>
       <TableCell className="w-10 px-4 align-middle">
-        <Link
-          cacheFor={PREFETCH_STABLE}
-          className="flex items-center justify-center focus-visible:outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring"
-          href={rowHref}
-        >
+        <RowLink cacheFor={PREFETCH_STABLE} href={rowHref}>
           <span className="sr-only">View {cleanTitle}</span>
           <StatusGlyph size={14} status="flaky" />
-        </Link>
+        </RowLink>
       </TableCell>
       <TableCell className="px-4 py-3 align-middle">
         <div className="min-w-0">
           <div
-            className="truncate text-[13px] font-[450] text-foreground"
+            className="truncate text-body font-[450] text-fg-1"
             title={cleanTitle}
           >
             {cleanTitle}
           </div>
-          <div className="mt-0.5 flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted-foreground">
+          <div className="mt-0.5 flex min-w-0 items-center gap-2 font-mono text-micro text-fg-3">
             <span className="min-w-0 truncate" title={file}>
               {file}
             </span>
@@ -127,21 +115,19 @@ export function FlakyTestRow({
       </TableCell>
       <TableCell className="w-[110px] px-4 py-3 text-right align-middle">
         <div
-          className="font-mono text-[13px] font-semibold tabular-nums"
+          className="font-mono text-body font-semibold tabular-nums"
           style={{ color: tone }}
         >
           {pct.toFixed(0)}%
         </div>
-        <div className="mt-0.5 text-[10.5px] text-muted-foreground">
-          over {rangeDays}d
-        </div>
+        <div className="mt-0.5 text-micro text-fg-3">over {rangeDays}d</div>
       </TableCell>
       <TableCell className="w-[180px] px-4 py-3 align-middle">
         <Sparkline height={22} points={sparklinePoints} width={160} />
       </TableCell>
       <TableCell className="w-[280px] max-w-[280px] px-4 py-3 align-middle">
         <div
-          className="truncate font-mono text-[11.5px] text-muted-foreground"
+          className="truncate font-mono text-caption text-fg-3"
           title={latest?.errorMessage ? stripAnsi(latest.errorMessage) : ""}
         >
           {latest?.errorMessage
@@ -150,16 +136,9 @@ export function FlakyTestRow({
         </div>
       </TableCell>
       <TableCell className="w-[210px] px-4 py-3 align-middle">
-        <OwnerCell
-          actionPath={ownerActionPath}
-          canManage={canManageOwners}
-          owners={owners}
-          redirectTo={ownerRedirectTo}
-          testId={testId}
-          title={cleanTitle}
-        />
+        <OwnerCell owners={owners} />
       </TableCell>
-      <TableCell className="w-[90px] px-4 py-3 text-right align-middle text-[12px] text-muted-foreground">
+      <TableCell className="w-[90px] px-4 py-3 text-right align-middle text-caption text-fg-3">
         {latest ? formatRelativeTime(latest.createdAt) : "—"}
       </TableCell>
     </TableRow>

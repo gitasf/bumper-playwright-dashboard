@@ -1,130 +1,56 @@
 import type React from "react";
 import { ActorAvatar } from "@/components/actor-avatar";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 
 /**
- * The ownership state surfaced per row on the flaky page (roadmap 2.3): chips
- * for the test's owners (manual + CODEOWNERS-derived, manual-wins) plus — for
- * OWNERS only — an "Assign owner" control and a remove (×) affordance on each
- * MANUAL chip. Non-owners see the chips but no control (the mutation is
- * owner-gated server-side too).
- *
- * CODEOWNERS-derived owners cannot be removed here (they come from the repo's
- * file, not a manual row) — only manual owners get the remove affordance. The
- * controls are plain `<form>` POSTs to the shared session-authed mutation route
- * (`/api/t/:teamSlug/p/:projectSlug/owners`), so they work without JS and keep
- * the flaky page isomorphic (no per-row island). `redirectTo` returns the user
- * to the page they acted from.
+ * Read-only ownership chips (roadmap 2.3): a test's owners (manual +
+ * CODEOWNERS-derived, manual-wins) rendered as avatar badges. Display only —
+ * assignment moved off the flaky list into the per-test page's assign popover
+ * (`OwnerAssignControl`), which posts to the shared owner mutation route.
+ * Shared by the flaky table's Owner column and the test-detail header.
  */
 
 export interface OwnerChip {
   owner: string;
   source: "manual" | "codeowners";
+  /** Display label (member NAME for email owners); falls back to `owner`. */
+  label?: string;
+}
+
+/** One owner chip. CODEOWNERS-derived owners render outlined + annotated.
+ *  Shows the display `label` only — never the raw email behind it. */
+export function OwnerBadge({ chip }: { chip: OwnerChip }): React.ReactElement {
+  const fromCodeowners = chip.source === "codeowners";
+  const label = chip.label ?? chip.owner;
+  return (
+    <Badge
+      aria-label={
+        fromCodeowners ? `Owner ${label} (from CODEOWNERS)` : `Owner ${label}`
+      }
+      size="sm"
+      title={fromCodeowners ? `${label} (CODEOWNERS)` : label}
+      variant={fromCodeowners ? "outline" : "secondary"}
+    >
+      <ActorAvatar actor={label} size={12} />
+      <span className="max-w-[90px] truncate">{label}</span>
+    </Badge>
+  );
 }
 
 export interface OwnerCellProps {
-  /** `/api/t/:teamSlug/p/:projectSlug/owners`. */
-  actionPath: string;
-  /** Where to return after the mutation — the current page URL+query. */
-  redirectTo: string;
-  testId: string;
-  /**
-   * Human-readable test title, used to build per-row accessible labels so a
-   * screen reader hears "Assign owner to <test>" rather than identical labels.
-   */
-  title?: string;
   /** The test's owners (manual + codeowners, manual-wins), `[]` when none. */
   owners: OwnerChip[];
-  /** Only owners get the mutating controls; everyone sees the chips. */
-  canManage: boolean;
 }
 
-export function OwnerCell({
-  actionPath,
-  redirectTo,
-  testId,
-  title,
-  owners,
-  canManage,
-}: OwnerCellProps): React.ReactElement {
-  const label = title ?? testId;
-
+export function OwnerCell({ owners }: OwnerCellProps): React.ReactElement {
+  if (owners.length === 0) {
+    return <span className="text-caption text-fg-3">—</span>;
+  }
   return (
-    // `relative z-[1]` lifts the controls above the row's stretched-link overlay
-    // so the form inputs stay interactive instead of triggering row navigation.
-    <div className="relative z-[1] flex min-w-0 flex-col gap-1.5">
-      <div className="flex min-w-0 flex-wrap items-center gap-1">
-        {owners.length === 0 ? (
-          <span className="text-[12px] text-muted-foreground">—</span>
-        ) : (
-          owners.map((o) => (
-            <span
-              className="inline-flex items-center"
-              key={`${o.source}:${o.owner}`}
-            >
-              <Badge
-                aria-label={
-                  o.source === "codeowners"
-                    ? `Owner ${o.owner} (from CODEOWNERS)`
-                    : `Owner ${o.owner}`
-                }
-                size="sm"
-                title={
-                  o.source === "codeowners"
-                    ? `${o.owner} (CODEOWNERS)`
-                    : o.owner
-                }
-                variant={o.source === "codeowners" ? "outline" : "secondary"}
-              >
-                <ActorAvatar actor={o.owner} size={12} />
-                <span className="max-w-[90px] truncate">{o.owner}</span>
-              </Badge>
-              {canManage && o.source === "manual" && (
-                <form action={actionPath} className="m-0 ml-0.5" method="post">
-                  <input name="intent" type="hidden" value="remove" />
-                  <input name="testId" type="hidden" value={testId} />
-                  <input name="owner" type="hidden" value={o.owner} />
-                  <input name="redirectTo" type="hidden" value={redirectTo} />
-                  <Button
-                    aria-label={`Remove owner ${o.owner} from ${label}`}
-                    size="xs"
-                    type="submit"
-                    variant="ghost"
-                  >
-                    ×
-                  </Button>
-                </form>
-              )}
-            </span>
-          ))
-        )}
-      </div>
-      {canManage && (
-        <form
-          action={actionPath}
-          className="m-0 flex items-center gap-1"
-          method="post"
-        >
-          <input name="intent" type="hidden" value="assign" />
-          <input name="testId" type="hidden" value={testId} />
-          <input name="redirectTo" type="hidden" value={redirectTo} />
-          <Input
-            aria-label={`Assign owner to ${label}`}
-            className="w-[120px]"
-            maxLength={256}
-            name="owner"
-            nativeInput
-            placeholder="@team/web"
-            required
-            size="sm"
-          />
-          <Button size="sm" type="submit" variant="outline">
-            Assign
-          </Button>
-        </form>
-      )}
+    <div className="flex min-w-0 flex-wrap items-center gap-1">
+      {owners.map((o) => (
+        <OwnerBadge chip={o} key={`${o.source}:${o.owner}`} />
+      ))}
     </div>
   );
 }

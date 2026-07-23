@@ -14,28 +14,53 @@
   --animate-toast-error-odd: toast-error-odd 0.28s cubic-bezier(0.5, 1, 0.89, 1);
   --animate-toast-error-even: toast-error-even 0.28s
     cubic-bezier(0.5, 1, 0.89, 1);
-  --animate-pulse-soft: pulse-soft 1.4s cubic-bezier(0.5, 0, 0.2, 1) infinite;
-  --animate-progress-stripe: progress-stripe 1.8s cubic-bezier(0.5, 0, 0.2, 1)
-    infinite;
+  /* Override Tailwind's default spin (1s) app-wide: a live-run dashboard reads
+   * "faster feels faster", and there are no other `animate-spin` consumers that
+   * want the conventional speed. Unlike the shadow scale below, nothing relies
+   * on the framework default here, so overriding it is safe and removes the
+   * chance of accidentally shipping a slow spinner. */
+  --animate-spin: spin 0.6s linear infinite;
+
+  /* Shared UI ease-out curve — one source of truth so easing can't drift
+   * across components. Reference via the generated `ease-out-strong` utility. */
+  --ease-out-strong: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* One-shot "it landed" pop for copy-to-clipboard confirmation icons — plays
+   * when the Check icon mounts. Crisp ease-out (reuses --ease-out-strong so the
+   * curve stays single-sourced), no overshoot, to match the product's
+   * non-playful personality; damped by the reduced-motion layer. */
+  --animate-copy-pop: copy-pop 150ms var(--ease-out-strong);
+
   --font-sans: "Geist Variable", "Geist", -apple-system, system-ui, sans-serif;
   --font-heading: var(--font-sans);
   --font-mono:
     "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular,
     Menlo, monospace;
 
-  /* Explicit type scale from the Wrightful design bundle's tokens.css.
-   * Consume via Tailwind arbitrary values, e.g. text-[length:var(--text-fs-18)]. */
-  --text-fs-12: 11.5px;
-  --text-fs-13: 12.5px;
-  --text-fs-14: 13.5px;
-  --text-fs-15: 14px;
-  --text-fs-16: 15px;
-  --text-fs-18: 17px;
-  --text-fs-19: 19px;
-  --text-fs-22: 21px;
-  --text-fs-28: 26px;
-  --text-fs-36: 34px;
-  --text-fs-48: 44px;
+  /* Curated 7-step type ramp, named by role. The sole source of font sizes
+   * for app code — consume via the generated utilities, e.g. `text-body`.
+   * Do NOT hand-write text-[NNpx]; snap to the nearest step here so the ramp
+   * stays tight (near-duplicate 0.5px pairs and off-scale sizes were collapsed
+   * into these steps). Renaming or adding a step? Register it in the
+   * tailwind-merge font-size group in `src/lib/cn.ts` too, or `cn()` will
+   * classify it as a color and drop it. */
+  --text-micro: 11px; /* badges, timestamps, uppercase meta labels */
+  --text-caption: 12px; /* table headers, micro-labels, secondary text */
+  /* Body/interactive steps in rem so the user's browser base-font-size (the
+   * web analog of Dynamic Type) is honored. 0.8125rem/0.875rem == 13/14px at
+   * the 16px default, so there is no visual change at the default size. Dense
+   * chrome (micro/caption) and headings stay px for predictable density. */
+  --text-body: 0.8125rem; /* 13px: body text, most rows */
+  --text-body-lg: 0.875rem; /* 14px: emphasized body, row titles */
+  /* Size-specific tracking baked into the ramp: large text reads too loose as
+   * it grows, so tighten it automatically. A bare `text-heading/title/display`
+   * carries the right tracking — no per-heading `tracking-[…]` needed. */
+  --text-heading: 18px; /* section + card headings */
+  --text-heading--letter-spacing: -0.2px;
+  --text-title: 22px; /* page titles */
+  --text-title--letter-spacing: -0.3px;
+  --text-display: 26px; /* KPI / big numbers */
+  --text-display--letter-spacing: -0.4px;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -44,9 +69,6 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar: var(--sidebar);
-  --color-code-highlight: var(--code-highlight);
-  --code-foreground: var(--code-foreground);
-  --color-code: var(--code);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -90,13 +112,6 @@
   --color-accent-soft: var(--accent-soft);
   --color-accent-line: var(--accent-line);
 
-  /* Past-tense status aliases — keeps porting JSX from the design bundle
-   * literal (it writes `bg-passed-soft` / `text-failed`). */
-  --color-passed: var(--pass);
-  --color-passed-soft: var(--pass-soft);
-  --color-failed: var(--fail);
-  --color-failed-soft: var(--fail-soft);
-
   /* Synthetic-monitor status tokens (consumed by monitor-status.tsx). */
   --color-degraded: var(--degraded);
   --color-degraded-soft: var(--degraded-soft);
@@ -132,12 +147,6 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
-  /* Explicit r-* scale matching the design bundle (tokens.css --r-*). */
-  --radius-r-2: 3px;
-  --radius-r-4: 5px;
-  --radius-r-6: 7px;
-  --radius-r-8: 9px;
-  --radius-r-12: 12px;
   @keyframes skeleton {
     to {
       background-position: -200% 0;
@@ -158,11 +167,8 @@
     0% {
       scale: 1;
     }
-    30% {
-      scale: 1.025;
-    }
-    60% {
-      scale: 0.99;
+    40% {
+      scale: 1.015;
     }
     100% {
       scale: 1;
@@ -189,11 +195,8 @@
     0% {
       scale: 1;
     }
-    30% {
-      scale: 1.025;
-    }
-    60% {
-      scale: 0.99;
+    40% {
+      scale: 1.015;
     }
     100% {
       scale: 1;
@@ -216,21 +219,14 @@
       translate: 0 0;
     }
   }
-  @keyframes pulse-soft {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0 var(--running-soft);
+  @keyframes copy-pop {
+    from {
+      opacity: 0;
+      scale: 0.6;
     }
-    50% {
-      box-shadow: 0 0 0 4px transparent;
-    }
-  }
-  @keyframes progress-stripe {
-    0% {
-      transform: translateX(-100%);
-    }
-    100% {
-      transform: translateX(100%);
+    to {
+      opacity: 1;
+      scale: 1;
     }
   }
 }
@@ -253,7 +249,7 @@
   --fg-1: oklch(0.18 0.008 260);
   --fg-2: oklch(0.36 0.01 260);
   --fg-3: oklch(0.5 0.01 260);
-  --fg-4: oklch(0.65 0.008 260);
+  --fg-4: oklch(0.62 0.008 260);
 
   /* 2-level border scale. */
   --line-1: oklch(0.91 0.005 260);
@@ -287,33 +283,30 @@
   --secondary: oklch(0.94 0.006 260);
   --secondary-foreground: oklch(0.18 0.008 260);
 
-  /* Semantic feedback */
+  /* Semantic feedback. The `*-foreground` tokens are the READABLE-ON-PAGE
+   * text color (registry components use them for field errors, destructive
+   * menu items, tinted icons — solid fills pair with text-white instead), so
+   * they alias the status color itself, not an on-solid inverse. */
   --destructive: oklch(0.55 0.22 24);
-  --destructive-foreground: oklch(0.99 0.003 260);
-  --success: oklch(0.55 0.16 152);
-  --success-foreground: oklch(0.99 0.003 260);
-  --warning: oklch(0.62 0.16 70);
-  --warning-foreground: oklch(0.18 0.008 260);
+  --destructive-foreground: var(--destructive);
+  --success: oklch(0.54 0.14 152);
+  --success-foreground: var(--success);
+  --warning: oklch(0.56 0.12 70);
+  --warning-foreground: var(--warning);
   --info: oklch(0.5 0.16 268);
-  --info-foreground: oklch(0.99 0.003 260);
+  --info-foreground: var(--info);
 
   /* Status palette — paired with shape for colorblind safety */
-  --pass: oklch(0.55 0.16 152);
-  --pass-soft: oklch(0.55 0.16 152 / 0.1);
+  --pass: oklch(0.54 0.14 152);
+  --pass-soft: oklch(0.54 0.14 152 / 0.1);
   --fail: oklch(0.55 0.22 24);
   --fail-soft: oklch(0.55 0.22 24 / 0.1);
-  --flaky: oklch(0.62 0.16 70);
-  --flaky-soft: oklch(0.62 0.16 70 / 0.14);
-  --skipped: oklch(0.58 0.008 260);
-  --skipped-soft: oklch(0.58 0.008 260 / 0.14);
+  --flaky: oklch(0.56 0.12 70);
+  --flaky-soft: oklch(0.56 0.12 70 / 0.14);
+  --skipped: oklch(0.56 0.008 260);
+  --skipped-soft: oklch(0.56 0.008 260 / 0.14);
   --running: oklch(0.5 0.16 268);
   --running-soft: oklch(0.5 0.16 268 / 0.1);
-
-  /* Past-tense aliases — design bundle JSX writes these names directly. */
-  --passed: var(--pass);
-  --passed-soft: var(--pass-soft);
-  --failed: var(--fail);
-  --failed-soft: var(--fail-soft);
 
   /* Synthetic-monitor status palette (var() refs → follow the active theme).
    * degraded ≈ flaky (amber / soft-fail); error ≈ fail red — distinguished from
@@ -335,14 +328,11 @@
   --chart-4: var(--running);
   --chart-5: var(--skipped);
 
-  /* Code blocks */
-  --code: oklch(0.975 0.004 260);
-  --code-foreground: var(--foreground);
-  --code-highlight: oklch(0 0 0 / 0.04);
-
-  /* Elevation. */
-  --shadow-sm: 0 1px 0 oklch(0 0 0 / 0.04), 0 1px 2px oklch(0 0 0 / 0.05);
-  --shadow-md: 0 6px 18px oklch(0 0 0 / 0.06), 0 1px 0 oklch(0 0 0 / 0.04);
+  /* Bespoke elevation for the standalone auth card (login page) only —
+   * consumed via shadow-[var(--shadow-lg)]. App/component elevation otherwise
+   * uses the ui/ layered system (low-opacity shadow utilities plus before-pseudo
+   * highlights), which relies on Tailwind's DEFAULT shadow scale — do NOT
+   * register these into @theme or it will override those defaults everywhere. */
   --shadow-lg: 0 30px 80px oklch(0 0 0 / 0.18);
 
   --radius: 0.3125rem; /* design bundle's --r-4 = 5px */
@@ -371,7 +361,7 @@
   --fg-1: oklch(0.975 0.003 260);
   --fg-2: oklch(0.78 0.005 260);
   --fg-3: oklch(0.6 0.007 260);
-  --fg-4: oklch(0.46 0.008 260);
+  --fg-4: oklch(0.52 0.008 260);
 
   /* 2-level border scale. */
   --line-1: oklch(0.245 0.008 260);
@@ -405,33 +395,28 @@
   --secondary: oklch(0.195 0.006 260);
   --secondary-foreground: oklch(0.975 0.003 260);
 
-  /* Semantic feedback (status colors tuned for dark) */
-  --destructive: oklch(0.7 0.2 24);
-  --destructive-foreground: oklch(0.135 0.004 260);
+  /* Semantic feedback (status colors tuned for dark). `*-foreground` =
+   * readable-on-page text, same convention as :root. */
+  --destructive: oklch(0.7 0.19 24);
+  --destructive-foreground: var(--destructive);
   --success: oklch(0.78 0.16 152);
-  --success-foreground: oklch(0.135 0.004 260);
+  --success-foreground: var(--success);
   --warning: oklch(0.82 0.15 80);
-  --warning-foreground: oklch(0.135 0.004 260);
+  --warning-foreground: var(--warning);
   --info: oklch(0.74 0.1 268);
-  --info-foreground: oklch(0.135 0.004 260);
+  --info-foreground: var(--info);
 
   /* Status */
   --pass: oklch(0.78 0.16 152);
   --pass-soft: oklch(0.78 0.16 152 / 0.14);
-  --fail: oklch(0.7 0.2 24);
-  --fail-soft: oklch(0.7 0.2 24 / 0.14);
+  --fail: oklch(0.7 0.19 24);
+  --fail-soft: oklch(0.7 0.19 24 / 0.14);
   --flaky: oklch(0.82 0.15 80);
   --flaky-soft: oklch(0.82 0.15 80 / 0.14);
-  --skipped: oklch(0.55 0.008 260);
-  --skipped-soft: oklch(0.55 0.008 260 / 0.2);
+  --skipped: oklch(0.58 0.008 260);
+  --skipped-soft: oklch(0.58 0.008 260 / 0.2);
   --running: oklch(0.74 0.1 268);
   --running-soft: oklch(0.74 0.1 268 / 0.16);
-
-  /* Past-tense aliases. */
-  --passed: var(--pass);
-  --passed-soft: var(--pass-soft);
-  --failed: var(--fail);
-  --failed-soft: var(--fail-soft);
 
   /* Synthetic-monitor status palette (var() refs → follow the active theme).
    * degraded ≈ flaky (amber / soft-fail); error ≈ fail red — distinguished from
@@ -452,14 +437,7 @@
   --chart-4: var(--running);
   --chart-5: var(--skipped);
 
-  --code: oklch(0.165 0.005 260);
-  --code-foreground: var(--foreground);
-  --code-highlight: oklch(1 0 0 / 0.04);
-
-  /* Elevation tuned for dark. */
-  --shadow-sm: 0 1px 0 oklch(0 0 0 / 0.4), 0 1px 2px oklch(0 0 0 / 0.3);
-  --shadow-md:
-    0 4px 12px oklch(0 0 0 / 0.45), 0 1px 0 oklch(1 0 0 / 0.04) inset;
+  /* Bespoke auth-card elevation (see :root note). */
   --shadow-lg:
     0 24px 60px oklch(0 0 0 / 0.6), 0 1px 0 oklch(1 0 0 / 0.06) inset;
 
@@ -474,6 +452,44 @@
   --sidebar-ring: oklch(0.74 0.1 268 / 0.4);
 }
 
+/* Accessibility — respond to the three OS "reduce" signals. Kept as one global
+ * layer so it covers the vendored ui/ registry and app code in a single place
+ * (the app otherwise had a single `motion-reduce` utility in outcome-bar). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Functional spinners stay a liveness cue — slow them, don't freeze them
+   * (a stopped spinner reads as "hung"). */
+  .animate-spin {
+    animation-duration: 1.5s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  *,
+  *::before,
+  *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  /* Promote hairline borders (which read from --border → --line-1) to the
+   * stronger step so they don't vanish for low-vision / high-contrast users. */
+  :root,
+  .dark {
+    --line-1: var(--line-2);
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -483,7 +499,14 @@
     font-family: var(--font-sans);
     font-feature-settings: "ss01", "cv11";
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+    /* Both variable fonts cover wght 100–900, so a synthesized (faked) bold
+     * only appears when a font file failed to load — disallow it so that
+     * failure is visible instead of silently ugly. `style` stays allowed:
+     * Geist ships no italic, so the oblique that `.ansi-italic` and the
+     * italic placeholder spans rely on is deliberately synthesized. */
+    font-synthesis: style;
   }
   code,
   kbd,
@@ -565,5 +588,56 @@
   }
   .ansi-underline {
     text-decoration: underline;
+  }
+}
+
+/* Trace-viewer Source tab — lezer `classHighlighter` (`tok-*`) hooks, scoped
+ * under `.trace-source` (the source `<pre>`) so they can't leak into other
+ * code blocks. Muted palette in the theme's oklch hue family: comments are
+ * dimmest (fg-4), operators/punctuation recede to fg-3, and the handful of
+ * chromatic tokens borrow the theme's existing hue anchors (268 blue,
+ * 152 green, 70/80 amber) at low chroma. Values flip with `.dark`. */
+@layer components {
+  .trace-source {
+    --tok-keyword: oklch(0.45 0.13 300);
+    --tok-string: oklch(0.47 0.1 152);
+    --tok-literal: oklch(0.52 0.12 70);
+    --tok-type: oklch(0.46 0.09 220);
+    --tok-property: oklch(0.44 0.1 268);
+  }
+  .dark .trace-source {
+    --tok-keyword: oklch(0.76 0.09 300);
+    --tok-string: oklch(0.78 0.09 152);
+    --tok-literal: oklch(0.8 0.1 80);
+    --tok-type: oklch(0.78 0.08 220);
+    --tok-property: oklch(0.75 0.08 268);
+  }
+  .trace-source .tok-comment {
+    color: var(--fg-4);
+    font-style: italic;
+  }
+  .trace-source .tok-keyword {
+    color: var(--tok-keyword);
+  }
+  .trace-source .tok-string,
+  .trace-source .tok-string2 {
+    color: var(--tok-string);
+  }
+  .trace-source .tok-number,
+  .trace-source .tok-bool,
+  .trace-source .tok-literal {
+    color: var(--tok-literal);
+  }
+  .trace-source .tok-typeName,
+  .trace-source .tok-className,
+  .trace-source .tok-namespace {
+    color: var(--tok-type);
+  }
+  .trace-source .tok-propertyName {
+    color: var(--tok-property);
+  }
+  .trace-source .tok-operator,
+  .trace-source .tok-punctuation {
+    color: var(--fg-3);
   }
 }

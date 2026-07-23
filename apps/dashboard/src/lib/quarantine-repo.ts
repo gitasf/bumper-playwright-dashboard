@@ -51,12 +51,7 @@ export async function listQuarantine(
   return rows;
 }
 
-/**
- * Quarantine a test — or update an already-quarantined one. Upserts on the
- * unique `(projectId, testId)` so re-quarantining the same test updates its
- * `mode`/`reason` (and re-stamps `createdBy`/`createdAt`) instead of erroring
- * on the constraint. Returns the resulting row.
- */
+/** Quarantine a test, preserving original provenance on updates. */
 export async function quarantineTest(
   scope: TenantScope,
   input: QuarantineEntry,
@@ -72,7 +67,7 @@ export async function quarantineTest(
     createdBy,
     createdAt: now,
   };
-  await db
+  const [persisted] = await db
     .insert(quarantinedTests)
     .values(row)
     .onConflictDoUpdate({
@@ -80,11 +75,17 @@ export async function quarantineTest(
       set: {
         reason: input.reason,
         mode: input.mode,
-        createdBy,
-        createdAt: now,
       },
-    });
-  return row as QuarantinedTest;
+    })
+    .returning();
+  // onConflictDoUpdate always inserts or updates exactly one row; unreachable
+  // in practice, kept for type honesty (`.returning()` types as an array).
+  if (!persisted) {
+    throw new Error(
+      `quarantineTest: onConflictDoUpdate returned no row for (${scope.projectId}, ${input.testId})`,
+    );
+  }
+  return persisted;
 }
 
 /**

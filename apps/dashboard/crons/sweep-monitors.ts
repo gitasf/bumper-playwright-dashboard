@@ -3,6 +3,7 @@ import { env } from "void/env";
 import { logger } from "void/log";
 import { queues } from "void/queues";
 import { sweepDueMonitors } from "@/lib/monitors/scheduler";
+import { monitorFamily } from "@/lib/monitors/types";
 
 /**
  * Synthetic-monitor scheduler: every minute, find the enabled monitors whose
@@ -29,21 +30,21 @@ import { sweepDueMonitors } from "@/lib/monitors/scheduler";
  */
 export const cron = "* * * * *";
 
-export default loggedScheduled("sweep-monitors", async () => {
-  const nowSeconds = Math.floor(Date.now() / 1000);
+export default loggedScheduled("sweep-monitors", async (controller) => {
+  // Use the event's scheduled time rather than wall-clock time. This keeps a
+  // delayed delivery tied to the tick it represents and lets authenticated
+  // production-trigger tests advance one deterministic scheduler cycle.
+  const nowSeconds = Math.floor(controller.scheduledTime / 1000);
 
   const { found, enqueued } = await sweepDueMonitors({
     now: nowSeconds,
     limit: env.WRIGHTFUL_MONITOR_SWEEP_BATCH_SIZE,
-    // Route by type: the lightweight uptime family (http + tcp/ping) to the
-    // batched `uptime` queue, browser checks to the container-tuned `monitors`
-    // queue.
+    // Route by family (`monitorFamily` — the shared partition the executor
+    // registry also dispatches on): the lightweight uptime family (http +
+    // tcp/ping) to the batched `uptime` queue, browser checks to the
+    // container-tuned `monitors` queue.
     enqueue: async (job, monitor) => {
-      if (
-        monitor.type === "http" ||
-        monitor.type === "tcp" ||
-        monitor.type === "ping"
-      ) {
+      if (monitorFamily(monitor.type) === "uptime") {
         await queues.uptime.send(job);
       } else {
         await queues.monitors.send(job);

@@ -30,13 +30,13 @@ export const POST = defineHandler(async (c) => {
 
   const team = await resolveTeamBySlug(user.id, teamSlug);
   if (!team) {
-    return c.json({ error: "Forbidden" }, 403);
+    return c.json({ error: "Not found" }, 404);
   }
 
   if (projectSlug) {
     const project = await resolveProjectBySlugs(user.id, teamSlug, projectSlug);
     if (!project) {
-      return c.json({ error: "Forbidden" }, 403);
+      return c.json({ error: "Not found" }, 404);
     }
   }
 

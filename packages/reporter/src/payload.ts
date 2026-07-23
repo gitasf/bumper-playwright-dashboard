@@ -90,6 +90,13 @@ export interface AttemptInput {
   durationMs: number;
   errorMessage?: string | null;
   errorStack?: string | null;
+  /**
+   * Captured attempt stdout/stderr. The live reporter joins the Playwright
+   * `TestResult` chunks; the seeder rarely sets these, so both default to
+   * `null` (still emitted, mirroring the error fields).
+   */
+  stdout?: string | null;
+  stderr?: string | null;
 }
 
 function assertString(value: unknown, field: string): asserts value is string {
@@ -102,7 +109,7 @@ function assertString(value: unknown, field: string): asserts value is string {
 
 /**
  * Normalise one attempt to the wire shape, filling `errorMessage` /
- * `errorStack` with `null` when the caller omits them.
+ * `errorStack` / `stdout` / `stderr` with `null` when the caller omits them.
  */
 export function buildAttempt(input: AttemptInput): TestAttemptPayload {
   return {
@@ -113,6 +120,10 @@ export function buildAttempt(input: AttemptInput): TestAttemptPayload {
     // path) so an oversized seeded stack can't 413 the batch.
     errorMessage: truncateNullable(input.errorMessage, MAX_MESSAGE),
     errorStack: truncateNullable(input.errorStack, MAX_STACK),
+    // Captured logs share the MAX_MESSAGE cap; the live path joins Playwright's
+    // chunks (see index.ts buildPayload) — here they're already strings/null.
+    stdout: truncateNullable(input.stdout, MAX_MESSAGE),
+    stderr: truncateNullable(input.stderr, MAX_MESSAGE),
   };
 }
 

@@ -6,7 +6,9 @@
  *     entered URL is re-vetted every run, not just at save time);
  *   - **read path** — `runHttpCheck` re-checks the FINAL url after a followed
  *     redirect (defense in depth: a redirect can land on a host the config-time
- *     check never saw).
+ *     check never saw). Only the FINAL url is checked; intermediate hops are
+ *     gated by the runtime's egress policy, not here (see the redirect note in
+ *     http-run.ts) — a non-Workers runner needs per-hop validation + DNS pinning.
  *
  * What it enforces, and WHY each rule earns its place:
  *   - **scheme allowlist** (`http:` / `https:`) — a check is an outbound web
@@ -196,8 +198,9 @@ function isBlockedIpv6(host: string): boolean {
  * link-local / metadata IPv4 + IPv6 addresses. EXPORTED because it is the
  * genuinely shared kernel of the monitor SSRF guard: `tcp/host-policy.ts` reuses
  * it for the raw-socket check so the http and tcp policies block the EXACT same
- * host set (one place to add a newly-discovered internal range). Accepts either
- * a bare hostname or a bracketed IPv6 literal (`[::1]`).
+ * host set (one place to add a newly-discovered internal range). Accepts a bare
+ * hostname, a bracketed IPv6 literal (`[::1]`, as WHATWG `URL.hostname`
+ * produces), or a bare IPv6 literal (`::1`, as `checkTcpHostPolicy` passes raw).
  */
 export function isBlockedHostname(hostname: string): boolean {
   let host = hostname.toLowerCase();
@@ -212,6 +215,11 @@ export function isBlockedHostname(hostname: string): boolean {
   if (host.startsWith("[") && host.endsWith("]")) {
     return isBlockedIpv6(host.slice(1, -1));
   }
+  // A bare (unbracketed) IPv6 literal — the tcp policy's raw host, never run
+  // through `new URL()`. A DNS name can't contain a colon, so any colon means
+  // IPv6; without this branch `::1` / `fe80::1` / `fc00::1` fell through to the
+  // IPv4 parser, read as "not blocked", and slipped past the tcp SSRF guard.
+  if (host.includes(":")) return isBlockedIpv6(host);
   return isBlockedIpv4(host);
 }
 

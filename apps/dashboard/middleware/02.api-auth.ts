@@ -2,9 +2,40 @@ import { defineMiddleware } from "void";
 import {
   negotiateVersionOrResponse,
   requireApiKeyOrResponse,
+  requireMcpAuthOrResponse,
 } from "@/lib/api-auth";
-import { isIngestRoute, isQueryApiRoute } from "@/lib/ingest-routes";
+import {
+  isIngestRoute,
+  isMcpRoute,
+  isQueryApiRoute,
+} from "@/lib/ingest-routes";
 import { checkRateLimit, clientIp, tooManyRequests } from "@/lib/rate-limit";
+
+/**
+ * Force `prompt=consent` onto every MCP OAuth authorize request.
+ *
+ * Better Auth's mcp plugin auto-issues an authorization code to any logged-in
+ * browser UNLESS the client sends `prompt=consent` (verified against 1.6.11's
+ * `authorizeMCPOAuth`) — and MCP clients don't send it. Combined with open
+ * dynamic client registration, that would let any site register a client and
+ * silently mint a token for a signed-in user via a drive-by redirect.
+ * Rewriting the request to carry `prompt=consent` routes every grant through
+ * the consent screen (`pages/oauth/consent.tsx`, the `consentPage` configured
+ * in auth.ts). A 302 (not an in-place query mutation) keeps the plugin's
+ * login-resume cookie honest: it snapshots `ctx.query` inside the authorize
+ * handler, so the resumed request must already carry the forced prompt.
+ */
+const MCP_AUTHORIZE_PATH = "/api/auth/mcp/authorize";
+
+export function forceConsentRedirect(rawUrl: string): Response | null {
+  const url = new URL(rawUrl);
+  if (url.searchParams.get("prompt") === "consent") return null;
+  url.searchParams.set("prompt", "consent");
+  return new Response(null, {
+    status: 302,
+    headers: { location: url.toString() },
+  });
+}
 
 /**
  * API-key + protocol-version gate for the reporter ingest endpoints.
@@ -42,6 +73,10 @@ import { checkRateLimit, clientIp, tooManyRequests } from "@/lib/rate-limit";
  */
 export default defineMiddleware(async (c, next) => {
   const path = c.req.path;
+  if (path === MCP_AUTHORIZE_PATH && c.req.method === "GET") {
+    const redirect = forceConsentRedirect(c.req.url);
+    if (redirect) return redirect;
+  }
   const ingest = isIngestRoute(path);
   const query = isQueryApiRoute(path);
   if (!ingest && !query) {
@@ -62,7 +97,13 @@ export default defineMiddleware(async (c, next) => {
     clientIp(c.req.raw),
   );
   if (!ipAllowed) return tooManyRequests(60);
-  const apiResp = await requireApiKeyOrResponse(c);
+  // /api/mcp accepts a project API key OR a Better Auth MCP OAuth access
+  // token, and its 401s carry the WWW-Authenticate challenge that triggers an
+  // MCP client's OAuth flow. Everything else on the two Bearer surfaces stays
+  // key-only.
+  const apiResp = isMcpRoute(path)
+    ? await requireMcpAuthOrResponse(c)
+    : await requireApiKeyOrResponse(c);
   if (apiResp instanceof Response) return apiResp;
   // Version negotiation is INGEST-ONLY. The query API (`/api/v1/*`) has no
   // version handshake — a missing/invalid key already 401'd above; there is no

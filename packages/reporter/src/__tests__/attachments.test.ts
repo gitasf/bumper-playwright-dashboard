@@ -17,14 +17,32 @@ import {
 } from "../attachments.js";
 
 describe("classifyAttachment", () => {
-  it("classifies application/zip as trace", () => {
+  it("classifies the historical trace.zip attachment as trace", () => {
     expect(classifyAttachment("trace.zip", "application/zip")).toBe("trace");
   });
 
-  it("classifies application/x-zip-compressed as trace", () => {
-    expect(
-      classifyAttachment("trace.zip", "application/x-zip-compressed"),
-    ).toBe("trace");
+  it("classifies Playwright's native trace attachment as trace", () => {
+    expect(classifyAttachment("trace", "application/x-zip-compressed")).toBe(
+      "trace",
+    );
+  });
+
+  it("normalizes the ZIP content type before classifying a trace", () => {
+    expect(classifyAttachment("trace", "Application/ZIP; charset=binary")).toBe(
+      "trace",
+    );
+  });
+
+  it("does not trust a canonical trace name with non-ZIP content", () => {
+    expect(classifyAttachment("trace", "text/plain")).toBe("other");
+    expect(classifyAttachment("trace.zip", "image/png")).toBe("screenshot");
+    expect(classifyAttachment("trace.zip", "application/octet-stream")).toBe(
+      "other",
+    );
+  });
+
+  it("treats arbitrary ZIP attachments as other", () => {
+    expect(classifyAttachment("bundle.zip", "application/zip")).toBe("other");
   });
 
   it("uses content-type prefix for image/*", () => {
@@ -53,8 +71,8 @@ describe("classifyAttachment", () => {
     expect(classifyAttachment("bundle.zip", "")).toBe("other");
   });
 
-  it("treats a .zip with 'trace' in the name as trace", () => {
-    expect(classifyAttachment("my-trace.zip", "")).toBe("trace");
+  it("does not infer a Playwright trace from a fuzzy filename", () => {
+    expect(classifyAttachment("my-trace.zip", "")).toBe("other");
   });
 
   it("returns 'other' for unknown types", () => {

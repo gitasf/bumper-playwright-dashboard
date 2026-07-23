@@ -1,9 +1,13 @@
 import { defineHandler } from "void";
-import { db } from "void/db";
-import { runs } from "@schema";
-import { runByIdWhere } from "@/lib/scope";
+import { loadRunColumns, RUN_SUMMARY_COLUMNS } from "@/lib/runs/read-model";
 import { resolveTenantApiScope } from "@/lib/tenant-api-scope";
 
+/**
+ * The wire shape of `/summary` — exactly the shared run-summary base
+ * (`RUN_SUMMARY_COLUMNS` in `@/lib/runs/read-model`). Adopting the base ADDED
+ * `environment` / `repo` / `origin` to this response (additive only — the
+ * hovercard consumer reads a subset, so nothing it renders changed).
+ */
 export type RunSummaryResponse = {
   id: string;
   status: string;
@@ -14,10 +18,13 @@ export type RunSummaryResponse = {
   flaky: number;
   skipped: number;
   branch: string | null;
+  environment: string | null;
   commitSha: string | null;
   commitMessage: string | null;
   prNumber: number | null;
   actor: string | null;
+  repo: string | null;
+  origin: string;
   createdAt: number;
   completedAt: number | null;
 };
@@ -33,29 +40,7 @@ export const GET = defineHandler(async (c) => {
   if (ctx instanceof Response) return ctx;
   const { scope, runId } = ctx;
 
-  const rows = await db
-    .select({
-      id: runs.id,
-      status: runs.status,
-      durationMs: runs.durationMs,
-      totalTests: runs.totalTests,
-      passed: runs.passed,
-      failed: runs.failed,
-      flaky: runs.flaky,
-      skipped: runs.skipped,
-      branch: runs.branch,
-      commitSha: runs.commitSha,
-      commitMessage: runs.commitMessage,
-      prNumber: runs.prNumber,
-      actor: runs.actor,
-      createdAt: runs.createdAt,
-      completedAt: runs.completedAt,
-    })
-    .from(runs)
-    .where(runByIdWhere(scope, runId))
-    .limit(1);
-
-  const run = rows[0];
+  const run = await loadRunColumns(scope, runId, RUN_SUMMARY_COLUMNS);
   if (!run) return c.json({ error: "Not found" }, 404);
 
   c.header("Cache-Control", "private, max-age=30");

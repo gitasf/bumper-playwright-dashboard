@@ -7,18 +7,19 @@
  * the credentials a real user would have. Extracted so the boot logic doesn't
  * drift between the two consumers.
  *
- * Lifecycle: `bootDashboard(...)` returns a `DashboardFixture` whose `.teardown()`
- * kills the dev server and restores the original `.env.local`. Always pair the
- * call with a `finally`/teardown hook — the dashboard listens on a fixed port,
- * so a leaked process blocks the next run.
+ * Always await `.teardown()` so the fixed preview port and shared environment
+ * lock are released before another suite starts.
  *
- * Targets the Void dashboard at `apps/dashboard`: local config is `.env.local`
- * (not the pre-Void `.dev.vars`) and the clean slate is `void db reset` (wipe
- * the local D1 + reapply migrations), not a Durable-Object state wipe.
+ * Targets the Void dashboard at `apps/dashboard`: local config is `.env.local`,
+ * the clean slate is `void db reset`, and tests run against a production build
+ * served by `vp preview`.
  */
 import { type ChildProcess, execSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
+  appendFileSync,
   existsSync,
+  readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -33,19 +34,50 @@ const ROOT = resolve(__dirname, "../../..");
 const DASHBOARD_DIR = resolve(ROOT, "apps/dashboard");
 const REPORTER_DIR = resolve(ROOT, "packages/reporter");
 const ENV_LOCAL_PATH = resolve(DASHBOARD_DIR, ".env.local");
-/**
- * Where Void persists the dev-trigger token (see `getOrCreateDevTriggerToken`
- * in the void plugin). Written during `vp dev` config when the trigger
- * endpoints are wired, so it exists by the time `waitForServer` returns.
- */
-const DEV_TRIGGER_TOKEN_PATH = resolve(
-  DASHBOARD_DIR,
-  ".void",
-  "dev-trigger-token",
-);
+const ENV_LOCK_PATH = resolve(DASHBOARD_DIR, ".env.local.lock");
+const TEARDOWN_SIGKILL_TIMEOUT_MS = 8000;
+const TEARDOWN_MAX_WAIT_MS = 15000;
 
+/** Stop the preview process group, escalating to SIGKILL if needed. */
+function killPreviewGroup(server: ChildProcess): Promise<void> {
+  const signalGroup = (sig: NodeJS.Signals): void => {
+    try {
+      if (server.pid) process.kill(-server.pid, sig);
+      else server.kill(sig);
+    } catch {
+      try {
+        server.kill(sig);
+      } catch {
+        // Process already exited.
+      }
+    }
+  };
+
+  return new Promise<void>((resolvePromise) => {
+    if (server.exitCode !== null || server.signalCode !== null) {
+      resolvePromise();
+      return;
+    }
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(sigkillTimer);
+      clearTimeout(maxWaitTimer);
+      resolvePromise();
+    };
+    server.once("exit", finish);
+    signalGroup("SIGTERM");
+    const sigkillTimer = setTimeout(() => {
+      if (!settled) signalGroup("SIGKILL");
+    }, TEARDOWN_SIGKILL_TIMEOUT_MS);
+    sigkillTimer.unref?.();
+    const maxWaitTimer = setTimeout(finish, TEARDOWN_MAX_WAIT_MS);
+    maxWaitTimer.unref?.();
+  });
+}
 export interface BootOptions {
-  /** TCP port the dev server should listen on. */
+  /** TCP port the production preview server should listen on. */
   port: number;
   /**
    * Local-only Better Auth secret. Drives the session cookie HMAC, and (absent
@@ -107,15 +139,14 @@ export interface DashboardFixture {
   email: string;
   password: string;
   /**
-   * The per-project dev-trigger token Void persists at
-   * `<dashboard>/.void/dev-trigger-token`. Send it as the `x-void-dev-trigger`
-   * header to manually fire the `/__void/scheduled` (cron) and `/__void/queue`
-   * (queue consumer) dev endpoints — how the monitors spec drives one scheduled
-   * cycle without waiting on real Cloudflare cron / queue delivery.
+   * Ephemeral Void proxy token compiled into this fixture's production preview.
+   * Send it as `x-void-internal` to manually fire `/__void/scheduled` (cron)
+   * and `/__void/queue` (queue consumer). This is how monitor specs drive a
+   * scheduled cycle without waiting on real Cloudflare cron / queue delivery.
    */
-  devTriggerToken: string;
-  /** Kills the dev server and restores `.env.local`. Idempotent. */
-  teardown: () => void;
+  voidProxyToken: string;
+  /** Stops the preview server and restores the shared local environment. */
+  teardown: () => Promise<void>;
 }
 
 function log(msg: string): void {
@@ -146,6 +177,25 @@ async function waitForServer(url: string, maxAttempts = 90): Promise<void> {
 
 function readSetCookies(res: Response): string[] {
   return res.headers.getSetCookie().map((raw) => raw.split(";")[0]);
+}
+
+function readLocalEnvValue(key: string): string | undefined {
+  if (!existsSync(ENV_LOCAL_PATH)) return undefined;
+  const match = readFileSync(ENV_LOCAL_PATH, "utf8").match(
+    new RegExp(`^\\s*${key}\\s*=\\s*(.+)$`, "m"),
+  );
+  if (!match) return undefined;
+  let value = match[1]!.trim();
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    value = value.slice(1, -1);
+  } else {
+    value = value.replace(/\s+#.*$/, "").trim();
+  }
+  return value || undefined;
 }
 
 interface RequestOpts {
@@ -208,39 +258,51 @@ export async function bootDashboard(
   // derive from THIS, so the two can't diverge.
   const dedicatedArtifactTokenSecret = options.artifactTokenSecret;
   const artifactTokenSecret = dedicatedArtifactTokenSecret ?? betterAuthSecret;
+  const voidProxyToken = randomBytes(32).toString("hex");
+  const databaseUrl =
+    process.env.DATABASE_URL ?? readLocalEnvValue("DATABASE_URL");
 
   const backupSuffix = options.envBackupSuffix ?? "e2e-backup";
   const envBackupPath = resolve(DASHBOARD_DIR, `.env.local.${backupSuffix}`);
 
-  let devServer: ChildProcess | undefined;
+  let dashboardServer: ChildProcess | undefined;
   let envBackedUp = false;
+  let lockAcquired = false;
   let tornDown = false;
+  // Flipped by teardown so the intentional kill doesn't trip the mid-run
+  // death reporter attached to the preview server's `exit` event below.
+  let expectedExit = false;
 
-  const teardown = () => {
+  const teardown = async (): Promise<void> => {
     if (tornDown) return;
     tornDown = true;
-    if (devServer) {
-      // Kill the whole process group (detached leader) so vp/vite/miniflare
-      // don't outlive the parent and hold the port. Fall back to a direct kill.
-      try {
-        if (devServer.pid) process.kill(-devServer.pid, "SIGTERM");
-        else devServer.kill("SIGTERM");
-      } catch {
-        devServer.kill("SIGTERM");
-      }
-      devServer = undefined;
+    expectedExit = true;
+    if (dashboardServer) {
+      const server = dashboardServer;
+      dashboardServer = undefined;
+      await killPreviewGroup(server);
     }
-    if (!envBackedUp) return;
-    try {
-      if (existsSync(envBackupPath)) {
-        if (existsSync(ENV_LOCAL_PATH)) unlinkSync(ENV_LOCAL_PATH);
-        renameSync(envBackupPath, ENV_LOCAL_PATH);
-      } else if (existsSync(ENV_LOCAL_PATH)) {
-        unlinkSync(ENV_LOCAL_PATH);
+    if (envBackedUp) {
+      try {
+        if (existsSync(envBackupPath)) {
+          if (existsSync(ENV_LOCAL_PATH)) unlinkSync(ENV_LOCAL_PATH);
+          renameSync(envBackupPath, ENV_LOCAL_PATH);
+        } else if (existsSync(ENV_LOCAL_PATH)) {
+          unlinkSync(ENV_LOCAL_PATH);
+        }
+        envBackedUp = false;
+      } catch (err) {
+        console.error(`[dashboard-fixture] Failed to restore .env.local:`, err);
+        return;
       }
-      envBackedUp = false;
-    } catch (err) {
-      console.error(`[dashboard-fixture] Failed to restore .env.local:`, err);
+    }
+    if (lockAcquired) {
+      try {
+        if (existsSync(ENV_LOCK_PATH)) unlinkSync(ENV_LOCK_PATH);
+        lockAcquired = false;
+      } catch (err) {
+        console.error(`[dashboard-fixture] Failed to remove lock:`, err);
+      }
     }
   };
 
@@ -249,11 +311,25 @@ export async function bootDashboard(
     run("pnpm build", { cwd: REPORTER_DIR });
 
     log("Step 2: Write .env.local (backup any existing)");
-    if (existsSync(envBackupPath)) {
+    if (existsSync(ENV_LOCK_PATH)) {
       throw new Error(
-        `Refusing to start: ${envBackupPath} already exists. A previous run likely crashed before teardown. Inspect it and restore/remove manually.`,
+        `Refusing to start: ${ENV_LOCK_PATH} is held — another dashboard e2e fixture is running, or a previous run crashed before teardown. Stop it, or remove the lock (and any .env.local.* backup) and retry.`,
       );
     }
+    const strayBackup = readdirSync(DASHBOARD_DIR).find(
+      (f) => f.startsWith(".env.local.") && f !== ".env.local.lock",
+    );
+    if (strayBackup) {
+      throw new Error(
+        `Refusing to start: ${resolve(DASHBOARD_DIR, strayBackup)} already exists. A previous run likely crashed before teardown. Inspect it and restore/remove manually.`,
+      );
+    }
+    writeFileSync(
+      ENV_LOCK_PATH,
+      `pid=${process.pid} port=${port} at=${new Date().toISOString()}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    lockAcquired = true;
     if (existsSync(ENV_LOCAL_PATH)) {
       renameSync(ENV_LOCAL_PATH, envBackupPath);
       log("  Existing .env.local backed up.");
@@ -269,14 +345,15 @@ export async function bootDashboard(
           ? [`ARTIFACT_TOKEN_SECRET=${dedicatedArtifactTokenSecret}`]
           : []),
         `WRIGHTFUL_PUBLIC_URL=${url}`,
-        // PG-era boot: forward the developer/CI Postgres connection so the
-        // `void db reset` below + `vp dev` can connect. The local-D1 era needed
-        // no connection string; Postgres does, and void resolves DATABASE_URL
-        // from .env.local (not the inherited process.env). Generic — the value
-        // comes from the environment, never hardcoded.
-        ...(process.env.DATABASE_URL
-          ? [`DATABASE_URL=${process.env.DATABASE_URL}`]
-          : []),
+        // Void's built production dispatch routes authenticate cron/queue
+        // requests with this reserved runtime binding. Void deliberately does
+        // not expose it through `void/env`, but preserves it in the preview's
+        // generated `.dev.vars` for `x-void-internal` authentication.
+        `__VOID_PROXY_TOKEN=${voidProxyToken}`,
+        // Forward the developer/CI Postgres connection so `void db reset`, the
+        // production build, and its preview use the same throwaway database.
+        // The value comes from the environment and is never hardcoded.
+        ...(databaseUrl ? [`DATABASE_URL=${databaseUrl}`] : []),
         // Sign-up gate is locked in production; e2e provisions a user via
         // /api/auth/sign-up/email so we explicitly opt in here.
         `ALLOW_OPEN_SIGNUP=true`,
@@ -292,77 +369,126 @@ export async function bootDashboard(
       ].join("\n") + "\n";
     writeFileSync(ENV_LOCAL_PATH, envLocal, "utf8");
 
-    log("Step 3: Reset local D1 (clean slate + reapply migrations)");
+    log("Step 3: Reset local Postgres (clean slate + reapply migrations)");
     run("npx void db reset", { cwd: DASHBOARD_DIR });
 
-    // Vendor the Playwright Trace Viewer bundle into public/trace-viewer/. The
-    // dashboard's `predev` npm hook does this, but we spawn `vp dev` directly
-    // (below), which bypasses npm lifecycle hooks — and the bundle is gitignored
-    // — so the Test Replay embed would 404 in a fresh clone without this. The
-    // script is idempotent (version-stamped) so it's a near-no-op on reruns.
-    log("Step 3b: Vendor Playwright Trace Viewer bundle");
-    run("node scripts/vendor-trace-viewer.mjs", { cwd: DASHBOARD_DIR });
-
-    log(`Step 4: Start dashboard dev server on :${port}`);
-    // Boot the Void dashboard via the vite-plus toolchain (`vp dev`). There is
-    // no bare `vite` bin — the workspace aliases `vite` to vite-plus-core, whose
-    // CLI is `vp`. `pnpm exec` resolves it from apps/dashboard's node_modules.
-    // `detached` makes the child a process-group leader so teardown can kill the
-    // whole pnpm→vp→vite→miniflare tree instead of orphaning miniflare on the
-    // fixed port.
-    // Strip vitest's env markers from the spawned dev server. The vitest
-    // dogfood suite (`vp test run`) sets VITEST=true, and the dashboard's
-    // vite.config disables the Void plugin in test mode — which removes ALL
-    // /api/auth + D1 routes, so sign-up 404s. We want the FULL app here. (The
-    // Playwright suite doesn't set VITEST, so this is a no-op for it.)
+    // Strip Vitest's env markers from the production build and preview. The
+    // dogfood suite (`vp test run`) sets VITEST=true, and vite.config disables
+    // the Void plugin in test mode. We need the complete production app here.
     const childEnv = { ...process.env };
     delete childEnv.VITEST;
     delete childEnv.VITEST_POOL_ID;
     delete childEnv.VITEST_WORKER_ID;
     delete childEnv.VITEST_MODE;
-    devServer = spawn("pnpm", ["exec", "vp", "dev", "--port", String(port)], {
-      cwd: DASHBOARD_DIR,
-      stdio: "pipe",
-      detached: true,
-      env: childEnv,
-    });
+    // Force the generated production config to include HYPERDRIVE. Wrangler's
+    // local preview uses the `localConnectionString` that gen-wrangler derives
+    // from DATABASE_URL; this placeholder id is never contacted or deployed.
+    childEnv.CF_HYPERDRIVE_ID = "e2e-local-hyperdrive";
+
+    // Use the package script so prebuild vendors the Trace Viewer and postbuild
+    // applies the generated Worker patches. This is the exact production bundle
+    // shape that deploy uses, rather than Vite's on-demand development graph.
+    log("Step 4: Build dashboard for production");
+    run("pnpm build", { cwd: DASHBOARD_DIR, env: childEnv });
+
+    log(`Step 5: Start dashboard production preview on :${port}`);
+    // `detached` makes the child a process-group leader so teardown can kill the
+    // whole pnpm→vp→workerd tree instead of orphaning it on the fixed port.
+    dashboardServer = spawn(
+      "pnpm",
+      ["exec", "vp", "preview", "--port", String(port), "--strictPort"],
+      {
+        cwd: DASHBOARD_DIR,
+        stdio: "pipe",
+        detached: true,
+        env: childEnv,
+      },
+    );
     let serverLog = "";
-    devServer.stdout?.on("data", (d) => (serverLog += d.toString()));
-    devServer.stderr?.on("data", (d) => (serverLog += d.toString()));
+    // Optional tee to disk: without it the buffered output is lost unless the
+    // process exits mid-run, which makes persistent-500 states (server alive,
+    // every render failing) undiagnosable after the fact.
+    const serverLogPath = process.env.WRIGHTFUL_E2E_SERVER_LOG
+      ? resolve(ROOT, process.env.WRIGHTFUL_E2E_SERVER_LOG)
+      : undefined;
+    const captureServerOutput = (d: Buffer | string): void => {
+      const text = d.toString();
+      serverLog += text;
+      if (serverLogPath) appendFileSync(serverLogPath, text);
+    };
+    dashboardServer.stdout?.on("data", captureServerOutput);
+    dashboardServer.stderr?.on("data", captureServerOutput);
+    // A preview server that dies mid-run otherwise fails every remaining spec
+    // with an opaque ERR_CONNECTION_REFUSED and takes its output with it. Surface
+    // the exit cause + last output the moment it happens. `expectedExit` is
+    // flipped by teardown so the intentional kill stays silent.
+    dashboardServer.on("exit", (code, signal) => {
+      if (expectedExit) return;
+      console.error(
+        `\n[dashboard-fixture] preview server EXITED MID-RUN (code=${code}, signal=${signal}). Last output:\n${serverLog.slice(-4000)}`,
+      );
+    });
     try {
       await waitForServer(url);
     } catch (err) {
       console.error(
-        `\n[dashboard-fixture] Dev server failed to start. Output so far:\n${serverLog}`,
+        `\n[dashboard-fixture] Production preview failed to start. Output so far:\n${serverLog}`,
       );
       throw err;
     }
     log("  Dashboard ready.");
 
-    // Read the dev-trigger token Void wrote during `vp dev` config. It must
-    // exist by now (it's written before the server accepts requests); retry a
-    // few times only to ride out a filesystem-flush race on slow CI disks.
-    let devTriggerToken = "";
-    for (let i = 0; i < 10 && !devTriggerToken; i++) {
-      try {
-        devTriggerToken = readFileSync(DEV_TRIGGER_TOKEN_PATH, "utf8").trim();
-      } catch {
-        await sleep(500);
-      }
+    // Local dev bootstraps Better Auth tables automatically; production does
+    // so through Void's authenticated migration endpoint. Exercise that exact
+    // built-worker path before the first auth request, just as deploy does.
+    log("Step 6: Apply production migrations (including Better Auth)");
+    // Same bounded retry as signup below: waitForServer only proves the root
+    // page renders, so this first binding-dependent request can still hit a
+    // transient 404/5xx while bindings settle. The endpoint is idempotent, and
+    // the abort signal keeps a hung request from stalling global setup.
+    const requestMigration = (): Promise<Response> =>
+      fetch(`${url}/__void/migrate`, {
+        method: "POST",
+        headers: { "x-void-internal": voidProxyToken },
+        signal: AbortSignal.timeout(30_000),
+      });
+    let migrationRes = await requestMigration();
+    for (
+      let i = 0;
+      i < 15 && (migrationRes.status === 404 || migrationRes.status >= 500);
+      i++
+    ) {
+      await sleep(1000);
+      migrationRes = await requestMigration();
     }
-    if (!devTriggerToken) {
+    const migrationBody = await migrationRes.text();
+    if (!migrationRes.ok) {
       throw new Error(
-        `dev-trigger token not found at ${DEV_TRIGGER_TOKEN_PATH} after server boot — the /__void/{scheduled,queue} dev triggers can't be authorized.`,
+        `Production migration failed (${migrationRes.status}): ${migrationBody}`,
       );
     }
+    let migrationResult: unknown;
+    try {
+      migrationResult = JSON.parse(migrationBody);
+    } catch {
+      throw new Error(
+        `Production migration returned invalid JSON: ${migrationBody}`,
+      );
+    }
+    if (
+      typeof migrationResult !== "object" ||
+      migrationResult === null ||
+      !("ok" in migrationResult) ||
+      migrationResult.ok !== true
+    ) {
+      throw new Error(`Production migration failed: ${migrationBody}`);
+    }
 
-    log("Step 5: Sign up + create team/project/key over HTTP");
+    log("Step 7: Sign up + create team/project/key over HTTP");
     const request = makeRequester(url);
 
-    // sign-up. The dev server answers on "/" (so waitForServer returns) before
-    // its /api/auth/* routes finish mounting, so a signup fired immediately can
-    // 404. Retry on 404/5xx to ride out that boot window — but NOT on a 4xx
-    // user error (e.g. 422 "already exists"), which is a real failure.
+    // Sign up through the built auth route. Keep the bounded retry for slow CI
+    // machines where the preview port can open just before every binding settles.
     let signupRes = await request("POST", "/api/auth/sign-up/email", {
       json: { email, password, name: userName },
     });
@@ -403,7 +529,7 @@ export async function bootDashboard(
     const teamBody = (await teamRes.json()) as { teamSlug?: unknown };
     if (teamBody.teamSlug !== teamSlug) {
       throw new Error(
-        `expected team slug "${teamSlug}", got "${String(teamBody.teamSlug)}" — local D1 probably wasn't reset`,
+        `expected team slug "${teamSlug}", got "${String(teamBody.teamSlug)}" — local Postgres probably wasn't reset`,
       );
     }
 
@@ -421,7 +547,7 @@ export async function bootDashboard(
     const projectBody = (await projectRes.json()) as { projectSlug?: unknown };
     if (projectBody.projectSlug !== projectSlug) {
       throw new Error(
-        `expected project slug "${projectSlug}", got "${String(projectBody.projectSlug)}" — local D1 probably wasn't reset`,
+        `expected project slug "${projectSlug}", got "${String(projectBody.projectSlug)}" — local Postgres probably wasn't reset`,
       );
     }
 
@@ -458,11 +584,11 @@ export async function bootDashboard(
       artifactTokenSecret,
       email,
       password,
-      devTriggerToken,
+      voidProxyToken,
       teardown,
     };
   } catch (err) {
-    teardown();
+    await teardown();
     throw err;
   }
 }

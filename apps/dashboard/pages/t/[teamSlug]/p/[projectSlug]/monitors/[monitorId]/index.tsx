@@ -1,4 +1,5 @@
 import { use } from "react";
+import { DANGER_TRIGGER_CLASSES } from "@/components/danger-trigger";
 import {
   ArrowRight,
   Bell,
@@ -31,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardPanel } from "@/components/ui/card";
 import { CodeEditor } from "@/components/ui/code-editor";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Disclosure } from "@/components/disclosure";
 import { cn } from "@/lib/cn";
 import {
   parseHttpResultDetail,
@@ -82,12 +84,12 @@ function MonitorCreateView({ project, type, formError }: CreateProps) {
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
       <DetailHeaderBar className="gap-1.5 border-b border-line-1">
         <HeaderCrumbs items={[{ label: "Monitors", href: monitorsBase }]} />
-        <h1 className="text-[17px] font-semibold tracking-[-0.2px]">
+        <h1 className="text-heading font-semibold tracking-[-0.2px]">
           New monitor
         </h1>
       </DetailHeaderBar>
       <div className="shrink-0 border-b border-line-1 px-6 py-3">
-        <p className="text-[12.5px] text-fg-3">
+        <p className="text-body text-fg-3">
           {isHttp
             ? "Check a URL on a schedule — status, response time, headers, and body."
             : isTcp
@@ -168,16 +170,14 @@ function TypeCard({
 }) {
   return (
     <Link
-      className="group flex flex-col gap-2.5 rounded-[11px] border border-line-1 bg-bg-1 p-5 transition-colors hover:border-accent/50 hover:bg-bg-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group flex flex-col gap-2.5 rounded-[11px] border border-line-1 bg-bg-1 p-5 transition-colors hover:border-bg-3/50 hover:bg-bg-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       href={href}
     >
       <span className="flex size-10 items-center justify-center rounded-[10px] border border-line-1 bg-bg-2 text-info">
         <MonTypeGlyph size={18} type={glyph} />
       </span>
-      <span className="text-[14.5px] font-semibold">{title}</span>
-      <span className="text-[12.5px] leading-relaxed text-fg-3">
-        {description}
-      </span>
+      <span className="text-body-lg font-semibold">{title}</span>
+      <span className="text-body leading-relaxed text-fg-3">{description}</span>
     </Link>
   );
 }
@@ -244,7 +244,7 @@ function MonitorDetailView({
         <DetailHeaderBar className="gap-3 border-b border-line-1">
           <HeaderCrumbs items={[{ label: "Monitors", href: monitorsBase }]} />
           <h1
-            className="flex min-w-0 items-center gap-2 text-[17px] font-semibold tracking-[-0.2px]"
+            className="flex min-w-0 items-center gap-2 text-heading font-semibold tracking-[-0.2px]"
             title={monitor.name}
           >
             <span className="min-w-0 max-w-[520px] truncate">
@@ -460,14 +460,14 @@ function MonitorDetailView({
           {isOwner && (
             <section className="mt-2 overflow-hidden rounded-[9px] border border-fail/30 bg-bg-1">
               <div className="border-b border-fail/20 bg-fail-soft px-[18px] py-3">
-                <h3 className="text-[13px] font-semibold text-fail">
+                <h3 className="text-body font-semibold text-fail">
                   Danger zone
                 </h3>
               </div>
               <div className="flex items-center gap-4 px-[18px] py-4">
                 <div className="flex-1">
-                  <div className="text-[13px] font-medium">Delete monitor</div>
-                  <p className="mt-1 text-[12px] leading-relaxed text-fg-3">
+                  <div className="text-body font-medium">Delete monitor</div>
+                  <p className="mt-1 text-caption leading-relaxed text-fg-3">
                     Stops the schedule and removes this monitor.
                     {!isHttp &&
                       !isTcp &&
@@ -475,7 +475,7 @@ function MonitorDetailView({
                   </p>
                 </div>
                 <details className="group shrink-0">
-                  <summary className="inline-flex h-[30px] cursor-pointer list-none items-center justify-center rounded-[5px] border border-fail/30 bg-fail-soft px-[11px] text-[13px] font-medium text-fail transition-colors hover:bg-fail/20 [&::-webkit-details-marker]:hidden">
+                  <summary className={cn(DANGER_TRIGGER_CLASSES, "self-auto")}>
                     Delete monitor
                   </summary>
                   <form
@@ -557,7 +557,7 @@ function AnalyticsAndExecutions({
         <SectionTitle
           right={
             executions.length > 0 ? (
-              <span className="text-[11.5px] text-fg-3">
+              <span className="text-caption text-fg-3">
                 {executions.length} recent · newest first
               </span>
             ) : null
@@ -570,8 +570,8 @@ function AnalyticsAndExecutions({
               <div className="mb-2.5 inline-flex size-10 items-center justify-center rounded-[10px] border border-line-1 bg-bg-2 text-fg-3">
                 <Clock className="size-[18px]" />
               </div>
-              <div className="text-[14px] font-medium">No executions yet</div>
-              <div className="mx-auto mt-1 max-w-[360px] text-[12.5px] leading-relaxed text-fg-3">
+              <div className="text-body-lg font-medium">No executions yet</div>
+              <div className="mx-auto mt-1 max-w-[360px] text-body leading-relaxed text-fg-3">
                 {enabled
                   ? "The first execution will appear here once the scheduler picks this monitor up — usually within a minute."
                   : "This monitor is paused. Resume it to start collecting executions."}
@@ -736,10 +736,10 @@ function UptimePct({ value }: { value: number | null }) {
 function UptimeStat({ label, value }: { label: string; value: number | null }) {
   return (
     <div className="rounded-[9px] border border-line-1 bg-bg-1 px-4 py-3">
-      <div className="text-[10.5px] font-semibold uppercase tracking-[0.4px] text-fg-3">
+      <div className="text-caption font-medium tracking-[0.1px] text-fg-3">
         {label}
       </div>
-      <div className="mt-1 font-mono text-[18px] font-semibold tabular-nums">
+      <div className="mt-1 font-mono text-heading font-semibold tabular-nums">
         <UptimePct value={value} />
       </div>
     </div>
@@ -761,7 +761,7 @@ function ResponseTimeCard({
     label: b.label,
     values: [b.p50, b.p95],
     tooltip: (
-      <div className="font-mono text-[11px]">
+      <div className="font-mono text-micro">
         <div className="mb-0.5 text-fg-3">{b.label}</div>
         <div>p50 {b.p50 == null ? "—" : `${Math.round(b.p50)}ms`}</div>
         <div>p95 {b.p95 == null ? "—" : `${Math.round(b.p95)}ms`}</div>
@@ -771,10 +771,10 @@ function ResponseTimeCard({
   return (
     <Card className="overflow-hidden rounded-[9px] border-line-1">
       <div className="border-b border-line-1 px-[18px] py-3">
-        <h2 className="text-[13px] font-semibold tracking-tight">
+        <h2 className="text-body font-semibold tracking-tight">
           Response time
         </h2>
-        <p className="mt-0.5 text-[11.5px] text-fg-3">
+        <p className="mt-0.5 text-caption text-fg-3">
           Last 24h — p50 and p95 per hour (UTC).
         </p>
       </div>
@@ -787,7 +787,7 @@ function ResponseTimeCard({
           height={260}
           series={series}
         />
-        <div className="mt-3.5 flex items-center gap-3.5 text-[11.5px] text-fg-3">
+        <div className="mt-3.5 flex items-center gap-3.5 text-caption text-fg-3">
           {series.map((s) => (
             <span className="inline-flex items-center gap-1.5" key={s.key}>
               <span className="h-0.5 w-3" style={{ background: s.color }} />
@@ -804,7 +804,7 @@ function ResponseTimeCard({
 function HttpConfigSummary({ config }: { config: DetailProps["httpConfig"] }) {
   if (!config) {
     return (
-      <div className="rounded-[9px] border border-fail/30 bg-fail-soft px-[18px] py-4 text-[12.5px] text-fail">
+      <div className="rounded-[9px] border border-fail/30 bg-fail-soft px-[18px] py-4 text-body text-fail">
         This monitor's configuration is missing or invalid — edit it to fix.
       </div>
     );
@@ -812,14 +812,14 @@ function HttpConfigSummary({ config }: { config: DetailProps["httpConfig"] }) {
   return (
     <div className="overflow-hidden rounded-[9px] border border-line-1 bg-bg-1">
       <div className="flex items-center gap-2 border-b border-line-1 px-[18px] py-3">
-        <span className="rounded bg-bg-3 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-fg-2">
+        <span className="rounded bg-bg-3 px-1.5 py-0.5 font-mono text-micro font-semibold text-fg-2">
           GET
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-foreground">
+        <span className="min-w-0 flex-1 truncate font-mono text-body text-fg-1">
           {config.url}
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 px-[18px] py-3.5 text-[12.5px] sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 px-[18px] py-3.5 text-body sm:grid-cols-4">
         <ConfigField
           label="Degraded above"
           value={`${config.degradedResponseTimeMs}ms`}
@@ -839,17 +839,17 @@ function HttpConfigSummary({ config }: { config: DetailProps["httpConfig"] }) {
       </div>
       {config.assertions.length > 0 && (
         <div className="border-t border-line-1 px-[18px] py-3.5">
-          <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.4px] text-fg-3">
+          <div className="mb-2 text-caption font-medium tracking-[0.1px] text-fg-3">
             Assertions
           </div>
           <div className="flex flex-col gap-1.5">
             {config.assertions.map((a, i) => (
-              <div className="font-mono text-[12px] text-fg-2" key={i}>
-                <span className="text-foreground">{a.source}</span>
+              <div className="font-mono text-caption text-fg-2" key={i}>
+                <span className="text-fg-1">{a.source}</span>
                 {a.property ? (
                   <span className="text-fg-3"> {a.property}</span>
                 ) : null}{" "}
-                <span className="text-accent">{a.comparison}</span>
+                <span className="text-info">{a.comparison}</span>
                 {a.target ? <span> {a.target}</span> : null}
               </div>
             ))}
@@ -863,7 +863,7 @@ function HttpConfigSummary({ config }: { config: DetailProps["httpConfig"] }) {
 function ConfigField({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.4px] text-fg-3">
+      <span className="text-caption font-medium tracking-[0.1px] text-fg-3">
         {label}
       </span>
       <span className="font-mono text-fg-1">{value}</span>
@@ -923,13 +923,13 @@ function ExecRow({
       <div className="w-[92px] shrink-0">
         <MonBadge size="sm" state={exec.state} />
       </div>
-      <div className="min-w-0 flex-1 text-[12.5px] text-fg-2">
+      <div className="min-w-0 flex-1 text-body text-fg-2">
         {execDescription(exec.state)}
       </div>
-      <span className="w-[70px] text-right font-mono text-[11.5px] tabular-nums text-fg-3">
+      <span className="w-[70px] text-right font-mono text-caption tabular-nums text-fg-3">
         {exec.durationMs != null ? formatDuration(exec.durationMs) : "—"}
       </span>
-      <span className="w-[96px] text-right text-[12px]">
+      <span className="w-[96px] text-right text-caption">
         {isRunning ? (
           <span className="text-running">now</span>
         ) : (
@@ -949,7 +949,7 @@ function ExecRow({
             <ArrowRight className="size-[11px]" />
           </Button>
         ) : (
-          <span className="text-[11.5px] text-fg-4">
+          <span className="text-caption text-fg-4">
             {isRunning ? "in progress" : "no report"}
           </span>
         )}
@@ -964,9 +964,10 @@ function statusCodeClass(code: number): string {
 }
 
 /**
- * One http execution row — an expandable `<details>` (no-JS) whose summary shows
- * status code + duration + the result line, and whose body shows the assertion
- * results, timing phases, and the redirect chain from `resultDetail`.
+ * One http execution row — an expandable `<Disclosure>` (Base UI Collapsible,
+ * so toggling needs JS) whose summary shows status code + duration + the result
+ * line, and whose body shows the assertion results, timing phases, and the
+ * redirect chain from `resultDetail`.
  */
 function HttpExecRow({
   exec,
@@ -994,7 +995,7 @@ function HttpExecRow({
       <div className="w-[92px] shrink-0">
         <MonBadge size="sm" state={exec.state} />
       </div>
-      <span className="w-[42px] shrink-0 text-right font-mono text-[12px] tabular-nums">
+      <span className="w-[42px] shrink-0 text-right font-mono text-caption tabular-nums">
         {exec.statusCode != null ? (
           <span className={statusCodeClass(exec.statusCode)}>
             {exec.statusCode}
@@ -1004,7 +1005,7 @@ function HttpExecRow({
         )}
       </span>
       <div
-        className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2"
+        className="min-w-0 flex-1 truncate text-body text-fg-2"
         title={exec.errorMessage ?? undefined}
       >
         {isRunning ? (
@@ -1015,10 +1016,10 @@ function HttpExecRow({
           <span className="text-fg-3">responded OK</span>
         )}
       </div>
-      <span className="w-[70px] text-right font-mono text-[11.5px] tabular-nums text-fg-3">
+      <span className="w-[70px] text-right font-mono text-caption tabular-nums text-fg-3">
         {exec.durationMs != null ? formatDuration(exec.durationMs) : "—"}
       </span>
-      <span className="w-[96px] text-right text-[12px]">
+      <span className="w-[96px] text-right text-caption">
         {isRunning ? (
           <span className="text-running">now</span>
         ) : (
@@ -1029,7 +1030,7 @@ function HttpExecRow({
       </span>
       <span className="flex w-[18px] justify-end">
         {expandable && (
-          <ChevronDown className="size-3.5 text-fg-3 transition-transform group-open:rotate-180" />
+          <ChevronDown className="size-3.5 text-fg-3 transition-transform group-data-[panel-open]/disclosure:rotate-180" />
         )}
       </span>
     </div>
@@ -1050,12 +1051,9 @@ function HttpExecRow({
   }
 
   return (
-    <details className={cn("group", rail)}>
-      <summary className="list-none [&::-webkit-details-marker]:hidden">
-        {summary}
-      </summary>
+    <Disclosure className={rail} summary={summary}>
       {detail && <HttpExecDetail detail={detail} />}
-    </details>
+    </Disclosure>
   );
 }
 
@@ -1065,13 +1063,13 @@ function HttpExecDetail({ detail }: { detail: HttpResultDetail }) {
     <div className="border-t border-line-1 bg-bg-0 px-[18px] py-3.5">
       {detail.assertions.length > 0 && (
         <div className="mb-3">
-          <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.4px] text-fg-3">
+          <div className="mb-1.5 text-caption font-medium tracking-[0.1px] text-fg-3">
             Assertions
           </div>
           <div className="flex flex-col gap-1">
             {detail.assertions.map((a, i) => (
               <div
-                className="flex items-center gap-2 font-mono text-[12px]"
+                className="flex items-center gap-2 font-mono text-caption"
                 key={i}
               >
                 {a.pass ? (
@@ -1080,11 +1078,11 @@ function HttpExecDetail({ detail }: { detail: HttpResultDetail }) {
                   <XIcon className="size-3.5 shrink-0 text-fail" />
                 )}
                 <span className="text-fg-2">
-                  <span className="text-foreground">{a.source}</span>
+                  <span className="text-fg-1">{a.source}</span>
                   {a.property ? (
                     <span className="text-fg-3"> {a.property}</span>
                   ) : null}{" "}
-                  <span className="text-accent">{a.comparison}</span>
+                  <span className="text-info">{a.comparison}</span>
                   {a.target ? <span> {a.target}</span> : null}
                 </span>
                 <span className="text-fg-3">
@@ -1095,7 +1093,7 @@ function HttpExecDetail({ detail }: { detail: HttpResultDetail }) {
           </div>
         </div>
       )}
-      <div className="flex flex-wrap gap-x-5 gap-y-1 font-mono text-[11.5px] text-fg-3">
+      <div className="flex flex-wrap gap-x-5 gap-y-1 font-mono text-caption text-fg-3">
         <span>
           ttfb{" "}
           {detail.timings.ttfbMs == null
@@ -1112,13 +1110,13 @@ function HttpExecDetail({ detail }: { detail: HttpResultDetail }) {
         {detail.redirected && <span>· redirected</span>}
       </div>
       <div
-        className="mt-1.5 truncate font-mono text-[11.5px] text-fg-3"
+        className="mt-1.5 truncate font-mono text-caption text-fg-3"
         title={detail.finalUrl}
       >
         {detail.finalUrl}
       </div>
       {detail.bodyExcerpt != null && (
-        <pre className="mt-2 max-h-40 overflow-auto rounded-md border border-line-1 bg-bg-1 p-2.5 font-mono text-[11px] leading-relaxed text-fg-2">
+        <pre className="mt-2 max-h-40 overflow-auto rounded-md border border-line-1 bg-bg-1 p-2.5 font-mono text-micro leading-relaxed text-fg-2">
           {detail.bodyExcerpt}
         </pre>
       )}
@@ -1130,7 +1128,7 @@ function HttpExecDetail({ detail }: { detail: HttpResultDetail }) {
 function TcpConfigSummary({ config }: { config: DetailProps["tcpConfig"] }) {
   if (!config) {
     return (
-      <div className="rounded-[9px] border border-fail/30 bg-fail-soft px-[18px] py-4 text-[12.5px] text-fail">
+      <div className="rounded-[9px] border border-fail/30 bg-fail-soft px-[18px] py-4 text-body text-fail">
         This monitor's configuration is missing or invalid — edit it to fix.
       </div>
     );
@@ -1138,14 +1136,14 @@ function TcpConfigSummary({ config }: { config: DetailProps["tcpConfig"] }) {
   return (
     <div className="overflow-hidden rounded-[9px] border border-line-1 bg-bg-1">
       <div className="flex items-center gap-2 border-b border-line-1 px-[18px] py-3">
-        <span className="rounded bg-bg-3 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-fg-2">
+        <span className="rounded bg-bg-3 px-1.5 py-0.5 font-mono text-micro font-semibold text-fg-2">
           TCP
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-foreground">
+        <span className="min-w-0 flex-1 truncate font-mono text-body text-fg-1">
           {config.host}:{config.port}
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 px-[18px] py-3.5 text-[12.5px]">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 px-[18px] py-3.5 text-body">
         <ConfigField label="Host" value={config.host} />
         <ConfigField label="Port" value={String(config.port)} />
         <ConfigField
@@ -1159,9 +1157,10 @@ function TcpConfigSummary({ config }: { config: DetailProps["tcpConfig"] }) {
 }
 
 /**
- * One tcp execution row — an expandable `<details>` (no-JS) whose summary shows
- * the result line + connect duration, and whose body shows the host:port dialed
- * and the connect/total timing phases from `resultDetail`.
+ * One tcp execution row — an expandable `<Disclosure>` (Base UI Collapsible,
+ * so toggling needs JS) whose summary shows the result line + connect duration,
+ * and whose body shows the host:port dialed and the connect/total timing phases
+ * from `resultDetail`.
  */
 function TcpExecRow({ exec, last }: { exec: MonitorExecution; last: boolean }) {
   const isRunning = exec.state === "running";
@@ -1180,7 +1179,7 @@ function TcpExecRow({ exec, last }: { exec: MonitorExecution; last: boolean }) {
         <MonBadge size="sm" state={exec.state} />
       </div>
       <div
-        className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2"
+        className="min-w-0 flex-1 truncate text-body text-fg-2"
         title={exec.errorMessage ?? undefined}
       >
         {isRunning ? (
@@ -1198,10 +1197,10 @@ function TcpExecRow({ exec, last }: { exec: MonitorExecution; last: boolean }) {
           <span className="text-fg-3">connected</span>
         )}
       </div>
-      <span className="w-[70px] text-right font-mono text-[11.5px] tabular-nums text-fg-3">
+      <span className="w-[70px] text-right font-mono text-caption tabular-nums text-fg-3">
         {exec.durationMs != null ? formatDuration(exec.durationMs) : "—"}
       </span>
-      <span className="w-[96px] text-right text-[12px]">
+      <span className="w-[96px] text-right text-caption">
         {isRunning ? (
           <span className="text-running">now</span>
         ) : (
@@ -1212,7 +1211,7 @@ function TcpExecRow({ exec, last }: { exec: MonitorExecution; last: boolean }) {
       </span>
       <span className="flex w-[18px] justify-end">
         {expandable && (
-          <ChevronDown className="size-3.5 text-fg-3 transition-transform group-open:rotate-180" />
+          <ChevronDown className="size-3.5 text-fg-3 transition-transform group-data-[panel-open]/disclosure:rotate-180" />
         )}
       </span>
     </div>
@@ -1233,12 +1232,9 @@ function TcpExecRow({ exec, last }: { exec: MonitorExecution; last: boolean }) {
   }
 
   return (
-    <details className={cn("group", rail)}>
-      <summary className="list-none [&::-webkit-details-marker]:hidden">
-        {summary}
-      </summary>
+    <Disclosure className={rail} summary={summary}>
       {detail && <TcpExecDetail detail={detail} />}
-    </details>
+    </Disclosure>
   );
 }
 
@@ -1247,13 +1243,13 @@ function TcpExecDetail({ detail }: { detail: TcpResultDetail }) {
   return (
     <div className="border-t border-line-1 bg-bg-0 px-[18px] py-3.5">
       <div
-        className="mb-1.5 truncate font-mono text-[12px] text-fg-2"
+        className="mb-1.5 truncate font-mono text-caption text-fg-2"
         title={`${detail.host}:${detail.port}`}
       >
         <span className="text-fg-3">target </span>
         {detail.host}:{detail.port}
       </div>
-      <div className="flex flex-wrap gap-x-5 gap-y-1 font-mono text-[11.5px] text-fg-3">
+      <div className="flex flex-wrap gap-x-5 gap-y-1 font-mono text-caption text-fg-3">
         <span>connect {Math.round(detail.timings.connectMs)}ms</span>
         <span>total {Math.round(detail.timings.totalMs)}ms</span>
       </div>
@@ -1281,10 +1277,10 @@ function MetaItem({
         !last && "border-r border-r-line-1",
       )}
     >
-      <span className="whitespace-nowrap text-[10.5px] font-semibold uppercase tracking-[0.4px] text-fg-3">
+      <span className="whitespace-nowrap text-caption font-medium tracking-[0.1px] text-fg-3">
         {label}
       </span>
-      <span className="whitespace-nowrap text-[12.5px] text-fg-1">{value}</span>
+      <span className="whitespace-nowrap text-body text-fg-1">{value}</span>
     </div>
   );
 }
@@ -1299,7 +1295,7 @@ function SectionTitle({
 }) {
   return (
     <div className="mb-2.5 flex items-center justify-between">
-      <h3 className="text-[13.5px] font-semibold">{title}</h3>
+      <h3 className="text-body-lg font-semibold">{title}</h3>
       {right}
     </div>
   );

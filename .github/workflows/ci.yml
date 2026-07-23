@@ -10,6 +10,13 @@ on:
     # it, the label would only take effect on the next push.
     types: [opened, synchronize, reopened, labeled]
 
+# A new push to the same PR (or branch) cancels the previous in-flight run —
+# an outdated ~7-minute pipeline finishing has no value. Push-to-main runs
+# key on the ref and are never concurrent with each other in practice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-and-typecheck:
     name: Lint, Format & Typecheck
@@ -139,10 +146,15 @@ jobs:
   # Real-Postgres integration leg. The pglite lane (in `test-dashboard`) is fast
   # but cannot reproduce node-postgres result shapes — most importantly int8
   # (`count`/`sum`/bigint) and `numeric` come back as STRINGS on the production
-  # driver, numbers on pglite (see src/__tests__/pg-integration.test.ts). This
-  # job runs the SAME suite against a real `postgres:16` service container via
+  # driver, numbers on pglite (see src/__tests__/pg-integration/). This job runs
+  # the SAME suites against a real `postgres:16` service container via
   # `PG_TEST_URL`, so a result-shape/SQL divergence the surrogate hides fails CI
-  # here. `pg` is already transitive (drizzle-orm/node-postgres), so no extra dep.
+  # here. `pg` is already transitive (drizzle-orm/node-postgres), so no extra
+  # dep. The directory's files share ONE database under `PG_TEST_URL`, and each
+  # file drop+recreates its own tables independently — `--no-file-parallelism`
+  # forces vitest to run them one at a time so concurrent DDL from different
+  # files can't corrupt each other (the pglite default lane doesn't need this;
+  # each file there gets its own fresh in-process instance).
   test-postgres:
     name: Postgres Integration (real engine)
     runs-on: ubuntu-latest
@@ -179,7 +191,7 @@ jobs:
       - name: Postgres integration test (real node-postgres)
         env:
           PG_TEST_URL: postgres://wrightful:wrightful@localhost:5432/wrightful_test
-        run: pnpm --filter @wrightful/dashboard exec vp test run src/__tests__/pg-integration.test.ts
+        run: pnpm --filter @wrightful/dashboard exec vp test run src/__tests__/pg-integration/ --no-file-parallelism
 
   build-dashboard:
     name: Dashboard Build
@@ -210,16 +222,18 @@ jobs:
   # shape (via the dogfood e2e suite). When Renovate bumps @playwright/test,
   # this job surfaces any format / reporter-API incompatibilities early.
   #
-  # The fixtures boot the Void dashboard at apps/dashboard (.env.local +
-  # `void db reset`); the suite is green (12/12) locally. Note: the harness
-  # strips VITEST from the spawned dev server's env so the Void plugin (and
-  # thus /api/auth + D1) stays enabled — see src/dashboard-fixture.ts.
+  # The fixture resets a throwaway Postgres database, builds the Void dashboard,
+  # and runs the suite against `vp preview`. The harness strips VITEST from the
+  # build/preview env so the complete production plugin stays enabled — see
+  # src/dashboard-fixture.ts.
+  # No `needs`: this job installs, builds the reporter, and boots its own
+  # dashboard — it consumes nothing from the unit-test jobs, and gating it
+  # behind them added ~2 minutes of pure waterfall to every green run.
   test-e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: [test-reporter, test-dashboard]
-    # bootDashboard (src/dashboard-fixture.ts) runs `void db reset` + `vp dev`,
-    # which need a Postgres to connect to. An ephemeral service container (same
+    # bootDashboard (src/dashboard-fixture.ts) resets Postgres, builds the app,
+    # and starts `vp preview`. An ephemeral service container (same
     # pattern as test-postgres) gives a throwaway DB reachable only from inside
     # the runner — never point `void db reset` at a real DB, it wipes + remigrates.
     services:
@@ -267,7 +281,7 @@ jobs:
   # A dedicated, self-contained job — NOT a step in test-e2e — because:
   #   * the demo suite drives playwright.dev and streams to prod; it never boots
   #     a local dashboard, so it has no DATABASE_URL / `void db reset` dependency
-  #     (unlike test-e2e's Vitest suite + test-e2e-ui, which do);
+  #     (unlike test-e2e's Vitest suite + test-e2e-dashboard, which do);
   #   * a streaming step buried after `pnpm test:e2e` inherits an implicit
   #     `success()` and is skipped whenever that (DB-dependent) step fails.
   # Isolating it means streaming runs on its own merits.
@@ -307,25 +321,29 @@ jobs:
       # reporter is configured at the playwright.config.ts level, so the demo
       # spec still streams its results regardless of which files run.
       - name: Stream demo suite to production Wrightful
+        # The synthetic demo suite streams to a dedicated dogfood project
+        # (WRIGHTFUL_DOGFOOD_TOKEN), kept separate from the real dashboard e2e
+        # suite (test-e2e-dashboard), which uses WRIGHTFUL_TOKEN.
         env:
-          WRIGHTFUL_URL: https://dash.wrightful.dev
-          WRIGHTFUL_TOKEN: ${{ secrets.WRIGHTFUL_TOKEN }}
+          WRIGHTFUL_URL: ${{ secrets.WRIGHTFUL_URL }}
+          WRIGHTFUL_TOKEN: ${{ secrets.WRIGHTFUL_DOGFOOD_TOKEN }}
         run: pnpm --filter @wrightful/e2e exec playwright test tests/demo.spec.ts
 
   # Browser-driven UI smoke against a locally booted dashboard. Catches
   # cross-cutting regressions (auth → navigation → run-detail) that the
   # API-level e2e and component RTL tests can't see. The fixtures boot the Void
-  # dashboard at apps/dashboard (.env.local + `void db reset`); the suite is
-  # green (35/35) locally. CI runs 3 workers + retries:2 to absorb timing flake.
-  test-e2e-ui:
-    name: E2E UI Tests (Playwright)
+  # production dashboard build at apps/dashboard after `void db reset`. Runs
+  # two parallel workers against one shared preview and database (specs isolate
+  # their state; global setup preflights key SSR routes); retries remain enabled
+  # to capture genuine flakes.
+  # No `needs` — same reasoning as test-e2e: fully self-contained job.
+  test-e2e-dashboard:
+    name: Dashboard E2E Tests (Playwright)
     runs-on: ubuntu-latest
-    needs: [test-reporter, test-dashboard]
-    # The dashboard is Postgres-only: `bootDashboard` runs `void db reset` and
-    # the dev server reads DATABASE_URL straight from .env.local (no managed-DB
-    # fallback). Provide a real postgres:16 so the suite can boot, mirroring the
-    # test-postgres job. The DB is dedicated (wrightful_e2e) — the suite resets
-    # it; reachable only inside the runner, never a real DB.
+    # Throwaway Postgres for bootDashboard's reset + production preview (see the
+    # note on test-e2e). Dedicated `wrightful_e2e` DB — the guarded
+    # `test:dashboard` wrapper only ever resets a `_e2e`/`_test` throwaway, never
+    # a dev DB. Reachable only inside the runner; never a real DB.
     services:
       postgres:
         image: postgres:16
@@ -353,6 +371,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # playwright.dashboard.config.ts references @wrightful/reporter (streaming
+      # dogfood). Playwright resolves every reporter at config-load time, so the
+      # reporter's dist/ must exist even on the PR leg where it no-ops.
+      - name: Build reporter
+        run: pnpm --filter @wrightful/reporter build
+
       - name: Install Playwright browsers
         run: pnpm --filter @wrightful/e2e exec playwright install --with-deps chromium
 
@@ -362,9 +386,18 @@ jobs:
         # baselines (run `--update-snapshots` once on a Linux runner via
         # workflow_dispatch / `act`, commit the PNGs, then set the var to
         # "1" in repo settings). Until then, visual.spec self-skips.
+        #
+        # Dogfood: stream this suite's results into the prod Wrightful dashboard
+        # on both PRs and push-to-main. Creds come from repo secrets; on fork PRs
+        # (where GitHub withholds secrets) both resolve to '' and the reporter
+        # no-ops (streaming disabled) rather than failing. The suite still tests
+        # against the LOCAL dashboard it boots at :5189 — WRIGHTFUL_URL is only
+        # the stream target.
         env:
           WRIGHTFUL_VISUAL_BASELINE_OK: ${{ vars.VISUAL_BASELINE_OK }}
           DATABASE_URL: postgres://wrightful:wrightful@localhost:5432/wrightful_e2e
+          WRIGHTFUL_URL: ${{ secrets.WRIGHTFUL_URL }}
+          WRIGHTFUL_TOKEN: ${{ secrets.WRIGHTFUL_TOKEN }}
         run: pnpm --filter @wrightful/e2e test:dashboard
 
       - name: Upload Playwright report on failure

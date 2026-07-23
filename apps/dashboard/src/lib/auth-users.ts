@@ -1,4 +1,4 @@
-import { db, eq, inArray, or } from "void/db";
+import { and, db, eq, inArray, or } from "void/db";
 import { getUser } from "void/auth";
 import { memberships, teamInvites, userGithubAccounts } from "@schema";
 import { authAccount, authUser } from "../../db/better-auth-tables";
@@ -193,6 +193,31 @@ export async function getUserAccounts(
     })
     .from(authAccount)
     .where(eq(authAccount.userId, userId));
+}
+
+/**
+ * The user's stored GitHub OAuth access token (the `accessToken` on their
+ * void-owned `github` `account` row, written by Better Auth at OAuth sign-in),
+ * or null when GitHub is unlinked, no token was persisted, or OAuth isn't
+ * configured (no provider ⇒ no `github` row ever).
+ *
+ * The GitHub App setup callback (`routes/api/github/setup.ts`) reads it to ask
+ * GitHub which installations THIS user may administer (`GET /user/installations`)
+ * before linking one to a team — the confused-deputy defense. Null is the
+ * "connect GitHub first" signal (not an error), so the callback flashes rather
+ * than 500s.
+ */
+export async function getUserGithubAccessToken(
+  userId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ accessToken: authAccount.accessToken })
+    .from(authAccount)
+    .where(
+      and(eq(authAccount.userId, userId), eq(authAccount.providerId, "github")),
+    )
+    .limit(1);
+  return rows[0]?.accessToken ?? null;
 }
 
 /**

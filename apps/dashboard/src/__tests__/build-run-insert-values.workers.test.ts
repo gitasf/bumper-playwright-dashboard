@@ -60,6 +60,38 @@ describe("buildRunInsertValues", () => {
     expect(row.origin).toBe("ci");
   });
 
+  it("derives expectedTotalTests and leaves the shard map null on a non-sharded open", () => {
+    const row = buildRunInsertValues(
+      "run-1",
+      SCOPE,
+      payload({
+        plannedTests: [
+          { testId: "t1", title: "a", file: "spec.ts" },
+          { testId: "t2", title: "b", file: "spec.ts" },
+        ],
+      }),
+      1000,
+    );
+
+    expect(row.expectedTotalTests).toBe(2);
+    expect(row.shardExpectedTests).toBe(null);
+  });
+
+  it("seeds the sharded opener's own slice into the shard map (keyed by shard index)", () => {
+    // The opener's expectedTotalTests is only ITS slice; later shards' duplicate
+    // opens merge their counts into the map and re-derive the sum (ingest.ts).
+    const base = payload({ expectedTotalTests: 120 });
+    const row = buildRunInsertValues(
+      "run-1",
+      SCOPE,
+      { ...base, shard: { index: 3, total: 4 } },
+      1000,
+    );
+
+    expect(row.expectedTotalTests).toBe(120);
+    expect(row.shardExpectedTests).toEqual({ "3": 120 });
+  });
+
   it("seeds identity, scope, liveness, and the running status", () => {
     const row = buildRunInsertValues("run-1", SCOPE, payload(), 1000);
 

@@ -163,10 +163,17 @@ function authHint(context: string, status: number): string {
 }
 
 export class StreamClient {
+  private readonly baseUrl: string;
+
   constructor(
-    private baseUrl: string,
+    baseUrl: string,
     private token: string,
-  ) {}
+  ) {
+    // Strip trailing slash(es): endpoints are built as `${baseUrl}/api/...`, so
+    // a WRIGHTFUL_URL like "https://dash.example.com/" would yield "//api/runs",
+    // which 404s on the dashboard and silently drops the whole run.
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
+  }
 
   private get headers(): Record<string, string> {
     return {
@@ -336,18 +343,15 @@ export class StreamClient {
 
   /**
    * Stream a local file to the upload URL returned by
-   * `/api/artifacts/register`. Today that is always a worker-proxied route on
-   * the dashboard origin (`/api/artifacts/:id/upload`) — the bytes pass through
-   * the worker into R2, there is no presigned R2 endpoint. Retries on
-   * 5xx/network errors (each attempt capped at 120s — videos can take a
-   * moment). The Blob is re-opened per attempt because a consumed stream can't
-   * be replayed.
+   * `/api/artifacts/register`. By default this is a worker-proxied route on the
+   * dashboard origin (`/api/artifacts/:id/upload`); when direct R2 is configured
+   * it is a SigV4-presigned URL on the R2 host. Retries on 5xx/network errors
+   * (each attempt capped at 120s — videos can take a moment). The Blob is
+   * re-opened per attempt because a consumed stream can't be replayed.
    *
    * The Bearer token is attached only when the upload URL is on the same origin
-   * as the dashboard (i.e. the worker is proxying the upload, the current path).
-   * This stays forward-compatible with a hypothetical presigned R2/S3 URL on a
-   * different host, which would carry its own signature; sending the Wrightful
-   * token there would leak it to a third party.
+   * as the dashboard (the worker-proxied path). A direct-R2 URL carries its own
+   * signature; sending the Wrightful token there would leak it to a third party.
    */
   async uploadArtifact(
     uploadUrl: string,

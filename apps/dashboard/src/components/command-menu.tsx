@@ -9,7 +9,7 @@ import {
   TriangleAlert,
   Users,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { fetch } from "void/client";
 import { useNavigate } from "@/lib/navigate";
 import {
@@ -106,9 +106,13 @@ export function CommandMenu({
 
   // Reset the typed query whenever the menu closes so a re-open starts clean
   // (and the recent-runs group, not stale search results, shows first).
-  useEffect(() => {
+  // Compared during render (not an effect) so the reset lands in the same
+  // render that flips `open`, not a frame later.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (prevOpen !== open) {
+    setPrevOpen(open);
     if (!open) setQuery("");
-  }, [open]);
+  }
 
   const teamSlug = activeTeam?.slug;
   const projectSlug = activeProject?.slug;
@@ -300,7 +304,7 @@ export function CommandMenu({
                           onClick={item.action}
                           value={item.value}
                         >
-                          <item.icon className="size-3.5 text-muted-foreground" />
+                          <item.icon className="size-3.5 text-fg-3" />
                           <span
                             className={
                               item.mono ? "font-mono" : "min-w-0 truncate"
@@ -309,7 +313,7 @@ export function CommandMenu({
                             {item.label}
                           </span>
                           {item.hint ? (
-                            <span className="ml-auto min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+                            <span className="ml-auto min-w-0 truncate font-mono text-micro text-fg-3">
                               {item.hint}
                             </span>
                           ) : null}

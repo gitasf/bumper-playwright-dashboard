@@ -21,7 +21,7 @@ export default function SettingsTeamProjectsPage({ team, projects }: Props) {
 
       <SettingsCard title={`Projects · ${projects.length}`}>
         {projects.length === 0 ? (
-          <div className="py-6 text-center text-[length:var(--text-fs-13)] text-fg-3">
+          <div className="py-6 text-center text-body text-fg-3">
             No projects yet.
           </div>
         ) : (
@@ -38,26 +38,31 @@ export default function SettingsTeamProjectsPage({ team, projects }: Props) {
                   <FlaskConical className="size-4" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono font-medium text-[length:var(--text-fs-14)] text-fg-1">
+                  <div className="truncate font-mono font-medium text-body-lg text-fg-1">
                     {p.name}
                   </div>
-                  <div className="mt-0.5 text-[11.5px] text-fg-3">
+                  <div className="mt-0.5 text-caption text-fg-3">
                     /t/{team.slug}/p/{p.slug}
                   </div>
                 </div>
                 <Link
-                  className="font-mono text-[11px] text-fg-3 uppercase tracking-wider transition-colors hover:text-fg-1"
+                  className="text-caption font-medium text-fg-3 transition-colors hover:text-fg-1"
                   href={`/settings/teams/${team.slug}/p/${p.slug}/keys`}
                 >
                   Project settings
                 </Link>
                 {isOwner && (
-                  <Link
-                    className="rounded-md border border-line-1 bg-bg-2 px-2.5 py-1 font-mono text-[11px] text-fg-2 uppercase tracking-wider transition-colors hover:bg-bg-3"
-                    href={`/settings/teams/${team.slug}/p/${p.slug}/keys`}
+                  <Button
+                    render={
+                      <Link
+                        href={`/settings/teams/${team.slug}/p/${p.slug}/keys`}
+                      />
+                    }
+                    size="sm"
+                    variant="outline"
                   >
                     Settings
-                  </Link>
+                  </Button>
                 )}
               </div>
             ))}

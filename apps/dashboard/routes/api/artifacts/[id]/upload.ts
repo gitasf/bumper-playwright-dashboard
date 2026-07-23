@@ -1,6 +1,6 @@
 import { defineHandler } from "void";
 import { getApiKey } from "@/lib/api-auth";
-import { storeArtifactUpload } from "@/lib/artifacts";
+import { storeArtifactUpload } from "@/lib/artifacts/store";
 import { tenantScopeForApiKey } from "@/lib/scope";
 
 /**

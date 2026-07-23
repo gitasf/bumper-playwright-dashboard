@@ -18,7 +18,11 @@ export default defineConfig({
   // which OS runs `pnpm setup:local`.
   snapshotPathTemplate: "{snapshotDir}/{testFilePath}-snapshots/{arg}{ext}",
   use: {
-    trace: "retain-on-failure",
+    // `on` (not `retain-on-failure`) so passing tests also produce a trace —
+    // the seed suite exists to populate the demo dashboard with trace data to
+    // browse in the viewer (Console + Network come from mock-site.ts), and the
+    // all-green scenarios would otherwise ship no traces at all.
+    trace: "on",
     video: "retain-on-failure",
     screenshot: "only-on-failure",
   },

@@ -1,5 +1,9 @@
 import { expect, test } from "./fixtures";
 
+// Email auth intentionally performs password hashing on the local worker.
+// Leave room for that real operation plus browser navigation on a slow runner.
+test.setTimeout(60_000);
+
 test.describe("Auth", () => {
   test.describe("anonymous", () => {
     test.use({ storageState: { cookies: [], origins: [] } });
@@ -53,8 +57,7 @@ test.describe("Auth", () => {
       ctx,
     }) => {
       const next = `/t/${ctx.teamSlug}/p/${ctx.projectSlug}`;
-      await loginPage.page.goto(`/login?next=${encodeURIComponent(next)}`);
-      await loginPage.page.waitForLoadState("networkidle");
+      await loginPage.gotoSignIn(`next=${encodeURIComponent(next)}`);
       await loginPage.signIn(ctx.email, ctx.password);
       await loginPage.page.waitForURL((url) => url.pathname.startsWith(next), {
         timeout: 30_000,
@@ -68,8 +71,7 @@ test.describe("Auth", () => {
       loginPage,
       ctx,
     }) => {
-      await loginPage.page.goto("/login?next=//evil.example.com/pwned");
-      await loginPage.page.waitForLoadState("networkidle");
+      await loginPage.gotoSignIn("next=//evil.example.com/pwned");
       await loginPage.signIn(ctx.email, ctx.password);
       await loginPage.waitForLandedOff("/login");
       expect(new URL(loginPage.page.url()).hostname).not.toContain(

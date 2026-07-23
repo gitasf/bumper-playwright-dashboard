@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { buildRunsPageWhere } from "@/lib/export";
-import { EMPTY_FILTERS } from "@/lib/runs-filters";
+import { EMPTY_FILTERS } from "@/lib/runs/filters";
 import type { TenantScope } from "@/lib/scope";
 
 /**

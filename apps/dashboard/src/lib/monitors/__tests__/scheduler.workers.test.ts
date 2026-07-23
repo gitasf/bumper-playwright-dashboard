@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import { dueMonitorsWhere, planMonitorSweep } from "@/lib/monitors/scheduler";
+import {
+  claimedMonitorIds,
+  dueMonitorsWhere,
+  monitorReArmCasWhere,
+  planMonitorSweep,
+} from "@/lib/monitors/scheduler";
+import type { DueMonitor } from "@/lib/monitors/scheduler";
 import { monitorExecutions, monitors } from "@schema";
-import type { Monitor } from "@schema";
 
 /**
  * `planMonitorSweep` (`@/lib/monitors/scheduler`) is the synthetic-monitor
@@ -22,28 +27,17 @@ import type { Monitor } from "@schema";
  * (5) an empty input yields a fully empty plan.
  */
 
-/** Build a `Monitor` row with only the fields the planner reads set. */
-function monitor(overrides: Partial<Monitor> & Pick<Monitor, "id">): Monitor {
+/** Build a `DueMonitor` — exactly the columns `planMonitorSweep` reads. */
+function monitor(
+  overrides: Partial<DueMonitor> & Pick<DueMonitor, "id">,
+): DueMonitor {
   return {
-    teamId: "team-1",
     projectId: "proj-1",
-    name: "check",
     type: "browser",
-    enabled: 1,
-    source: "...",
-    config: null,
     intervalSeconds: 300,
-    schedulingStrategy: "round_robin",
-    retryConfig: null,
     nextRunAt: 1000,
-    lastEnqueuedAt: null,
-    lastRunAt: null,
-    lastStatus: null,
-    createdBy: "user-1",
-    createdAt: 0,
-    updatedAt: 0,
     ...overrides,
-  } as Monitor;
+  };
 }
 
 /** Deterministic id generator: ex-1, ex-2, … (no Math.random / Date.now). */
@@ -196,5 +190,54 @@ describe("dueMonitorsWhere", () => {
     expect(noInFlight.args).toContain(monitorExecutions.monitorId);
     expect(noInFlight.args).toContain(monitors.id);
     expect(noInFlight.args).toContain(monitorExecutions.state);
+  });
+});
+
+describe("monitorReArmCasWhere", () => {
+  interface Op {
+    __op: string;
+    args: unknown[];
+  }
+
+  it("claims by id AND still-enabled AND still-due at the read value", () => {
+    const where = monitorReArmCasWhere("mon-x", 5000) as unknown as Op;
+
+    expect(where.__op).toBe("and");
+    expect(where.args).toHaveLength(3);
+    const [idEq, enabledEq, dueLte] = where.args as [Op, Op, Op];
+
+    expect(idEq.__op).toBe("eq");
+    expect(idEq.args[0]).toBe(monitors.id);
+    expect(idEq.args[1]).toBe("mon-x");
+
+    expect(enabledEq.__op).toBe("eq");
+    expect(enabledEq.args[0]).toBe(monitors.enabled);
+    expect(enabledEq.args[1]).toBe(1);
+
+    expect(dueLte.__op).toBe("lte");
+    expect(dueLte.args[0]).toBe(monitors.nextRunAt);
+    expect(dueLte.args[1]).toBe(5000);
+  });
+});
+
+describe("claimedMonitorIds", () => {
+  it("is empty for no results", () => {
+    expect(claimedMonitorIds([]).size).toBe(0);
+  });
+
+  it("collects ids only from statements that returned a row", () => {
+    const ids = claimedMonitorIds([[{ id: "mon-a" }], [], [{ id: "mon-c" }]]);
+    expect([...ids].sort()).toEqual(["mon-a", "mon-c"]);
+  });
+
+  it("ignores non-array results and rows without a string id", () => {
+    const ids = claimedMonitorIds([
+      undefined,
+      null,
+      [{ id: 42 }],
+      [{ notId: "x" }],
+      [{ id: "mon-z" }],
+    ]);
+    expect([...ids]).toEqual(["mon-z"]);
   });
 });

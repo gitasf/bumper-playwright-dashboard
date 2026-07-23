@@ -12,7 +12,7 @@ Each feature below has its own grounded plan file (schema, routes/pages, reuse s
 - **Signed-token pattern:** `src/lib/artifact-tokens.ts` + `src/lib/token-crypto.ts` (HMAC via `crypto.subtle`, `timingSafeEqualBytes`, base64url).
 - **Ingest pipeline + atomic `db.batch`:** `src/lib/ingest.ts` (`openRun`/`appendRunResults`/`completeRun`, `aggregateDeltaStatement`).
 - **Cron sweepers:** `crons/sweep-stuck-runs.ts` → `sweepStaleRuns` + `drainStaleRuns` (bounded `.limit`, `WRIGHTFUL_SWEEP_BATCH_SIZE`). Void crons use `defineScheduled` with a **unique cron expression per file** (dispatched via `switch(controller.cron)`) — never collide expressions.
-- **Settings gating:** `src/lib/settings-scope.ts` (`requireOwnerScope`/`requireMemberScope`, `gateTeamScope`).
+- **Settings gating:** `src/lib/settings-scope.ts` (`requireOwnerScope`/`requireRoleScope`, `gateTeamScope`).
 - **Analytics filters:** `src/lib/analytics/filters.ts` (`branchFragment`/`searchFragment`/`escapeLike`), `useSearchParam`/`useNavigatingSearchParam`.
 - **UI:** `src/components/ui/*` (Base UI wrappers), `cn()`, filter controls in `src/components/filter-controls.tsx`.
 - **Wire contract sync:** `packages/reporter/src/types.ts` ↔ `apps/dashboard/src/lib/schemas.ts`, canary `contract.test.ts`.

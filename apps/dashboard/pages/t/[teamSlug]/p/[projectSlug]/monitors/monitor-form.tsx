@@ -4,6 +4,7 @@ import { Play } from "lucide-react";
 import { Link } from "@/components/ui/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { CodeEditor } from "@/components/ui/code-editor";
 import { Input } from "@/components/ui/input";
 import {
@@ -109,7 +110,7 @@ export function MonitorForm({
       <div>
         <div className="mb-[7px] flex items-baseline justify-between">
           <FieldLabel className="mb-0">Browser check</FieldLabel>
-          <span className="text-[11.5px] text-fg-3">
+          <span className="text-caption text-fg-3">
             A Playwright test, run on schedule. Use{" "}
             <span className="font-mono text-fg-2">expect</span> for hard checks;
             soft assertions surface as{" "}
@@ -124,7 +125,7 @@ export function MonitorForm({
           onValueChange={setSource}
           value={source}
         />
-        <p className="mt-1.5 text-[11.5px] text-fg-3">
+        <p className="mt-1.5 text-caption text-fg-3">
           Secrets like <span className="font-mono">process.env.SYNTH_USER</span>{" "}
           are injected from project settings.
         </p>
@@ -157,9 +158,9 @@ export function MonitorForm({
               Cancel
             </Button>
           )}
-          <Button disabled={limitReached} size="sm" type="submit">
+          <SubmitButton disabled={limitReached} size="sm">
             {submitLabel}
-          </Button>
+          </SubmitButton>
         </div>
       </div>
     </form>

@@ -3,7 +3,10 @@ import { db, eq } from "void/db";
 import { env } from "void/env";
 import { logger } from "void/log";
 import { githubInstallations } from "@schema";
-import { verifyWebhookSignature } from "@/lib/github-app";
+import {
+  processWebhookDelivery,
+  verifyWebhookSignature,
+} from "@/lib/github-http";
 
 /**
  * POST /api/github/webhook — GitHub App webhook receiver.
@@ -44,11 +47,22 @@ export const POST = defineHandler(async (c) => {
     payload.action === "deleted" &&
     typeof payload.installation?.id === "number"
   ) {
-    await db
-      .delete(githubInstallations)
-      .where(eq(githubInstallations.installationId, payload.installation.id));
+    const installationId = payload.installation.id;
+    const delivery = c.req.header("X-GitHub-Delivery");
+    const processed = await processWebhookDelivery(delivery, async () => {
+      await db
+        .delete(githubInstallations)
+        .where(eq(githubInstallations.installationId, installationId));
+    });
+    if (processed.replay) {
+      logger.info("github webhook replay ignored", {
+        delivery,
+        installationId,
+      });
+      return c.json({ ok: true, replay: true });
+    }
     logger.info("github installation removed", {
-      installationId: payload.installation.id,
+      installationId,
     });
   }
 
