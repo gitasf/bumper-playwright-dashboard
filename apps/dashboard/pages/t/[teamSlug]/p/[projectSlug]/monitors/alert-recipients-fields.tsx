@@ -49,7 +49,7 @@ export function AlertRecipientsFields({
       <input name="recipientFields" type="hidden" value="1" />
       <div className="mb-3">
         <FieldLabel className="mb-0.5">Alert recipients</FieldLabel>
-        <p className="text-[11.5px] text-fg-3">
+        <p className="text-caption text-fg-3">
           Who gets the down/recovery emails for this monitor.{" "}
           <Link
             className="underline"
@@ -61,7 +61,7 @@ export function AlertRecipientsFields({
         </p>
       </div>
 
-      <div className="mb-4 flex flex-col gap-1.5 text-[13px]">
+      <div className="mb-4 flex flex-col gap-1.5 text-body">
         <label className="flex items-center gap-2">
           <input
             defaultChecked={alertTargets === null}
@@ -84,12 +84,12 @@ export function AlertRecipientsFields({
 
       {groups.length > 0 && (
         <div className="mb-3.5">
-          <div className="mb-1.5 text-[11.5px] font-medium uppercase tracking-wider text-fg-3">
+          <div className="mb-1.5 text-caption font-medium tracking-[0.1px] text-fg-3">
             Groups
           </div>
           <div className="flex flex-col gap-1.5">
             {groups.map((g) => (
-              <label key={g.id} className="flex items-center gap-2 text-[13px]">
+              <label key={g.id} className="flex items-center gap-2 text-body">
                 <input
                   defaultChecked={selectedGroups.has(g.id)}
                   name="group"
@@ -104,17 +104,17 @@ export function AlertRecipientsFields({
       )}
 
       <div>
-        <div className="mb-1.5 text-[11.5px] font-medium uppercase tracking-wider text-fg-3">
+        <div className="mb-1.5 text-caption font-medium tracking-[0.1px] text-fg-3">
           Members
         </div>
         {members.length === 0 ? (
-          <p className="text-[13px] text-fg-3">No members.</p>
+          <p className="text-body text-fg-3">No members.</p>
         ) : (
           <div className="flex flex-col gap-1.5">
             {members.map((m) => (
               <label
                 key={m.userId}
-                className="flex items-center gap-2 text-[13px]"
+                className="flex items-center gap-2 text-body"
               >
                 <input
                   defaultChecked={selectedUsers.has(m.userId)}

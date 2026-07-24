@@ -85,7 +85,7 @@ export function DeferredSection({
 function DefaultDeferErrorCard(): ReactNode {
   return (
     <div
-      className="rounded-[8px] border border-line-1 bg-card px-4 py-3 text-[12px] text-fg-3"
+      className="rounded-[9px] border border-line-1 bg-bg-1 px-4 py-3 text-caption text-fg-3"
       role="alert"
     >
       Couldn&rsquo;t load this section. Try refreshing the page.

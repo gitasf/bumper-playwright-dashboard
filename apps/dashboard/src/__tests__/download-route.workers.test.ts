@@ -2,28 +2,38 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { Context } from "hono";
 
 /**
- * The download route's flag-conditional branch (ADR 0003): when direct-R2 is ON,
- * a verified GET 302s to a presigned R2 URL (no bytes through the worker);
- * HEAD and the OFF state fall through to `readArtifact`. These are the
- * behavior-defining glue the lib-level tests don't reach, and the regressions
- * that would silently ship (caching the redirect, routing HEAD into the
- * method-bound presigned URL, minting before verifying the token) all live here.
+ * Download route end-to-end through the real `serveArtifactBytes`
+ * (`@/lib/artifacts/serve`), which owns the flag-conditional fork (ADR 0003):
+ * direct-R2 ON → verified GET 302s to a presigned R2 URL; HEAD and the OFF
+ * state fall through to `readArtifact`. Only IO seams are mocked, so this
+ * covers the token gate + the fork's glue — guarding against caching the
+ * redirect, routing HEAD into the method-bound presigned URL, and minting
+ * before verifying the token. Origin-safety policy on both branches is the
+ * companion `artifact-origin-safety.workers.test.ts`.
  */
 
 vi.mock("void", () => ({ defineHandler: (fn: unknown) => fn }));
-vi.mock("void/env", () => ({ env: {} }));
+// The configured separate trace-viewer origin exercises the CORS allow-list
+// (`resolveAllowedOrigin`); everything else reads env keys that stay unset.
+vi.mock("void/env", () => ({
+  env: { VITE_WRIGHTFUL_TRACE_VIEWER_ORIGIN: "https://traces.example.com" },
+}));
 
 const r2DirectConfig = vi.fn();
 vi.mock("@/lib/config", () => ({ r2DirectConfig }));
 
 const verifyArtifactToken = vi.fn();
-vi.mock("@/lib/artifact-tokens", () => ({ verifyArtifactToken }));
+const ARTIFACT_TOKEN_TTL_SECONDS = 60 * 60;
+vi.mock("@/lib/artifacts/tokens", () => ({
+  verifyArtifactToken,
+  ARTIFACT_TOKEN_TTL_SECONDS,
+}));
 
 const signGetUrl = vi.fn();
 vi.mock("@/lib/artifacts/presign", () => ({ signGetUrl }));
 
 const readArtifact = vi.fn();
-vi.mock("@/lib/artifacts", () => ({
+vi.mock("@/lib/artifacts/store", () => ({
   readArtifact,
   buildArtifactResponse: () => new Response("body", { status: 200 }),
   artifactContentDisposition: (key: string) =>
@@ -110,6 +120,27 @@ describe("download route — direct-R2 branch", () => {
     expect(opts.expiresIn).toBeLessThanOrEqual(1000);
   });
 
+  it("caps the presigned URL to ARTIFACT_TOKEN_TTL_SECONDS for a long-lived (trace) token", async () => {
+    // An 8h trace token must NOT mint an 8h anonymous-read presigned R2 URL —
+    // the presign is capped to the standard 1h artifact-token life (the SW
+    // re-mints per range read, so a short ceiling doesn't cut the session).
+    verifyArtifactToken.mockResolvedValue({
+      r2Key: "k",
+      contentType: "image/png",
+      exp: Math.floor(Date.now() / 1000) + 8 * 60 * 60,
+    });
+    r2DirectConfig.mockReturnValue(CFG);
+
+    await handle(ctx("GET", URL_WITH_TOKEN));
+
+    const [, , opts] = signGetUrl.mock.calls[0] as [
+      unknown,
+      string,
+      { expiresIn: number },
+    ];
+    expect(opts.expiresIn).toBe(ARTIFACT_TOKEN_TTL_SECONDS);
+  });
+
   it("keeps HEAD on the worker path even when ON (presigned URL is method-bound)", async () => {
     verifyArtifactToken.mockResolvedValue({
       r2Key: "k",
@@ -149,5 +180,40 @@ describe("download route — direct-R2 branch", () => {
     expect(res.status).toBe(401);
     expect(signGetUrl).not.toHaveBeenCalled();
     expect(readArtifact).not.toHaveBeenCalled();
+  });
+
+  it("echoes the configured separate trace-viewer origin in CORS (bridge fetches cross-origin)", async () => {
+    verifyArtifactToken.mockResolvedValue({
+      r2Key: "k",
+      contentType: "application/zip",
+      exp: Math.floor(Date.now() / 1000) + 1000,
+    });
+    r2DirectConfig.mockReturnValue(CFG);
+
+    const res = await handle(
+      ctx("GET", URL_WITH_TOKEN, { Origin: "https://traces.example.com" }),
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("access-control-allow-origin")).toBe(
+      "https://traces.example.com",
+    );
+  });
+
+  it("falls back to the dashboard origin for any other cross-origin caller", async () => {
+    verifyArtifactToken.mockResolvedValue({
+      r2Key: "k",
+      contentType: "application/zip",
+      exp: Math.floor(Date.now() / 1000) + 1000,
+    });
+    r2DirectConfig.mockReturnValue(CFG);
+
+    const res = await handle(
+      ctx("GET", URL_WITH_TOKEN, { Origin: "https://evil.example.com" }),
+    );
+
+    expect(res.headers.get("access-control-allow-origin")).toBe(
+      "https://dash.example.com",
+    );
   });
 });

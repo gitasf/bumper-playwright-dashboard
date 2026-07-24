@@ -1,6 +1,10 @@
+import { ExternalLink, LockKeyhole } from "lucide-react";
+import { GithubIcon } from "@/components/github-icon";
 import { Link } from "@/components/ui/link";
+import { DANGER_TRIGGER_CLASSES } from "@/components/danger-trigger";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import {
   SettingsCard,
@@ -74,11 +78,9 @@ export default function SettingsTeamGeneralPage({
           </SettingsField>
           {isOwner && (
             <div className="mt-2 flex items-center gap-3">
-              <Button size="sm" type="submit">
-                Save changes
-              </Button>
+              <SubmitButton size="sm">Save changes</SubmitButton>
               <Link
-                className="font-mono text-[11px] text-fg-3 uppercase tracking-wider transition-colors hover:text-fg-1"
+                className="text-caption font-medium text-fg-3 transition-colors hover:text-fg-1"
                 href={here}
               >
                 Discard
@@ -96,7 +98,7 @@ export default function SettingsTeamGeneralPage({
               <AlertDescription>{retentionError}</AlertDescription>
             </Alert>
           )}
-          <p className="mb-4 text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+          <p className="mb-4 text-body text-fg-3 leading-relaxed">
             How long to keep data before it's automatically deleted. Leave a
             field blank to use the default. Artifacts (traces, videos,
             screenshots) are usually kept for a shorter window than run history.
@@ -133,9 +135,7 @@ export default function SettingsTeamGeneralPage({
           </SettingsField>
           {isOwner && (
             <div className="mt-2">
-              <Button size="sm" type="submit">
-                Save retention
-              </Button>
+              <SubmitButton size="sm">Save retention</SubmitButton>
             </div>
           )}
         </form>
@@ -150,25 +150,129 @@ export default function SettingsTeamGeneralPage({
                 <AlertDescription>{githubError}</AlertDescription>
               </Alert>
             )}
-            <p className="mb-4 text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+            <p className="mb-4 text-body text-fg-3 leading-relaxed">
               Connect a GitHub organization to post a check run on each commit —
               pass/fail/flaky with a link to the run report — so test results
               gate pull-request merges.
             </p>
             {github.installations.length > 0 ? (
-              <ul className="mb-4 flex flex-col gap-1">
-                {github.installations.map((login) => (
-                  <li
-                    className="flex items-center gap-2 text-[length:var(--text-fs-13)] text-fg-1"
-                    key={login}
-                  >
-                    <span className="size-1.5 rounded-full bg-passed" />
-                    <code className="font-mono">{login}</code>
-                  </li>
-                ))}
-              </ul>
+              <div className="mb-4 flex flex-col gap-3">
+                {github.installations.map((installation) => {
+                  const repositoryLabel = !isOwner
+                    ? "Connected"
+                    : installation.repositoryCount == null
+                      ? "Repository access unavailable"
+                      : installation.repositorySelection === "all"
+                        ? `All repositories · ${installation.repositoryCount} accessible`
+                        : `${installation.repositoryCount} selected ${installation.repositoryCount === 1 ? "repository" : "repositories"}`;
+                  return (
+                    <section
+                      className="rounded-lg border border-line-1 bg-bg-2"
+                      key={installation.installationId}
+                    >
+                      <div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+                        <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-bg-3 text-fg-2">
+                          <GithubIcon className="size-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="size-1.5 rounded-full bg-pass" />
+                            <code className="truncate font-mono font-medium text-body text-fg-1">
+                              {installation.accountLogin}
+                            </code>
+                          </div>
+                          <div className="mt-0.5 text-caption text-fg-3">
+                            {repositoryLabel}
+                          </div>
+                        </div>
+                        {isOwner && (
+                          <div className="flex items-center gap-2">
+                            {installation.settingsUrl && (
+                              <Button
+                                render={
+                                  <a
+                                    href={installation.settingsUrl}
+                                    rel="noreferrer"
+                                    target="_blank"
+                                  />
+                                }
+                                size="sm"
+                                variant="outline"
+                              >
+                                Add or remove repositories
+                                <ExternalLink className="size-3.5" />
+                              </Button>
+                            )}
+                            <form
+                              action={`${here}?disconnectGithub`}
+                              method="post"
+                            >
+                              <input
+                                name="installationId"
+                                type="hidden"
+                                value={installation.installationId}
+                              />
+                              <SubmitButton
+                                aria-label={`Disconnect ${installation.accountLogin} from Wrightful`}
+                                size="sm"
+                                variant="destructive-outline"
+                              >
+                                Disconnect
+                              </SubmitButton>
+                            </form>
+                          </div>
+                        )}
+                      </div>
+
+                      {isOwner && (
+                        <div className="border-line-1 border-t px-3 py-2.5">
+                          <div className="mb-2 font-medium text-caption text-fg-2">
+                            Repositories with check access
+                          </div>
+                          {installation.repositories == null ? (
+                            <p className="text-caption text-fg-3 leading-relaxed">
+                              Wrightful could not load this installation's
+                              repository access. Use GitHub to review or update
+                              it.
+                            </p>
+                          ) : installation.repositories.length === 0 ? (
+                            <p className="text-caption text-fg-3">
+                              No repositories are currently accessible.
+                            </p>
+                          ) : (
+                            <ul className="max-h-52 divide-y divide-line-1 overflow-y-auto rounded-md border border-line-1 bg-bg-1">
+                              {installation.repositories.map((repo) => (
+                                <li
+                                  className="flex items-center gap-2 px-2.5 py-2 text-caption text-fg-2"
+                                  key={repo.id}
+                                >
+                                  <code className="min-w-0 flex-1 truncate font-mono">
+                                    {repo.fullName}
+                                  </code>
+                                  {repo.private && (
+                                    <span className="flex shrink-0 items-center gap-1 text-micro text-fg-3">
+                                      <LockKeyhole className="size-3" />
+                                      Private
+                                    </span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {installation.repositoriesTruncated && (
+                            <p className="mt-2 text-caption text-fg-3">
+                              More repositories are available. View the complete
+                              list on GitHub.
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
             ) : (
-              <p className="mb-4 text-[length:var(--text-fs-13)] text-fg-3">
+              <p className="mb-4 text-body text-fg-3">
                 No GitHub organizations connected yet.
               </p>
             )}
@@ -183,7 +287,7 @@ export default function SettingsTeamGeneralPage({
                     : "Connect a GitHub organization"}
                 </Button>
               ) : (
-                <p className="text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+                <p className="text-body text-fg-3 leading-relaxed">
                   Set <code className="font-mono">GITHUB_APP_SLUG</code> to
                   enable one-click install, or install the GitHub App manually
                   and point its setup URL at{" "}
@@ -199,7 +303,7 @@ export default function SettingsTeamGeneralPage({
           <SettingsGroupGap />
           <SettingsCard title="Danger zone" tone="danger">
             <div className="flex flex-col gap-3">
-              <p className="text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+              <p className="text-body text-fg-3 leading-relaxed">
                 Permanently deletes{" "}
                 <span className="font-medium text-fg-1">{team.name}</span> and
                 all <span className="font-mono">{projectCount}</span>{" "}
@@ -207,7 +311,7 @@ export default function SettingsTeamGeneralPage({
                 artifacts. There is no recovery.
               </p>
               <details className="group">
-                <summary className="inline-flex h-[30px] cursor-pointer list-none items-center justify-center self-start rounded-[5px] border border-fail/30 bg-fail-soft px-[11px] text-[13px] font-medium text-fail transition-colors hover:bg-fail/20 [&::-webkit-details-marker]:hidden">
+                <summary className={DANGER_TRIGGER_CLASSES}>
                   Delete team
                 </summary>
                 <form
@@ -220,9 +324,9 @@ export default function SettingsTeamGeneralPage({
                       <AlertDescription>{dangerError}</AlertDescription>
                     </Alert>
                   )}
-                  <p className="text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+                  <p className="text-body text-fg-3 leading-relaxed">
                     Type{" "}
-                    <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
+                    <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-micro text-fg-1">
                       {team.slug}
                     </code>{" "}
                     below to confirm.

@@ -6,13 +6,28 @@ export type TableVariant = "default" | "card";
 export function Table({
   className,
   variant = "default",
+  stickyHeader = false,
   ...props
 }: React.ComponentProps<"table"> & {
   variant?: TableVariant;
+  /**
+   * Let a `sticky top-0` `TableHeader` pin against an ancestor scroll region
+   * (e.g. a `flex-1 overflow-y-auto` list container) instead of this wrapper.
+   * The default `overflow-x-auto` wrapper forces `overflow-y:auto`, which makes
+   * it the header's own (never-scrolling) scroll container and silently defeats
+   * the sticky. When set, the wrapper stops scrolling and the enclosing region
+   * owns both axes — so that region must allow horizontal scroll for any table
+   * wider than it (e.g. a `min-w-*` table needs `overflow-auto`, not just
+   * `overflow-y-auto`).
+   */
+  stickyHeader?: boolean;
 }): React.ReactElement {
   return (
     <div
-      className="relative w-full overflow-x-auto"
+      className={cn(
+        "relative w-full",
+        stickyHeader ? "overflow-visible" : "overflow-x-auto",
+      )}
       data-slot="table-container"
       data-variant={variant}
     >
@@ -83,7 +98,10 @@ export function TableRow({
   return (
     <tr
       className={cn(
-        "relative border-b border-border/50 not-in-data-[variant=card]:hover:bg-[color-mix(in_srgb,var(--background),var(--color-black)_2%)] not-in-data-[variant=card]:data-[state=selected]:bg-[color-mix(in_srgb,var(--background),var(--color-black)_4%)] dark:not-in-data-[variant=card]:data-[state=selected]:bg-[color-mix(in_srgb,var(--background),var(--color-white)_4%)] dark:not-in-data-[variant=card]:hover:bg-[color-mix(in_srgb,var(--background),var(--color-white)_2%)]",
+        // `:active` matches the row while its stretched RowLink is pressed
+        // (a row is an ancestor of the activated link), giving an instant
+        // press-down tint — Apple's "respond on pointer-down" for row nav.
+        "relative border-b border-border/50 not-in-data-[variant=card]:hover:bg-[color-mix(in_srgb,var(--background),var(--color-black)_2%)] not-in-data-[variant=card]:active:bg-[color-mix(in_srgb,var(--background),var(--color-black)_4%)] not-in-data-[variant=card]:data-[state=selected]:bg-[color-mix(in_srgb,var(--background),var(--color-black)_4%)] dark:not-in-data-[variant=card]:data-[state=selected]:bg-[color-mix(in_srgb,var(--background),var(--color-white)_4%)] dark:not-in-data-[variant=card]:hover:bg-[color-mix(in_srgb,var(--background),var(--color-white)_2%)] dark:not-in-data-[variant=card]:active:bg-[color-mix(in_srgb,var(--background),var(--color-white)_4%)]",
         className,
       )}
       data-slot="table-row"
@@ -99,7 +117,9 @@ export function TableHead({
   return (
     <th
       className={cn(
-        "h-10 whitespace-nowrap px-2.5 text-left align-middle font-medium text-muted-foreground leading-none has-[[role=checkbox]]:w-px last:has-[[role=checkbox]]:ps-0 first:has-[[role=checkbox]]:pe-0",
+        // Canonical table-header label (the design bundle's micro-label style)
+        // — set once here so pages never restyle header cells.
+        "h-10 whitespace-nowrap px-2.5 text-left align-middle text-caption font-medium tracking-[0.1px] text-fg-3 leading-none has-[[role=checkbox]]:w-px last:has-[[role=checkbox]]:ps-0 first:has-[[role=checkbox]]:pe-0",
         className,
       )}
       data-slot="table-head"

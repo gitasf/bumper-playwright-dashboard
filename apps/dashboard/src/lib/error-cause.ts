@@ -34,15 +34,32 @@ function pgFields(e: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-function serialize(err: unknown, withStack: boolean): Record<string, unknown> {
+// Recursion bound for `.cause` chains. A 1-cycle (`e.cause === e`) is caught
+// by `seen` below, but some retry/pool wrappers produce a 2+ cycle
+// (`a.cause = b; b.cause = a`) or a pathologically deep chain — either would
+// blow the stack inside `describeError` itself, the last line of defense in
+// the error → page mapper and cron `loggedScheduled`. Cap depth AND track
+// already-seen errors so serialization always terminates.
+export const MAX_CAUSE_DEPTH = 8;
+
+function serialize(
+  err: unknown,
+  withStack: boolean,
+  depth = 0,
+  seen: Set<unknown> = new Set(),
+): Record<string, unknown> {
   if (!(err instanceof Error)) return { message: String(err) };
   const e = err as Error & Record<string, unknown>;
   const out: Record<string, unknown> = { message: e.message, ...pgFields(e) };
   if (withStack && e.stack) out.stack = e.stack;
+  seen.add(err);
   const cause = (e as { cause?: unknown }).cause;
-  // Recurse one level into the cause (the real driver error) — without its
-  // stack, to keep the log entry readable.
-  if (cause != null && cause !== err) out.cause = serialize(cause, false);
+  // Recurse into the cause (the real driver error) — without its stack, to
+  // keep the log entry readable — up to MAX_CAUSE_DEPTH levels and never back
+  // into an already-seen error.
+  if (cause != null && !seen.has(cause) && depth < MAX_CAUSE_DEPTH) {
+    out.cause = serialize(cause, false, depth + 1, seen);
+  }
   return out;
 }
 

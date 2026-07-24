@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vite-plus/test";
-import { isIngestRoute, isQueryApiRoute } from "@/lib/ingest-routes";
+import {
+  isIngestRoute,
+  isMcpRoute,
+  isQueryApiRoute,
+  isTenantApiRoute,
+} from "@/lib/ingest-routes";
 
 /**
  * `isIngestRoute` is the single source of truth shared by the Bearer gate
@@ -55,6 +60,11 @@ const QUERY_PATHS = [
   "/api/v1/runs/01J",
   "/api/v1/runs/01J/tests",
   "/api/v1",
+  // The MCP endpoint is part of the SAME Bearer-only surface (see the
+  // predicate's docstring): key auth without version negotiation, throttled
+  // under QUERY_RATE_LIMITER.
+  "/api/mcp",
+  "/api/mcp/",
 ];
 
 const INGEST_PATHS = [
@@ -83,6 +93,8 @@ describe("isQueryApiRoute", () => {
     expect(isQueryApiRoute("/api/v2/runs")).toBe(false);
     expect(isQueryApiRoute("/api/v1x/runs")).toBe(false);
     expect(isQueryApiRoute("/x/api/v1/runs")).toBe(false);
+    expect(isQueryApiRoute("/api/mcpx")).toBe(false);
+    expect(isQueryApiRoute("/x/api/mcp")).toBe(false);
     expect(isQueryApiRoute("/")).toBe(false);
   });
 });
@@ -91,6 +103,64 @@ describe("ingest and query route classes are disjoint", () => {
   it("no path is classified as BOTH ingest and query", () => {
     for (const p of [...QUERY_PATHS, ...INGEST_PATHS]) {
       expect(isIngestRoute(p) && isQueryApiRoute(p)).toBe(false);
+    }
+  });
+});
+
+/**
+ * `isMcpRoute` selects the dual-credential branch (API key OR OAuth token +
+ * WWW-Authenticate on 401) inside 02.api-auth. It must be a strict SUBSET of
+ * `isQueryApiRoute`: an MCP path that stopped classifying as query would fall
+ * out of the QUERY_RATE_LIMITER gate in 03.
+ */
+describe("isMcpRoute", () => {
+  it("matches only the MCP endpoint", () => {
+    expect(isMcpRoute("/api/mcp")).toBe(true);
+    expect(isMcpRoute("/api/mcp/")).toBe(true);
+    expect(isMcpRoute("/api/v1/runs")).toBe(false);
+    expect(isMcpRoute("/api/mcpx")).toBe(false);
+    expect(isMcpRoute("/x/api/mcp")).toBe(false);
+  });
+
+  it("is a subset of the query surface", () => {
+    for (const p of ["/api/mcp", "/api/mcp/"]) {
+      expect(isQueryApiRoute(p)).toBe(true);
+    }
+  });
+});
+
+const TENANT_API_PATHS = [
+  "/api/t/acme/p/web",
+  "/api/t/acme/p/web/export/runs",
+  "/api/t/acme/p/web/search",
+  "/api/t/acme/p/web/quarantine",
+  "/api/t/acme/p/web/runs/run_1/summary",
+  "/api/t/acme/p/web/runs/run_1/tests/tr_1/replay",
+];
+
+describe("isTenantApiRoute", () => {
+  it("matches the session tenant API family, including the CSV export", () => {
+    for (const p of TENANT_API_PATHS) expect(isTenantApiRoute(p)).toBe(true);
+  });
+
+  it("does NOT match other API surfaces or page routes, and anchors at start", () => {
+    expect(isTenantApiRoute("/api/t/acme")).toBe(false);
+    expect(isTenantApiRoute("/api/t/acme/p")).toBe(false);
+    expect(isTenantApiRoute("/api/teams/acme/members")).toBe(false);
+    expect(isTenantApiRoute("/api/v1/runs")).toBe(false);
+    expect(isTenantApiRoute("/api/runs")).toBe(false);
+    expect(isTenantApiRoute("/api/auth/sign-in")).toBe(false);
+    expect(isTenantApiRoute("/t/acme/p/web")).toBe(false);
+    expect(isTenantApiRoute("/x/api/t/acme/p/web")).toBe(false);
+  });
+
+  it("is disjoint from both Bearer-authenticated surfaces", () => {
+    for (const p of TENANT_API_PATHS) {
+      expect(isIngestRoute(p)).toBe(false);
+      expect(isQueryApiRoute(p)).toBe(false);
+    }
+    for (const p of [...QUERY_PATHS, ...INGEST_PATHS]) {
+      expect(isTenantApiRoute(p)).toBe(false);
     }
   });
 });

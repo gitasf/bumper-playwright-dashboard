@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
 import { auth } from "void/client";
 import { Link, useRouter } from "@void/react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { GithubIcon } from "@/components/github-icon";
 import { Input } from "@/components/ui/input";
 import {
   InputGroup,
@@ -11,6 +12,7 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
+import { useHydrated } from "@/lib/hooks/use-hydrated";
 import { hrefWithNext } from "@/lib/safe-next-path";
 import type { Props } from "./login.server";
 
@@ -42,9 +44,8 @@ export default function LoginPage({
   // until React hydrates. Until then, keep the submit disabled: a pre-hydration
   // native submit would otherwise GET this page with the credentials in the
   // query string (leaking the password into the URL/history) and do nothing
-  // useful. `useEffect` only runs after hydration.
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => setHydrated(true), []);
+  // useful.
+  const hydrated = useHydrated();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -96,9 +97,9 @@ export default function LoginPage({
             "radial-gradient(oklch(0.975 0.003 260 / 0.04) 1px, transparent 1px)",
           backgroundSize: "22px 22px",
           maskImage:
-            "radial-gradient(80% 60% at 50% 42%, #000 0%, transparent 75%)",
+            "radial-gradient(80% 60% at 50% 42%, oklch(0 0 0) 0%, transparent 75%)",
           WebkitMaskImage:
-            "radial-gradient(80% 60% at 50% 42%, #000 0%, transparent 75%)",
+            "radial-gradient(80% 60% at 50% 42%, oklch(0 0 0) 0%, transparent 75%)",
         }}
       />
 
@@ -110,10 +111,10 @@ export default function LoginPage({
               void handleSubmit(e);
             }}
           >
-            <h2 className="text-center font-semibold text-[22px] tracking-[-0.4px]">
+            <h2 className="text-center font-semibold text-title tracking-[-0.4px]">
               Sign in to Wrightful
             </h2>
-            <p className="mt-1.5 text-center text-[13px] text-fg-3">
+            <p className="mt-1.5 text-center text-body text-fg-3">
               Welcome back. Let's get you to your runs.
             </p>
 
@@ -129,30 +130,20 @@ export default function LoginPage({
                     void handleGithub();
                   }}
                 >
-                  <svg
-                    aria-hidden="true"
-                    fill="currentColor"
-                    height="16"
-                    viewBox="0 0 16 16"
-                    width="16"
-                  >
-                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
-                  </svg>
+                  <GithubIcon />
                   Continue with GitHub
                 </Button>
 
                 <div className="my-5 flex items-center gap-3">
                   <div className="h-px flex-1 bg-line-1" />
-                  <span className="text-[11px] text-fg-3 uppercase tracking-[0.5px]">
-                    or
-                  </span>
+                  <span className="text-caption text-fg-3">or</span>
                   <div className="h-px flex-1 bg-line-1" />
                 </div>
               </>
             )}
 
             <div className={githubEnabled ? "mb-3.5" : "mt-6 mb-3.5"}>
-              <Label htmlFor="email" className="text-[12px] text-fg-2">
+              <Label htmlFor="email" className="text-caption text-fg-2">
                 Work email
               </Label>
               <Input
@@ -170,13 +161,13 @@ export default function LoginPage({
 
             <div className="mb-3.5">
               <div className="flex items-baseline justify-between">
-                <Label htmlFor="password" className="text-[12px] text-fg-2">
+                <Label htmlFor="password" className="text-caption text-fg-2">
                   Password
                 </Label>
                 {resetEnabled && (
                   <Link
                     href="/forgot-password"
-                    className="text-[12px] text-fg-3 underline-offset-2 transition-colors hover:text-fg-1 hover:underline"
+                    className="text-caption text-fg-3 underline-offset-2 transition-colors hover:text-fg-1 hover:underline"
                   >
                     Forgot password?
                   </Link>
@@ -219,14 +210,14 @@ export default function LoginPage({
               />
               <Label
                 htmlFor="remember"
-                className="cursor-pointer font-normal text-[12.5px] text-fg-2"
+                className="cursor-pointer font-normal text-body text-fg-2"
               >
                 Keep me signed in
               </Label>
             </div>
 
             {error && (
-              <p role="alert" className="mb-3 text-[13px] text-destructive">
+              <p role="alert" className="mb-3 text-body text-destructive">
                 {error}
               </p>
             )}
@@ -243,7 +234,7 @@ export default function LoginPage({
             </Button>
 
             {signupAllowed && (
-              <div className="mt-[22px] text-center text-[12.5px] text-fg-3">
+              <div className="mt-[22px] text-center text-body text-fg-3">
                 New to Wrightful?{" "}
                 <Link
                   href={hrefWithNext("/signup", next)}

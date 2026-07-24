@@ -46,28 +46,46 @@ export class LoginPage {
   /**
    * Settle Void's client runtime before the test touches the form.
    *
-   * On hydration the Void client performs ONE client-side re-navigation to the
-   * current route (`void/pages/client` → `prefetch`). That re-nav REMOUNTS the
-   * login/signup island and resets its local React state (`email` / `password` /
-   * `error`). If a spec fills or submits before it lands, the credentials — and
-   * the pending sign-in error alert — are silently wiped, which is the
-   * load-sensitive flake behind the "waiting for /login navigation to finish"
-   * failures in CI. `networkidle` settles once that re-nav's page fetch
-   * completes. Measured locally: interacting before this settles fails 0/8;
-   * after it, 8/8.
+   * On hydration the Void client does one client-side re-nav to the current
+   * route, which remounts the login/signup island and resets its local React
+   * state (`email`/`password`/`error`). Filling or submitting before it lands
+   * silently wipes the credentials and the pending error alert — the
+   * load-sensitive CI flake ("waiting for /login navigation to finish").
+   * Measured locally: 0/8 before settling, 8/8 after. See
+   * docs/worklog/2026-07-04-e2e-login-rehydration-flake.md.
+   *
+   * Not `networkidle` (long-lived subscriptions keep this app's network from
+   * going idle — rejected in runs-list.page.ts too). Instead wait for the
+   * re-nav's own request: Void tags every client page-data fetch with
+   * `X-VoidPages: true` and re-fetches the current pathname, so matching both
+   * pins that request. `.catch()` + 5s bound so it never hangs if the re-nav
+   * already landed or a future Void version changes the mechanism.
+   *
+   * The listener must attach before `goto()` resolves (`waitForResponse` only
+   * catches later responses), so callers start this wait before awaiting goto.
    */
-  private async waitForClientSettled(): Promise<void> {
-    await this.page.waitForLoadState("networkidle");
+  private async waitForClientSettled(pathname: string): Promise<void> {
+    await this.page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === pathname &&
+          response.request().headers()["x-voidpages"] === "true",
+        { timeout: 5_000 },
+      )
+      .catch(() => {});
   }
 
-  async gotoSignIn(): Promise<void> {
-    await this.page.goto("/login");
-    await this.waitForClientSettled();
+  /** Navigate to /login, optionally with a raw query string (e.g. "next=..."). */
+  async gotoSignIn(query?: string): Promise<void> {
+    const settled = this.waitForClientSettled("/login");
+    await this.page.goto(query ? `/login?${query}` : "/login");
+    await settled;
   }
 
   async gotoSignUp(): Promise<void> {
+    const settled = this.waitForClientSettled("/signup");
     await this.page.goto("/signup");
-    await this.waitForClientSettled();
+    await settled;
     await expect(this.signUpHeading).toBeVisible();
   }
 
@@ -102,7 +120,7 @@ export class LoginPage {
   /** Wait for navigation away from /login or /signup. */
   async waitForLandedOff(prefix: "/login" | "/signup"): Promise<void> {
     // Generous timeout: email sign-in/up runs a scrypt password hash which is
-    // markedly slow on the local miniflare dev server the e2e harness boots.
+    // can be markedly slow in the local Worker runtime the E2E harness boots.
     await this.page.waitForURL((url) => !url.pathname.startsWith(prefix), {
       timeout: 30_000,
     });

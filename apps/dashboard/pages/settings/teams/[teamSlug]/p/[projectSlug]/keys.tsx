@@ -1,14 +1,17 @@
 import { useMutation } from "@tanstack/react-query";
-import { format } from "date-fns";
+import { DANGER_TRIGGER_CLASSES } from "@/components/danger-trigger";
 import { ArrowLeft, Download, KeyRound, Plus } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "@void/react";
 import { Link } from "@/components/ui/link";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { RevealOnceDialog } from "@/components/settings/reveal-once-dialog";
+import { StatusPill } from "@/components/status-pill";
+import { formatDateTabular } from "@/lib/time-format";
 import {
   SettingsCard,
   SettingsField,
@@ -18,6 +21,7 @@ import {
 } from "@/components/settings/settings-primitives";
 import { cn } from "@/lib/cn";
 import { formatRelativeTime } from "@/lib/time-format";
+import { useHydrated } from "@/lib/hooks/use-hydrated";
 import type { Props } from "./keys.server";
 
 interface MintKeyResponse {
@@ -47,6 +51,7 @@ export default function SettingsProjectKeysPage({
   codeownersError,
 }: Props) {
   const router = useRouter();
+  const hydrated = useHydrated();
   const here = `/settings/teams/${project.teamSlug}/p/${project.slug}/keys`;
   // One-click CSV of this project's run history. Plain <a download>, not <Link>:
   // the server returns a text/csv attachment, so the SPA router must NOT
@@ -90,7 +95,7 @@ export default function SettingsProjectKeysPage({
   return (
     <SettingsPage>
       <Link
-        className="mb-2 inline-flex items-center gap-1.5 font-mono text-[11.5px] text-fg-3 transition-colors hover:text-fg-1"
+        className="mb-2 inline-flex items-center gap-1.5 font-mono text-caption text-fg-3 transition-colors hover:text-fg-1"
         href={`/settings/teams/${project.teamSlug}/projects`}
       >
         <ArrowLeft className="size-3" />
@@ -107,7 +112,7 @@ export default function SettingsProjectKeysPage({
         open={Boolean(revealedToken)}
         title="Save this key now"
       >
-        <pre className="overflow-x-auto rounded-md border border-line-1 bg-bg-0 p-2.5 font-mono text-[13px] text-fg-1">
+        <pre className="overflow-x-auto rounded-md border border-line-1 bg-bg-0 p-2.5 font-mono text-body text-fg-1">
           {revealedToken}
         </pre>
       </RevealOnceDialog>
@@ -151,9 +156,7 @@ export default function SettingsProjectKeysPage({
             />
           </SettingsField>
           <div className="mt-2">
-            <Button size="sm" type="submit">
-              Save changes
-            </Button>
+            <SubmitButton size="sm">Save changes</SubmitButton>
           </div>
         </form>
       </SettingsCard>
@@ -184,7 +187,7 @@ export default function SettingsProjectKeysPage({
             />
           </div>
           <Button
-            disabled={mintKey.isPending}
+            disabled={!hydrated || mintKey.isPending}
             loading={mintKey.isPending}
             type="submit"
           >
@@ -198,7 +201,7 @@ export default function SettingsProjectKeysPage({
           </Alert>
         )}
         {keys.length === 0 ? (
-          <div className="py-6 text-center text-[length:var(--text-fs-13)] text-fg-3">
+          <div className="py-6 text-center text-body text-fg-3">
             No keys yet.
           </div>
         ) : (
@@ -211,44 +214,36 @@ export default function SettingsProjectKeysPage({
                     "flex items-center gap-3.5 px-[18px] py-3",
                     i !== keys.length - 1 && "border-b border-line-1",
                   )}
+                  data-testid="key-row"
                   key={k.id}
                 >
                   <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-bg-3 text-fg-2">
                     <KeyRound className="size-3.5" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="font-medium text-[length:var(--text-fs-14)]">
-                      {k.label}
-                    </div>
-                    <div className="mt-0.5 font-mono text-[11.5px] text-fg-3">
+                    <div className="font-medium text-body-lg">{k.label}</div>
+                    <div className="mt-0.5 font-mono text-caption text-fg-3">
                       {k.keyPrefix}
                       <span className="opacity-40">················</span>
                     </div>
                   </div>
-                  <div className="w-32 text-right font-mono text-[11.5px] text-fg-3">
+                  <div className="w-32 text-right font-mono text-caption text-fg-3">
                     {k.lastUsedAt
                       ? `used ${formatRelativeTime(k.lastUsedAt)}`
                       : "never used"}
                   </div>
-                  <div className="w-24 text-right font-mono text-[11.5px] text-fg-3 tabular-nums">
-                    {format(new Date(k.createdAt * 1000), "yyyy-MM-dd")}
+                  <div className="w-24 text-right font-mono text-caption text-fg-3 tabular-nums">
+                    {formatDateTabular(new Date(k.createdAt * 1000))}
                   </div>
-                  <span
-                    className={cn(
-                      "inline-flex w-[72px] items-center justify-center gap-1.5 rounded-sm px-1.5 py-0.5 font-mono text-[10.5px] uppercase tracking-wider",
-                      revoked
-                        ? "bg-fail-soft text-fail"
-                        : "bg-pass-soft text-pass",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "inline-block size-1.5 rounded-full",
-                        revoked ? "bg-fail" : "bg-pass",
-                      )}
-                    />
-                    {revoked ? "revoked" : "active"}
-                  </span>
+                  <StatusPill
+                    className="w-[72px] justify-center"
+                    cssVar={revoked ? "--fail" : "--pass"}
+                    icon={
+                      <span className="inline-block size-1.5 rounded-full bg-current" />
+                    }
+                    label={revoked ? "Revoked" : "Active"}
+                    size="sm"
+                  />
                   {!revoked && (
                     <form
                       action={`${here}?revokeKey`}
@@ -272,7 +267,7 @@ export default function SettingsProjectKeysPage({
         subtitle="Read your runs and test results programmatically with a project API key. Same Bearer token as the reporter, in the Authorization header."
         title="Query & export API"
       >
-        <div className="flex flex-col gap-3 text-[length:var(--text-fs-13)] text-fg-2 leading-relaxed">
+        <div className="flex flex-col gap-3 text-body text-fg-2 leading-relaxed">
           <div className="flex flex-wrap items-center gap-3">
             <Button
               render={
@@ -290,34 +285,34 @@ export default function SettingsProjectKeysPage({
           </div>
           <p>
             Authenticate with{" "}
-            <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
+            <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-micro text-fg-1">
               Authorization: Bearer &lt;key&gt;
             </code>
             . Endpoints are scoped to this project — a key never sees another
             project&apos;s data.
           </p>
-          <ul className="flex flex-col gap-1 font-mono text-[11.5px] text-fg-3">
+          <ul className="flex flex-col gap-1 font-mono text-caption text-fg-3">
             <li>GET /api/v1/runs</li>
             <li>GET /api/v1/runs/:runId</li>
             <li>GET /api/v1/runs/:runId/tests</li>
           </ul>
           <p>
             Lists are cursor-paged: pass{" "}
-            <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
+            <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-micro text-fg-1">
               ?cursor=
             </code>{" "}
             from the previous response&apos;s{" "}
-            <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
+            <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-micro text-fg-1">
               nextCursor
             </code>
             . Add{" "}
-            <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
+            <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-micro text-fg-1">
               ?format=csv
             </code>{" "}
             to download a CSV — the same data the Export CSV button above
             produces. See the full{" "}
             <a
-              className="text-fg-1 underline underline-offset-2 hover:text-accent"
+              className="text-fg-1 underline underline-offset-2 hover:text-info"
               href="https://github.com/joefairburn/wrightful/blob/main/docs/api/query-export.md"
               rel="noreferrer"
               target="_blank"
@@ -358,9 +353,7 @@ export default function SettingsProjectKeysPage({
             />
           </SettingsField>
           <div className="mt-2">
-            <Button size="sm" type="submit">
-              Save CODEOWNERS
-            </Button>
+            <SubmitButton size="sm">Save CODEOWNERS</SubmitButton>
           </div>
         </form>
       </SettingsCard>
@@ -369,14 +362,12 @@ export default function SettingsProjectKeysPage({
 
       <SettingsCard title="Danger zone" tone="danger">
         <div className="flex flex-col gap-3">
-          <p className="text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+          <p className="text-body text-fg-3 leading-relaxed">
             Permanently delete this project, its API keys, and all run history.
             This cannot be undone.
           </p>
           <details className="group">
-            <summary className="inline-flex h-[30px] cursor-pointer list-none items-center justify-center self-start rounded-[5px] border border-fail/30 bg-fail-soft px-[11px] text-[13px] font-medium text-fail transition-colors hover:bg-fail/20 [&::-webkit-details-marker]:hidden">
-              Delete project
-            </summary>
+            <summary className={DANGER_TRIGGER_CLASSES}>Delete project</summary>
             <form
               action={`${here}?deleteProject`}
               className="mt-4 flex flex-col gap-3 border-fail/20 border-t pt-4"
@@ -387,9 +378,9 @@ export default function SettingsProjectKeysPage({
                   <AlertDescription>{dangerError}</AlertDescription>
                 </Alert>
               )}
-              <p className="text-[length:var(--text-fs-13)] text-fg-3 leading-relaxed">
+              <p className="text-body text-fg-3 leading-relaxed">
                 Type{" "}
-                <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
+                <code className="rounded-sm bg-bg-3 px-1 py-0.5 font-mono text-micro text-fg-1">
                   {project.slug}
                 </code>{" "}
                 below to confirm.

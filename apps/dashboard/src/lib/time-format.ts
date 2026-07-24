@@ -2,6 +2,8 @@ import {
   differenceInDays,
   differenceInHours,
   differenceInMinutes,
+  format,
+  parseISO,
 } from "date-fns";
 
 /** Human-readable duration: `450ms`, `12s`, `1m 3s`. */
@@ -33,4 +35,23 @@ export function formatRelativeTime(
   const hours = differenceInHours(base, date);
   if (hours < 24) return `${hours}h ago`;
   return `${differenceInDays(base, date)}d ago`;
+}
+
+/**
+ * Compact human date for filter labels (e.g. the date-range trigger) —
+ * `6 Jul 25`. Month is spelled so the label can't be misread across
+ * DD/MM vs MM/DD locales.
+ */
+export function formatDateLabel(iso: string): string {
+  return format(parseISO(iso), "d MMM yy");
+}
+
+/** Sortable tabular date for mono table columns — `2026-07-06`. */
+export function formatDateTabular(date: Date): string {
+  return format(date, "yyyy-MM-dd");
+}
+
+/** `yyyy-MM-dd` for URL params (date-range filters). */
+export function toIsoDate(date: Date): string {
+  return format(date, "yyyy-MM-dd");
 }

@@ -1,6 +1,7 @@
 import type React from "react";
+import { TabBar, TabBarTab } from "@/components/ui/tabs";
 import { cn } from "@/lib/cn";
-import { useSearchParam } from "@/lib/use-search-param";
+import { useSearchParam } from "@/lib/hooks/use-search-param";
 
 /**
  * URL-driven attempt tabs for the test detail page.
@@ -34,7 +35,7 @@ function useActiveAttempt(
 function statusDotClass(status: AttemptStatus): string {
   if (status === "passed") return "bg-success";
   if (status === "failed") return "bg-destructive";
-  return "bg-muted-foreground/50";
+  return "bg-fg-3/50";
 }
 
 export function AttemptTabsBar({
@@ -47,48 +48,31 @@ export function AttemptTabsBar({
   const values = items.map((i) => i.value);
   const [active, setActive] = useActiveAttempt(values, defaultValue);
   return (
-    // Flat underline tabs — same style as the run-detail Tests / Environment
-    // tab bar: text labels with an accent underline under the active tab,
-    // rather than boxed folder tabs. The active underline (`after`) sits on the
-    // wrapping header's bottom border via `-mb-px`.
-    <div className="flex items-end gap-1 overflow-x-auto">
-      {items.map((item) => {
-        const isActive = active === item.value;
-        return (
-          <button
-            key={item.value}
-            type="button"
-            onClick={() => {
-              setActive(item.value);
-            }}
-            aria-pressed={isActive}
+    // `scrollable` so many retries overflow into a horizontal scroll; the
+    // bottom rule comes from the wrapping header rather than the bar itself.
+    <TabBar role="tablist" scrollable>
+      {items.map((item) => (
+        <TabBarTab
+          active={active === item.value}
+          key={item.value}
+          onSelect={() => {
+            setActive(item.value);
+          }}
+        >
+          <span
+            aria-hidden
             className={cn(
-              "relative inline-flex items-center gap-2 whitespace-nowrap",
-              "rounded-sm px-3 py-2 text-[13px] cursor-pointer transition-colors",
-              "outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              // Underline sits INSIDE the button box (`bottom-0`, not `-bottom-px`)
-              // so the container's `overflow-x-auto` — which forces overflow-y to
-              // clip — can't cut it off.
-              isActive
-                ? "font-medium text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-[var(--running)] after:content-['']"
-                : "text-muted-foreground hover:text-foreground",
+              "inline-block size-1.5 shrink-0 rounded-full",
+              statusDotClass(item.status),
             )}
-          >
-            <span
-              className={cn(
-                "inline-block size-1.5 shrink-0 rounded-full",
-                statusDotClass(item.status),
-              )}
-              aria-hidden
-            />
-            <span>{item.label}</span>
-            {item.finalSuffix ? (
-              <span className="text-[11px] text-fg-3">{item.finalSuffix}</span>
-            ) : null}
-          </button>
-        );
-      })}
-    </div>
+          />
+          <span>{item.label}</span>
+          {item.finalSuffix ? (
+            <span className="text-micro text-fg-3">{item.finalSuffix}</span>
+          ) : null}
+        </TabBarTab>
+      ))}
+    </TabBar>
   );
 }
 

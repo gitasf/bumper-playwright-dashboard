@@ -1,13 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 /**
- * The flag-conditional trace-viewer fork in `signArtifactRows` (ADR 0003),
- * exercised through the exported `loadAttemptArtifactGroups`. The existing
- * test-artifact-actions.test.ts only covers the pure grouping over already-signed
- * rows and never reaches this fork. ON: a trace's `traceViewerUrl` must embed the
- * DIRECT presigned R2 URL (so the cross-origin viewer never follows a 302), with
- * the in-page `href` STILL the worker download route. OFF: the worker-proxy
- * trace URL, and the presigner is never called.
+ * `signArtifactRows` (via the exported `loadAttemptArtifactGroups`) mints a
+ * signed, token-authed WORKER download href per row — never the raw `r2Key`.
+ * Replayable trace rows get the longer token through the shared artifact
+ * lifetime policy (the viewer's SW range-reads the zip lazily for the whole
+ * modal session).
+ *
+ * This seam does NOT mint a self-hosted trace-viewer URL. It used to (a
+ * `traceViewerUrl` field on `SignedArtifact`/`ArtifactAction`), but the
+ * field's only consumers — the rail button and replay dialog — used it only
+ * as a presence gate. Those consumers now apply the shared replay predicate
+ * to the complete artifact and derive the viewer link from `href`. The URL's
+ * shape (same-origin, never `trace.playwright.dev`) is covered directly in
+ * `artifact-tokens.workers.test.ts`, not here.
  */
 
 let rows: unknown[] = [];
@@ -25,33 +31,18 @@ vi.mock("void/env", () => ({ env: {} }));
 // is stubbed so the bare void/db mock doesn't need the and/eq operators.
 vi.mock("@/lib/scope", () => ({ childByTestResultWhere: () => ({}) }));
 
-const r2DirectConfig = vi.fn();
-vi.mock("@/lib/config", () => ({ r2DirectConfig }));
-
-const signGetUrl = vi.fn();
-vi.mock("@/lib/artifacts/presign", () => ({ signGetUrl }));
-
-vi.mock("@/lib/artifact-tokens", () => ({
-  ARTIFACT_TOKEN_TTL_SECONDS: 3600,
-  signArtifactToken: vi.fn(async () => "TOKEN"),
+const signArtifactDownloadTokenMock = vi.fn(async () => ({
+  token: "TOKEN",
+  expiresInSeconds: 60 * 60,
+}));
+vi.mock("@/lib/artifacts/tokens", () => ({
+  signArtifactDownloadToken: signArtifactDownloadTokenMock,
   signedDownloadHref: (id: string, t: string) =>
     `/api/artifacts/${id}/download?t=${t}`,
-  signedTraceViewerUrl: (o: string, id: string, t: string) =>
-    `WORKER_TRACE:${o}:${id}:${t}`,
-  traceViewerUrlFor: (u: string) => `DIRECT_TRACE:${u}`,
 }));
 
 const { loadAttemptArtifactGroups } =
   await import("@/lib/test-artifact-actions");
-
-const CFG = {
-  accountId: "acct",
-  accessKeyId: "key",
-  secretAccessKey: "secret",
-  bucket: "bucket",
-};
-const PRESIGNED =
-  "https://acct.r2.cloudflarestorage.com/bucket/key?X-Amz-Signature=sig";
 
 const traceRow = {
   id: "art-trace",
@@ -66,68 +57,45 @@ const traceRow = {
 };
 
 beforeEach(() => {
-  r2DirectConfig.mockReset();
-  signGetUrl.mockReset();
-  signGetUrl.mockResolvedValue(PRESIGNED);
   rows = [traceRow];
+  signArtifactDownloadTokenMock.mockClear();
 });
 
-describe("signArtifactRows trace-viewer fork (via loadAttemptArtifactGroups)", () => {
-  it("ON: embeds the direct presigned R2 URL, signs type + disposition, keeps href on the worker route", async () => {
-    r2DirectConfig.mockReturnValue(CFG);
-
-    const groups = await loadAttemptArtifactGroups(
-      {} as never,
-      "tr-1",
-      "https://dash.example.com",
-    );
+describe("signArtifactRows (via loadAttemptArtifactGroups)", () => {
+  it("mints the token-authed worker download href, never the raw r2Key or a traceViewerUrl field", async () => {
+    const groups = await loadAttemptArtifactGroups({} as never, "tr-1");
     const action = groups.get(0)?.media[0];
 
-    expect(action?.traceViewerUrl).toBe(`DIRECT_TRACE:${PRESIGNED}`);
     expect(action?.downloadHref).toBe(
       "/api/artifacts/art-trace/download?t=TOKEN",
     );
+    expect(action?.downloadHref).not.toContain(traceRow.r2Key);
+    // Regression guard: `traceViewerUrl` used to be minted here only to serve
+    // as a presence gate; it must not reappear on the produced action.
+    expect(action).not.toHaveProperty("traceViewerUrl");
+  });
 
-    expect(signGetUrl).toHaveBeenCalledOnce();
-    const [cfg, key, opts] = signGetUrl.mock.calls[0] as [
-      unknown,
-      string,
+  it("routes every row through the canonical artifact-token policy", async () => {
+    rows = [
+      traceRow,
       {
-        responseContentType: string;
-        responseContentDisposition: string;
-        expiresIn: number;
+        ...traceRow,
+        id: "art-shot",
+        type: "screenshot",
+        name: "s.png",
+        r2Key: "t/x/p/y/runs/r/tr-1/art-shot/s.png",
       },
     ];
-    expect(cfg).toBe(CFG);
-    expect(key).toBe(traceRow.r2Key);
-    expect(opts.responseContentType).toBe("application/zip");
-    expect(opts.responseContentDisposition).toMatch(/^attachment;/);
-    // Bounded to the artifact-token lifetime, not the signer's default.
-    expect(opts.expiresIn).toBe(3600);
-  });
 
-  it("OFF: uses the worker-proxy trace URL and never calls the presigner", async () => {
-    r2DirectConfig.mockReturnValue(null);
+    await loadAttemptArtifactGroups({} as never, "tr-1");
 
-    const groups = await loadAttemptArtifactGroups(
-      {} as never,
-      "tr-1",
-      "https://dash.example.com",
-    );
-    const action = groups.get(0)?.media[0];
-
-    expect(action?.traceViewerUrl).toBe(
-      "WORKER_TRACE:https://dash.example.com:art-trace:TOKEN",
-    );
-    expect(signGetUrl).not.toHaveBeenCalled();
-  });
-
-  it("non-trace rows get no traceViewerUrl in either mode", async () => {
-    rows = [{ ...traceRow, id: "art-shot", type: "screenshot", name: "s.png" }];
-    r2DirectConfig.mockReturnValue(CFG);
-
-    const groups = await loadAttemptArtifactGroups({} as never, "tr-1", "o");
-    expect(groups.get(0)?.media[0]?.traceViewerUrl).toBeUndefined();
-    expect(signGetUrl).not.toHaveBeenCalled();
+    expect(signArtifactDownloadTokenMock).toHaveBeenNthCalledWith(1, traceRow);
+    expect(signArtifactDownloadTokenMock).toHaveBeenNthCalledWith(2, {
+      ...traceRow,
+      id: "art-shot",
+      type: "screenshot",
+      name: "s.png",
+      r2Key: "t/x/p/y/runs/r/tr-1/art-shot/s.png",
+    });
   });
 });

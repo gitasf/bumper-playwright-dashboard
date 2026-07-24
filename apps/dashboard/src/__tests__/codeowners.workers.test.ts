@@ -213,3 +213,203 @@ describe("matchOwners — path normalization", () => {
     expect(matchOwners("any.ts", r)).toEqual(["alice@example.com"]);
   });
 });
+
+describe("parseCodeowners — bounds (ReDoS hardening, L5)", () => {
+  it("caps the number of parsed rules at MAX_RULES (1000); later lines are ignored", () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 1005; i++) lines.push(`/dir-${i}/ @owner-${i}`);
+    const parsed = parseCodeowners(lines.join("\n"));
+    expect(parsed).toHaveLength(1000);
+    // Rule 1001 (index 1000, 0-based) and beyond never made it into the list.
+    expect(parsed.some((rule) => rule.pattern === "/dir-1000/")).toBe(false);
+    expect(parsed.some((rule) => rule.pattern === "/dir-1004/")).toBe(false);
+    // The first 1000 are kept, in order.
+    expect(parsed[0]).toEqual({ pattern: "/dir-0/", owners: ["@owner-0"] });
+    expect(parsed[999]).toEqual({
+      pattern: "/dir-999/",
+      owners: ["@owner-999"],
+    });
+  });
+
+  it("skips a line whose pattern exceeds MAX_PATTERN_LENGTH (256) without disturbing neighbors", () => {
+    const overLong = "a".repeat(300);
+    const r = rules(
+      ["/before @first", `${overLong} @too-long`, "/after @second"].join("\n"),
+    );
+    // Only the two normal-length rules survive parsing.
+    expect(r).toEqual([
+      { pattern: "/before", owners: ["@first"] },
+      { pattern: "/after", owners: ["@second"] },
+    ]);
+    // Last-match-wins still holds across the skipped line.
+    expect(matchOwners("before", r)).toEqual(["@first"]);
+    expect(matchOwners("after", r)).toEqual(["@second"]);
+  });
+
+  it("an over-length pattern can never match (it was dropped, not just skipped-for-length)", () => {
+    const overLong = "a".repeat(300);
+    const r = rules(`${overLong} @too-long`);
+    expect(r).toEqual([]);
+    expect(matchOwners(overLong, r)).toEqual([]);
+  });
+});
+
+describe("matchOwners — adversarial glob input completes fast (ReDoS hardening, L5)", () => {
+  it("a pathological **-heavy pattern against a long non-matching path returns false quickly", () => {
+    // Repeated `**a` catastrophically backtracks under the old RegExp matcher
+    // (hangs for minutes on a near-miss); the linear DP matcher stays fast.
+    const pattern = "**a".repeat(50);
+    const path = "a".repeat(1000) + "!";
+    const r = rules(`${pattern} @slow`);
+    const start = Date.now();
+    const result = matchOwners(path, r);
+    const elapsedMs = Date.now() - start;
+    expect(result).toEqual([]);
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  it("a pathological pattern against a MATCHING long path also completes fast", () => {
+    const pattern = "**a".repeat(50);
+    const path = "a".repeat(1000);
+    const r = rules(`${pattern} @fast`);
+    const start = Date.now();
+    const result = matchOwners(path, r);
+    const elapsedMs = Date.now() - start;
+    expect(result).toEqual(["@fast"]);
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+});
+
+describe("matchOwners — differential fuzz vs. the old RegExp-based glob matcher", () => {
+  // Deterministic PRNG (mulberry32) so a failure is reproducible across runs.
+  function mulberry32(seed: number): () => number {
+    let a = seed;
+    return () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  const PATTERN_ALPHABET = ["a", "b", "/", "*", "?", "."];
+  const PATH_ALPHABET = ["a", "b", "/", "."];
+
+  function randomString(
+    rng: () => number,
+    alphabet: string[],
+    maxLen: number,
+  ): string {
+    const len = Math.floor(rng() * (maxLen + 1));
+    let s = "";
+    for (let i = 0; i < len; i++) {
+      s += alphabet[Math.floor(rng() * alphabet.length)];
+    }
+    return s;
+  }
+
+  // Pre-fix RegExp implementation, kept here as the reference oracle to prove
+  // the new linear matcher is char-for-char equivalent. Mirrors codeowners.ts's
+  // matchPattern/matchAnchored wired to the old globToRegExp.
+  function oldEscapeRegExpChar(ch: string): string {
+    return /[.+^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch;
+  }
+
+  function oldGlobToRegExp(pattern: string): RegExp {
+    let re = "^";
+    for (let i = 0; i < pattern.length; i++) {
+      const ch = pattern[i]!;
+      if (ch === "*") {
+        if (pattern[i + 1] === "*") {
+          i++;
+          if (pattern[i + 1] === "/") {
+            i++;
+            re += "(?:.*/)?";
+          } else {
+            re += ".*";
+          }
+        } else {
+          re += "[^/]*";
+        }
+      } else if (ch === "?") {
+        re += "[^/]";
+      } else {
+        re += oldEscapeRegExpChar(ch);
+      }
+    }
+    re += "$";
+    return new RegExp(re);
+  }
+
+  function oldGlobMatch(pattern: string, text: string): boolean {
+    return oldGlobToRegExp(pattern).test(text);
+  }
+
+  function oldMatchAnchored(
+    pattern: string,
+    path: string,
+    dirOnly: boolean,
+  ): boolean {
+    if (!dirOnly && pattern.endsWith("/*")) {
+      return oldGlobMatch(pattern, path);
+    }
+    if (oldGlobMatch(pattern, path)) return true;
+    let idx = path.indexOf("/");
+    while (idx !== -1) {
+      if (oldGlobMatch(pattern, path.slice(0, idx))) return true;
+      idx = path.indexOf("/", idx + 1);
+    }
+    return false;
+  }
+
+  function oldMatchPattern(rawPattern: string, path: string): boolean {
+    let pattern = rawPattern;
+    const dirOnly = pattern.endsWith("/");
+    if (dirOnly) pattern = pattern.slice(0, -1);
+    if (pattern === "") return false;
+    const startsAnchored = pattern.startsWith("/");
+    if (startsAnchored) pattern = pattern.slice(1);
+    const hasInternalSlash = pattern.includes("/");
+    const anchored = startsAnchored || hasInternalSlash;
+    if (anchored) return oldMatchAnchored(pattern, path, dirOnly);
+    if (oldMatchAnchored(pattern, path, dirOnly)) return true;
+    let idx = path.indexOf("/");
+    while (idx !== -1) {
+      const suffix = path.slice(idx + 1);
+      if (oldMatchAnchored(pattern, suffix, dirOnly)) return true;
+      idx = path.indexOf("/", idx + 1);
+    }
+    return false;
+  }
+
+  // Mirrors codeowners.ts's normalizePath: the fuzzed alphabet can produce a
+  // leading `./` or `/` that `matchOwners` strips internally, so apply the same
+  // normalization to the reference side to compare the same effective path.
+  function normalizePath(filePath: string): string {
+    let p = filePath.replace(/\\/g, "/");
+    if (p.startsWith("./")) p = p.slice(2);
+    if (p.startsWith("/")) p = p.slice(1);
+    return p;
+  }
+
+  it("agrees with the old RegExp matcher on 5000 random small globs/paths", () => {
+    const rng = mulberry32(0xc0de0001);
+    let checked = 0;
+    for (let i = 0; i < 5000; i++) {
+      const pattern = randomString(rng, PATTERN_ALPHABET, 8);
+      const path = randomString(rng, PATH_ALPHABET, 10);
+      if (pattern === "") continue; // not a meaningful pattern; covered elsewhere.
+
+      const expected = oldMatchPattern(pattern, normalizePath(path));
+      const actual = matchOwners(path, [{ pattern, owners: ["@x"] }]);
+      expect({ pattern, path, actual }).toEqual({
+        pattern,
+        path,
+        actual: expected ? ["@x"] : [],
+      });
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(4000);
+  });
+});

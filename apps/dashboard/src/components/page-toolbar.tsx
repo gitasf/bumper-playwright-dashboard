@@ -27,8 +27,8 @@ export function PageToolbar({
   return (
     <div
       className={cn(
-        "flex min-h-13 shrink-0 flex-wrap items-center gap-2 border-b border-border px-6 py-2.5",
-        sticky && "sticky top-0 z-[4] bg-background",
+        "flex min-h-13 shrink-0 flex-wrap items-center gap-2 border-b border-line-1 px-6 py-2.5",
+        sticky && "sticky top-0 z-[4] bg-bg-0",
         className,
       )}
       {...props}

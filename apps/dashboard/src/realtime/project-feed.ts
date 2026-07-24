@@ -1,4 +1,4 @@
-import type { RunOriginFilter } from "@/lib/runs-filters";
+import type { RunOriginFilter } from "@/lib/runs/filters";
 import type { ProjectFeedEvent, RunListRowData } from "@/realtime/events";
 
 /** The slice of the list's view state the feed reducer needs. */

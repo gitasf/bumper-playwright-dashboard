@@ -12,7 +12,7 @@ import type { TeamRole } from "@/lib/authz";
  * settings-scope seams concentrate: a missing-or-unauthorized team yields a
  * 404 (signalled by `null`), never a 403 — so non-members can't tell a private
  * team apart from a nonexistent one. The async `requireOwnerScope` /
- * `requireMemberScope` / `requireRoleScope` seams resolve the membership row,
+ * `requireRoleScope` seams resolve the membership row,
  * hand it here, and turn a `null` result into a `Response(404)`. Since 3.1 the
  * gate is keyed on a CAPABILITY (`can(role, action)`), not a role string, so
  * the owner/member/viewer ladder lives in `roles.ts`. Pinning the gate directly

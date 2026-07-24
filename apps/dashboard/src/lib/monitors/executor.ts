@@ -4,6 +4,7 @@ import type {
   ExecutionResult,
   MonitorExecutor,
   MonitorJob,
+  TerminalExecutionState,
 } from "@/lib/monitors/types";
 
 /**
@@ -90,10 +91,11 @@ export type RunMonitorJobOutcome = { action: "ack" | "retry" };
  * The terminal result recorded — and the message ack'd — when the executor
  * could not run the check (threw, or flagged `infraError`). Shaped as a normal
  * {@link ExecutionResult} so it flows through the SAME `recordResult` path a
- * real outcome does: the execution row + the monitor's `lastStatus` both land
- * on `error`, so a persistently-failing infra problem is visible in the UI
- * rather than leaving the execution stuck at `running` while the message
- * silently retries in the background.
+ * real outcome does: the execution row lands on `error`, so a persistently
+ * failing infra problem is visible in the UI rather than stuck at `running`
+ * while the message silently retries. The monitor's badge is left untouched —
+ * `infraError: true` makes {@link monitorBadgeUpdate} return `null`, so the
+ * persisted `lastStatus`/`lastRunAt` and the broadcast both keep prior values.
  */
 function infraErrorResult(errorMessage: string): ExecutionResult {
   return {
@@ -108,11 +110,35 @@ function infraErrorResult(errorMessage: string): ExecutionResult {
 }
 
 /**
- * Build the live `monitor-result` event for a settled execution. Mirrors what
- * `recordExecutionResult` persists: the monitor's new `lastStatus` is the
- * result state and its `lastRunAt` is `settledAt`; the execution row (id +
- * settled state + runId + its mint time) is what the list prepends to the
- * history strip (its id dedupes a redelivery).
+ * The settled-result → monitor-badge projection: what one terminal result does
+ * to the monitor's denormalized `lastStatus`/`lastRunAt`. Returns the new badge,
+ * or `null` (leave it unchanged) for a retryable infra error (sandbox capacity,
+ * token mint failure) — an our-side hiccup being retried isn't a health signal
+ * about the target, so it must neither regress the badge nor pollute the alert
+ * baseline the classifier reads on retry. A real `error` (`infraError: false`,
+ * e.g. a wall-clock timeout) lands on the badge like `pass`/`fail`/`degraded`.
+ *
+ * The one place this rule lives: both badge writers derive from it, so the
+ * persisted row (`recordExecutionResult`, skips the bump on `null`) and the
+ * live broadcast ({@link monitorResultEvent}, falls back to the prior badge on
+ * `null`) can never disagree.
+ */
+export function monitorBadgeUpdate(
+  result: ExecutionResult,
+  settledAt: number,
+): { lastStatus: TerminalExecutionState; lastRunAt: number } | null {
+  if (result.infraError) return null;
+  return { lastStatus: result.state, lastRunAt: settledAt };
+}
+
+/**
+ * Build the live `monitor-result` event for a settled execution. Badge fields
+ * come from the same {@link monitorBadgeUpdate} projection `recordExecutionResult`
+ * persists, so the broadcast mirrors the DB: a real outcome advances the badge,
+ * a retryable infra error carries the `monitor` argument's unchanged prior
+ * values (no live badge flipping red on a hiccup then reverting on reload). The
+ * execution row (id + settled state + runId + mint time) is prepended to the
+ * history strip in every case; its id dedupes a redelivery.
  */
 function monitorResultEvent(
   monitor: Monitor,
@@ -120,11 +146,12 @@ function monitorResultEvent(
   result: ExecutionResult,
   settledAt: number,
 ): ProjectRoomEvent {
+  const badge = monitorBadgeUpdate(result, settledAt);
   return {
     type: "monitor-result",
     monitorId: monitor.id,
-    lastStatus: result.state,
-    lastRunAt: settledAt,
+    lastStatus: badge ? badge.lastStatus : monitor.lastStatus,
+    lastRunAt: badge ? badge.lastRunAt : monitor.lastRunAt,
     execution: {
       id: execution.id,
       state: result.state,

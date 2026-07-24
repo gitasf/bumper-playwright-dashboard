@@ -101,6 +101,17 @@ describe("token-crypto", () => {
       expect(timingSafeEqualHex("zz", "zz")).toBe(false); // not hex
       expect(timingSafeEqualHex("abc", "def")).toBe(false); // odd length
     });
+
+    it("rejects partially-malformed hex instead of truncating the parse", () => {
+      // "1g" must not decode as 0x01 by stopping at the first non-hex nibble.
+      expect(timingSafeEqualHex("1g", "01")).toBe(false);
+      expect(timingSafeEqualHex("1g", "1g")).toBe(false);
+    });
+
+    it("still round-trips valid hex correctly", () => {
+      expect(timingSafeEqualHex("00ff", "00ff")).toBe(true);
+      expect(timingSafeEqualHex("00ff", "00fe")).toBe(false);
+    });
   });
 
   describe("mintToken", () => {

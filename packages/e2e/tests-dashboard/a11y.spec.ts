@@ -51,12 +51,14 @@ async function scanSerious(page: Page, label: string): Promise<void> {
   );
   if (blocking.length > 0) {
     const summary = blocking
-      .map(
-        (v) =>
-          `  - [${v.impact}] ${v.id}: ${v.help} (${v.nodes.length} node${
-            v.nodes.length === 1 ? "" : "s"
-          })`,
-      )
+      .map((v) => {
+        const targets = v.nodes
+          .map((node) => `${node.target.join(" ")} (${node.html})`)
+          .join(", ");
+        return `  - [${v.impact}] ${v.id}: ${v.help} (${v.nodes.length} node${
+          v.nodes.length === 1 ? "" : "s"
+        }: ${targets})`;
+      })
       .join("\n");
     throw new Error(
       `axe-core found ${blocking.length} serious/critical violation(s) on ${label}:\n${summary}`,
@@ -84,12 +86,10 @@ test.describe("Accessibility (axe-core, serious/critical only)", () => {
   });
 
   test("run-detail page has no serious/critical violations", async ({
-    runsListPage,
     runDetailPage,
+    openSeededRun,
   }) => {
-    await runsListPage.goto();
-    const runId = await runsListPage.firstRunId();
-    await runDetailPage.goto(runId);
+    await openSeededRun();
     await scanSerious(runDetailPage.page, "run-detail");
   });
 });

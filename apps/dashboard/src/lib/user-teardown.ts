@@ -6,7 +6,7 @@ import {
   userState,
 } from "@schema";
 import { logger } from "void/log";
-import { runBatch } from "@/lib/db-batch";
+import { runBatch } from "@/lib/db/batch";
 
 /**
  * Cleanup for the Better Auth `user.deleteUser` flow (wired in `auth.ts`).

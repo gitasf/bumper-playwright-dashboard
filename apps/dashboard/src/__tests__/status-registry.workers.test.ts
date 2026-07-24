@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   STATUS,
   type Status,
-  statusBadgeVariant,
+  statusCssVar,
   statusGroupKey,
   statusLabel,
   statusSortKey,
@@ -12,7 +12,7 @@ import {
 /**
  * Pins the unified status registry that replaced four conflicting per-component
  * encodings (raw hex in lib/status.ts, `var(--…)` inline in ~6 components,
- * Badge variants in status-badge, Tailwind `bg-*` classes in runs-filter-bar).
+ * Badge variants in status-badge, Tailwind `bg-*` classes in run/filter-bar).
  * Every presentation accessor now derives from `STATUS`, so these tests are the
  * single guard against a maintainer drifting one component's colour/label/order
  * out of agreement with the rest.
@@ -74,18 +74,18 @@ describe("statusLabel", () => {
   });
 });
 
-describe("statusBadgeVariant", () => {
-  it("maps each status to its Badge variant", () => {
-    expect(statusBadgeVariant("passed")).toBe("success");
-    expect(statusBadgeVariant("failed")).toBe("error");
-    expect(statusBadgeVariant("timedout")).toBe("error");
-    expect(statusBadgeVariant("flaky")).toBe("warning");
-    expect(statusBadgeVariant("interrupted")).toBe("warning");
-    expect(statusBadgeVariant("skipped")).toBe("secondary");
+describe("statusCssVar", () => {
+  it("maps each status to its css token name", () => {
+    expect(statusCssVar("passed")).toBe("--pass");
+    expect(statusCssVar("failed")).toBe("--fail");
+    expect(statusCssVar("timedout")).toBe("--fail");
+    expect(statusCssVar("flaky")).toBe("--flaky");
+    expect(statusCssVar("interrupted")).toBe("--flaky");
+    expect(statusCssVar("skipped")).toBe("--skipped");
   });
 
-  it("falls back to outline for unknown statuses", () => {
-    expect(statusBadgeVariant("queued")).toBe("outline");
+  it("falls back to the neutral skipped pair for unknown statuses", () => {
+    expect(statusCssVar("queued")).toBe("--skipped");
   });
 });
 

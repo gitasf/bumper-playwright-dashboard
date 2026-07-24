@@ -22,11 +22,11 @@ export type Props = InferProps<typeof loader>;
  * `monitors/[monitorId]` route (which also serves `/monitors/new`) is the hard
  * enforcer of the cap.
  *
- * One D1 round-trip for the monitors + count (concurrent), then one bounded
- * fan-out for the per-monitor execution windows (`listRecentExecutionsByMonitor`
- * runs ≤ cap small queries concurrently). Executions are projected down to the
- * minimal `{ state, runId, createdAt }` the page needs — the wire payload stays
- * small and the `ExecStrip` only reads `state`.
+ * One round-trip for the monitors + count (concurrent), then one more for the
+ * per-monitor execution windows (`listRecentExecutionsByMonitor` — a single
+ * ranked query over all monitor ids, not a per-monitor fan-out). Executions are
+ * projected down to the minimal `{ state, runId, createdAt }` the page needs —
+ * the wire payload stays small and the `ExecStrip` only reads `state`.
  */
 export const loader = defineHandler(async (c) => {
   const { project, scope } = requireTenantContext(c);

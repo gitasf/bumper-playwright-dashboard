@@ -45,9 +45,11 @@ import {
  *       - 5xx / uncaught    → log + rewrite to /oops (preserving the 5xx status).
  *   - Already on /oops or /not-found → pass through to avoid loops.
  *
- * Must be the first middleware (`00.`) so the try/catch and the
- * post-next() inspection both bracket `01.context.ts`, `02.api-auth.ts`,
- * and every downstream loader.
+ * Must bracket `01.context.ts`, `02.api-auth.ts`, and every downstream
+ * loader with its try/catch and post-next() inspection. Only the
+ * transparent Cache-Control stamp (`00.cache.ts`) sits outside it, so the
+ * default `private, no-store` also lands on the /oops and /not-found
+ * rewrites this middleware produces.
  */
 export default defineMiddleware(async (c, next) => {
   const path = c.req.path;

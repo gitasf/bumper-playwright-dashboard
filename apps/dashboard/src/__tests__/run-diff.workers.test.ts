@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { TenantScope } from "@/lib/scope";
-import type { RunTestStatus } from "@/lib/run-diff";
+import type { RunTestStatus } from "@/lib/runs/diff";
 
 /**
  * Run-diff tests (roadmap 2.4). Two surfaces:
@@ -50,7 +50,7 @@ vi.mock("void/db", async () => {
   return { ...stub, db };
 });
 
-const { diffRuns, resolveBaseRun, verdictOf } = await import("@/lib/run-diff");
+const { diffRuns, resolveBaseRun, verdictOf } = await import("@/lib/runs/diff");
 
 type RecordedOp = { __op: string; args: readonly unknown[] };
 
@@ -424,13 +424,17 @@ describe("resolveBaseRun", () => {
     const branchEq = leaves.find(
       (op) => op.__op === "eq" && readEq(op).column === "branch",
     );
-    const statusEq = leaves.find(
-      (op) => op.__op === "eq" && readEq(op).column === "status",
+    // status is an `inArray` (not `eq`) so `resolveBaseRun`'s optional
+    // `opts.statuses` can widen it beyond the default `["passed"]`.
+    const statusIn = leaves.find(
+      (op) =>
+        op.__op === "inArray" &&
+        (op.args[0] as { name?: unknown })?.name === "status",
     );
     expect(teamEq && readEq(teamEq).value).toBe("team_abc");
     expect(projectEq && readEq(projectEq).value).toBe("proj_xyz");
     expect(branchEq && readEq(branchEq).value).toBe("main");
-    expect(statusEq && readEq(statusEq).value).toBe("passed");
+    expect(statusIn?.args[1]).toEqual(["passed"]);
 
     // Same-second-safe "before head" boundary:
     //   or(lt(createdAt, head), and(eq(createdAt, head), lt(id, head.id)))

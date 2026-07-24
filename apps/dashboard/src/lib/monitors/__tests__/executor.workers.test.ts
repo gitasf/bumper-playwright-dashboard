@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { runMonitorJob, type RunMonitorJobDeps } from "@/lib/monitors/executor";
+import {
+  monitorBadgeUpdate,
+  runMonitorJob,
+  type RunMonitorJobDeps,
+} from "@/lib/monitors/executor";
 import type {
   ExecutionResult,
   Monitor,
@@ -24,6 +28,11 @@ import type {
  *   (3) executor returns `infraError: true` → record that result + retry;
  *   (4) executor THROWS → record an `error` (infra) + retry;
  *   (5) executor returns a real (even failing) outcome → record it + ack.
+ *
+ * Also pins `monitorBadgeUpdate`, the single settled-result → badge projection
+ * both `recordExecutionResult` and the `monitor-result` broadcast derive from:
+ * a real outcome advances `lastStatus`/`lastRunAt`, an infra error leaves the
+ * badge untouched (broadcast re-asserts the prior badge).
  */
 
 const JOB: MonitorJob = {
@@ -37,7 +46,13 @@ const EXECUTION = {
   projectId: "proj-1",
   createdAt: 4321,
 } as MonitorExecution;
-const MONITOR = { id: "mon-1", projectId: "proj-1" } as Monitor;
+// Carries a prior badge so infra-error tests can pin it's re-asserted unchanged.
+const MONITOR = {
+  id: "mon-1",
+  projectId: "proj-1",
+  lastStatus: "pass",
+  lastRunAt: 4000,
+} as Monitor;
 
 /** A passing executor result — the common "site is up" outcome. */
 const PASS_RESULT: ExecutionResult = {
@@ -298,7 +313,8 @@ describe("runMonitorJob", () => {
     expect(event).toEqual({
       type: "monitor-result",
       monitorId: "mon-1",
-      // Mirrors recordExecutionResult: new lastStatus = result state, lastRunAt = now.
+      // Mirrors recordExecutionResult via the shared monitorBadgeUpdate
+      // projection: new lastStatus = result state, lastRunAt = now.
       lastStatus: "pass",
       lastRunAt: 5000,
       execution: {
@@ -314,7 +330,38 @@ describe("runMonitorJob", () => {
     });
   });
 
-  it("broadcasts an error settle (the row should turn red) and still retries", async () => {
+  it("broadcasts a real DOWN settle with the badge the persist path records (row turns red)", async () => {
+    const failResult: ExecutionResult = {
+      state: "fail",
+      runId: "run-2",
+      durationMs: 999,
+      errorMessage: "expected element to be visible",
+      infraError: false,
+      statusCode: null,
+      resultDetail: null,
+    };
+    const deps = makeDeps({
+      executor: { execute: () => Promise.resolve(failResult) },
+    });
+
+    await runMonitorJob(JOB, deps);
+
+    expect(deps.broadcast).toHaveBeenCalledTimes(1);
+    // Broadcast badge equals what recordExecutionResult persists (both from
+    // monitorBadgeUpdate); a real fail advances the badge to red.
+    const badge = { lastStatus: "fail", lastRunAt: 5000 };
+    expect(monitorBadgeUpdate(failResult, 5000)).toEqual(badge);
+    expect(deps.broadcast.mock.calls[0]![1]).toMatchObject({
+      type: "monitor-result",
+      monitorId: "mon-1",
+      ...badge,
+    });
+  });
+
+  it("broadcasts an infra-error settle (executor threw) with the badge UNCHANGED and still retries", async () => {
+    // A thrown executor is a retryable infra error; recordExecutionResult skips
+    // the monitors bump, so the broadcast carries the prior badge — flipping the
+    // row red here is the "looks down, recovers on reload" flap we avoid.
     const deps = makeDeps({
       executor: {
         execute: () => Promise.reject(new Error("container boot timeout")),
@@ -328,7 +375,59 @@ describe("runMonitorJob", () => {
     expect(deps.broadcast.mock.calls[0]![1]).toMatchObject({
       type: "monitor-result",
       monitorId: "mon-1",
-      lastStatus: "error",
+      // The monitor's pre-execution badge, not "error".
+      lastStatus: "pass",
+      lastRunAt: 4000,
+      execution: { id: "ex-1", state: "error", runId: null },
+    });
+  });
+
+  it("broadcasts an infra-error settle (executor returned infraError) with the badge UNCHANGED", async () => {
+    const infraResult: ExecutionResult = {
+      state: "error",
+      runId: null,
+      durationMs: 10,
+      errorMessage: "sandbox unavailable (concurrency)",
+      infraError: true,
+      statusCode: null,
+      resultDetail: null,
+    };
+    const deps = makeDeps({
+      executor: { execute: () => Promise.resolve(infraResult) },
+    });
+
+    const outcome = await runMonitorJob(JOB, deps);
+
+    expect(outcome).toEqual({ action: "retry" });
+    expect(deps.broadcast.mock.calls[0]![1]).toMatchObject({
+      lastStatus: "pass",
+      lastRunAt: 4000,
+      execution: { id: "ex-1", state: "error" },
+    });
+  });
+
+  it("carries a null prior badge when an infra error hits a monitor that never ran", async () => {
+    // First-ever execution fails on infra: nothing is persisted to the badge,
+    // so the broadcast re-asserts the never-ran (null) badge rather than
+    // inventing a red one.
+    const neverRan = {
+      id: "mon-1",
+      projectId: "proj-1",
+      lastStatus: null,
+      lastRunAt: null,
+    } as Monitor;
+    const deps = makeDeps({
+      loadMonitor: () => Promise.resolve(neverRan),
+      executor: {
+        execute: () => Promise.reject(new Error("container boot timeout")),
+      },
+    });
+
+    await runMonitorJob(JOB, deps);
+
+    expect(deps.broadcast.mock.calls[0]![1]).toMatchObject({
+      lastStatus: null,
+      lastRunAt: null,
     });
   });
 
@@ -381,5 +480,50 @@ describe("runMonitorJob", () => {
     await runMonitorJob(JOB, deps);
 
     expect(order).toEqual(["claim", "execute"]);
+  });
+});
+
+describe("monitorBadgeUpdate", () => {
+  it("projects a real pass onto the badge (state + settle time)", () => {
+    expect(monitorBadgeUpdate(PASS_RESULT, 5000)).toEqual({
+      lastStatus: "pass",
+      lastRunAt: 5000,
+    });
+  });
+
+  it("projects a real DOWN outcome — a genuine failure turns the badge red", () => {
+    const failResult: ExecutionResult = {
+      ...PASS_RESULT,
+      state: "fail",
+      errorMessage: "expected element to be visible",
+    };
+    expect(monitorBadgeUpdate(failResult, 6000)).toEqual({
+      lastStatus: "fail",
+      lastRunAt: 6000,
+    });
+  });
+
+  it("projects a REAL error (infraError: false, e.g. a wall-clock timeout) onto the badge", () => {
+    const timeoutResult: ExecutionResult = {
+      ...PASS_RESULT,
+      state: "error",
+      runId: null,
+      errorMessage: "check exceeded the 300s execution budget",
+    };
+    expect(monitorBadgeUpdate(timeoutResult, 7000)).toEqual({
+      lastStatus: "error",
+      lastRunAt: 7000,
+    });
+  });
+
+  it("returns null for a retryable infra error — leave the badge unchanged", () => {
+    const infraResult: ExecutionResult = {
+      ...PASS_RESULT,
+      state: "error",
+      runId: null,
+      errorMessage: "sandbox unavailable (concurrency)",
+      infraError: true,
+    };
+    expect(monitorBadgeUpdate(infraResult, 8000)).toBeNull();
   });
 });

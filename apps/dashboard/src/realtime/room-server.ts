@@ -32,24 +32,27 @@ const BUILT_IN_SECRET: string | undefined =
 
 /**
  * Secret authenticating the server's internal room-publish POST. Precedence:
- * an explicit `REALTIME_INTERNAL_SECRET` (operator override / pinning) → the
- * per-build {@link BUILT_IN_SECRET} (the zero-config default). It deliberately
- * does NOT fall back to `BETTER_AUTH_SECRET` — the internal-RPC capability stays
- * fully decoupled from the session-signing secret. `??` is presence, not
- * truthiness, so an empty string is honored.
+ * an explicit non-empty `REALTIME_INTERNAL_SECRET` (operator override) → the
+ * per-build {@link BUILT_IN_SECRET} (zero-config default). Deliberately does NOT
+ * fall back to `BETTER_AUTH_SECRET`, keeping internal-RPC decoupled from the
+ * session-signing secret. An empty `REALTIME_INTERNAL_SECRET=""` is treated as
+ * absent, not honored: an empty secret would let a request with an empty (also
+ * absent) header pass the constant-time compare — the only gate against a forged
+ * cross-tenant broadcast.
  *
- * Throws if neither is available, which cannot happen in a real worker: the
- * build always injects `BUILT_IN_SECRET` (dev + prod). The throw is a loud
- * misconfiguration guard — far better than silently authenticating with a wrong
- * or empty secret. It's reached only in test when the explicit env is also
- * omitted; callers in `publish.ts` (try/catch, non-fatal) and the room
- * `onRequest` are resilient to it.
+ * Throws if the resolved secret is still empty/undefined — a loud
+ * misconfiguration guard, better than silently authenticating with a wrong
+ * secret. Can't happen in a real worker (the build always injects
+ * `BUILT_IN_SECRET`); reached only in test when the explicit env is also
+ * omitted, and callers (`publish.ts` try/catch, the room `onRequest`) tolerate it.
  */
 export function resolveInternalSecret(source: {
   REALTIME_INTERNAL_SECRET?: string | undefined;
 }): string {
-  const secret = source.REALTIME_INTERNAL_SECRET ?? BUILT_IN_SECRET;
-  if (secret === undefined) {
+  const explicit = source.REALTIME_INTERNAL_SECRET;
+  const secret =
+    explicit === undefined || explicit === "" ? BUILT_IN_SECRET : explicit;
+  if (secret === undefined || secret === "") {
     throw new Error(
       "Realtime internal secret unavailable: build-time __WRIGHTFUL_INTERNAL_SECRET__ " +
         "was not injected and REALTIME_INTERNAL_SECRET is unset.",
@@ -68,7 +71,10 @@ export function resolveInternalSecret(source: {
  */
 export function isInternalRequest(request: Request, secret: string): boolean {
   const provided = request.headers.get(INTERNAL_HEADER);
-  if (provided === null) return false;
+  // An empty header must never match: with a misconfigured empty secret, both
+  // sides encode to zero-length arrays and pass the compare (defense in depth
+  // on top of the resolver rejecting "").
+  if (provided === null || provided.length === 0) return false;
   const encoder = new TextEncoder();
   return timingSafeEqualBytes(encoder.encode(provided), encoder.encode(secret));
 }

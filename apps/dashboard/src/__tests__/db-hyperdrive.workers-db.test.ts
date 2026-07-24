@@ -5,7 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 /**
  * Smoke test for the PRODUCTION data path: node-postgres loads, connects, and
  * queries over a real Hyperdrive binding INSIDE workerd. This is the one thing
- * nothing else covers — `pg-integration.test.ts` exercises the data seam and
+ * nothing else covers — `pg-integration/` exercises the data seam and
  * result shapes against node-postgres, but in Node, never through workerd or a
  * Hyperdrive binding. (So we don't re-derive the seam here; we just prove the
  * prod driver loads and works in the prod runtime.)

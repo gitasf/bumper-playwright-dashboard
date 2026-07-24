@@ -1,43 +1,23 @@
 import { test, expect } from "@playwright/test";
 import { pace } from "./pace";
+import { gotoShop } from "./mock-site";
 
 // Optional per-test delay so `seed:stream` runs slow enough to watch live.
 test.afterEach(pace);
 
-const CHECKOUT_PAGE = (opts: { promoValid?: boolean } = {}) => `
-<!doctype html>
-<html>
-  <body>
-    <h1>Checkout</h1>
-    <input id="promo" placeholder="Promo code" />
-    <button id="apply">Apply promo</button>
-    <div id="discount">No discount</div>
-    <button id="pay">Pay</button>
-    <div id="status"></div>
-    <script>
-      const promoValid = ${opts.promoValid !== false};
-      document.getElementById("apply").addEventListener("click", () => {
-        const code = document.getElementById("promo").value;
-        document.getElementById("discount").textContent =
-          (promoValid && code) ? "10% off" : "No discount";
-      });
-      document.getElementById("pay").addEventListener("click", () => {
-        document.getElementById("status").textContent = "Paid";
-      });
-    </script>
-  </body>
-</html>
-`;
+// These drive the fake storefront (mock-site.ts) rather than a static
+// `setContent` page, so every seeded trace carries Console + Network entries
+// for the trace viewer to render.
 
 test.describe("Checkout", () => {
   test("completes with credit card @smoke @checkout", async ({ page }) => {
-    await page.setContent(CHECKOUT_PAGE());
+    await gotoShop(page);
     await page.click("#pay");
     await expect(page.locator("#status")).toHaveText("Paid");
   });
 
   test("applies promo code @checkout", async ({ page }) => {
-    await page.setContent(CHECKOUT_PAGE());
+    await gotoShop(page);
     await page.fill("#promo", "SAVE10");
     await page.click("#apply");
     await expect(page.locator("#discount")).toContainText("10% off");
@@ -46,7 +26,7 @@ test.describe("Checkout", () => {
   test.skip("shows confirmation email copy @checkout @fixme", async ({
     page,
   }) => {
-    await page.setContent(CHECKOUT_PAGE());
+    await gotoShop(page);
     await expect(page.locator("#confirmation")).toBeVisible();
   });
 });

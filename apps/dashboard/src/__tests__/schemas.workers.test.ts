@@ -74,6 +74,51 @@ describe("ingest payload bounds", () => {
     const r = AppendResultsPayloadSchema.safeParse(wrap({ attempts }));
     expect(r.success).toBe(false);
   });
+
+  it("rejects duplicate attempt indices within one result (avoids the retried 500)", () => {
+    const attempts = [
+      { attempt: 0, status: "passed", durationMs: 1 },
+      { attempt: 0, status: "failed", durationMs: 2 },
+    ];
+    const r = AppendResultsPayloadSchema.safeParse(wrap({ attempts }));
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts distinct attempt indices", () => {
+    const attempts = [
+      { attempt: 0, status: "failed", durationMs: 1 },
+      { attempt: 1, status: "passed", durationMs: 2 },
+    ];
+    const r = AppendResultsPayloadSchema.safeParse(wrap({ attempts }));
+    expect(r.success).toBe(true);
+  });
+});
+
+describe("ShardSchema range validation", () => {
+  const openWith = (shard: unknown) =>
+    OpenRunPayloadSchema.safeParse({
+      idempotencyKey: "run-key",
+      run: { plannedTests: [] },
+      shard,
+    });
+
+  it("accepts a shard index within 1..total", () => {
+    expect(openWith({ index: 2, total: 4 }).success).toBe(true);
+    expect(openWith({ index: 4, total: 4 }).success).toBe(true);
+  });
+
+  it("rejects a shard index greater than total (bogus index can't satisfy the finalize count early)", () => {
+    expect(openWith({ index: 7, total: 4 }).success).toBe(false);
+  });
+
+  it("rejects an out-of-range shard on /complete too", () => {
+    const r = CompleteRunPayloadSchema.safeParse({
+      status: "passed",
+      durationMs: 10,
+      shard: { index: 5, total: 3 },
+    });
+    expect(r.success).toBe(false);
+  });
 });
 
 describe("OpenRunPayloadSchema", () => {
@@ -459,11 +504,85 @@ describe("RegisterArtifactsPayloadSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  describe("trace replay policy", () => {
+    it("accepts both canonical trace names and ZIP content types", () => {
+      for (const name of ["trace", "trace.zip"]) {
+        for (const contentType of [
+          "application/zip",
+          "application/x-zip-compressed",
+        ]) {
+          const result = RegisterArtifactsPayloadSchema.safeParse({
+            ...validPayload,
+            artifacts: [{ ...validPayload.artifacts[0], name, contentType }],
+          });
+          expect(result.success).toBe(true);
+        }
+      }
+    });
+
+    it("downgrades legacy trace claims with non-ZIP content", () => {
+      for (const contentType of [
+        "text/plain",
+        "image/png",
+        "application/octet-stream",
+      ]) {
+        const result = RegisterArtifactsPayloadSchema.safeParse({
+          ...validPayload,
+          artifacts: [{ ...validPayload.artifacts[0], contentType }],
+        });
+        expect(result.success).toBe(true);
+        if (result.success) expect(result.data.artifacts[0].type).toBe("other");
+      }
+    });
+
+    it("downgrades a trace claim with a non-canonical name", () => {
+      const result = RegisterArtifactsPayloadSchema.safeParse({
+        ...validPayload,
+        artifacts: [{ ...validPayload.artifacts[0], name: "diagnostics.zip" }],
+      });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.artifacts[0].type).toBe("other");
+    });
+
+    it("keeps the rest of a legacy v3 batch when one trace claim is downgraded", () => {
+      const result = RegisterArtifactsPayloadSchema.safeParse({
+        ...validPayload,
+        artifacts: [
+          {
+            ...validPayload.artifacts[0],
+            name: "trace",
+            contentType: "text/plain",
+          },
+          {
+            ...validPayload.artifacts[0],
+            name: "screenshot.png",
+            type: "screenshot",
+            contentType: "image/png",
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.artifacts.map((artifact) => artifact.type)).toEqual([
+          "other",
+          "screenshot",
+        ]);
+      }
+    });
+  });
+
   describe("contentType allowlist", () => {
     it("rejects text/html (XSS vector when echoed back on download)", () => {
       const result = RegisterArtifactsPayloadSchema.safeParse({
         ...validPayload,
-        artifacts: [{ ...validPayload.artifacts[0], contentType: "text/html" }],
+        artifacts: [
+          {
+            ...validPayload.artifacts[0],
+            type: "other",
+            contentType: "text/html",
+          },
+        ],
       });
       expect(result.success).toBe(false);
     });
@@ -472,7 +591,11 @@ describe("RegisterArtifactsPayloadSchema", () => {
       const result = RegisterArtifactsPayloadSchema.safeParse({
         ...validPayload,
         artifacts: [
-          { ...validPayload.artifacts[0], contentType: "image/svg+xml" },
+          {
+            ...validPayload.artifacts[0],
+            type: "other",
+            contentType: "image/svg+xml",
+          },
         ],
       });
       expect(result.success).toBe(false);
@@ -486,7 +609,9 @@ describe("RegisterArtifactsPayloadSchema", () => {
       ]) {
         const result = RegisterArtifactsPayloadSchema.safeParse({
           ...validPayload,
-          artifacts: [{ ...validPayload.artifacts[0], contentType: ct }],
+          artifacts: [
+            { ...validPayload.artifacts[0], type: "other", contentType: ct },
+          ],
         });
         expect(result.success).toBe(false);
       }
@@ -504,7 +629,9 @@ describe("RegisterArtifactsPayloadSchema", () => {
       ]) {
         const result = RegisterArtifactsPayloadSchema.safeParse({
           ...validPayload,
-          artifacts: [{ ...validPayload.artifacts[0], contentType: ct }],
+          artifacts: [
+            { ...validPayload.artifacts[0], type: "other", contentType: ct },
+          ],
         });
         expect(result.success).toBe(true);
       }

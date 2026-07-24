@@ -1,7 +1,11 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { defineConfig, devices } from "@playwright/test";
+import {
+  defineConfig,
+  devices,
+  type ReporterDescription,
+} from "@playwright/test";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,27 +28,33 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // through context budgets. Local interactive runs still get `list`.
 const isMinimalReporter = process.env.CI || process.env.CLAUDE;
 
+// Dogfood: stream this suite's results into a Wrightful dashboard, same as the
+// demo suite (playwright.config.ts). The reporter no-ops gracefully when
+// WRIGHTFUL_URL / WRIGHTFUL_TOKEN aren't set (see reporter onBegin), so local
+// runs and the env-less CI leg stay quiet; set both to stream.
+const dashboardReporter: ReporterDescription = ["@wrightful/reporter"];
+
 export default defineConfig({
   testDir: "./tests-dashboard",
   testMatch: /.*\.spec\.ts/,
+  // File-level parallelism only: tests within a spec keep their order on one
+  // worker, while different spec files run concurrently. Every file already
+  // isolates its writes (timestamped resource names, per-pid tenants,
+  // throwaway sessions, unique branches), and readers of the shared runs list
+  // pin to the seeded failures branch — see fixtures.ts `openSeededRun`.
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  // File-level parallelism only (`fullyParallel: false`). Specs are
-  // parallel-safe at the file boundary because resources are timestamped
-  // (api-key labels, signup emails, runIds, filter queries) and project
-  // DOs serialize their own writes. logout.spec mints its own session row
-  // so signing out doesn't invalidate the shared `storageState.json`
-  // session that every other worker holds.
-  // One shared dev server (single miniflare + vite + Better Auth on a local
-  // D1) backs the whole suite. Under parallel load it gets slow enough that the
-  // client-side auth calls and live-update propagation blow their timeouts and
-  // flip pass↔fail. Run serially locally so each test hits a responsive server;
-  // CI keeps 3 workers + retries:2 for throughput and absorbs residual flake.
-  workers: process.env.CI ? 3 : 1,
+  // All workers share one Void preview, database, and seeded tenant. Kept low
+  // in CI: the public-repo ubuntu runner has 4 vCPUs hosting the built Worker,
+  // Postgres, and every Chromium, so 2 workers is the conservative start —
+  // 3 is worth benchmarking once a few 2-worker CI datapoints exist. Local
+  // machines have the cores to go wider. (Validated locally at 4 workers;
+  // see docs/worklog/2026-07-15-playwright-flake-hardening.md.)
+  workers: process.env.CI ? 2 : 4,
   reporter: isMinimalReporter
-    ? [["line"], ["html", { open: "never" }]]
-    : [["list"]],
+    ? [["line"], ["html", { open: "never" }], dashboardReporter]
+    : [["list"], dashboardReporter],
   globalSetup: resolve(__dirname, "tests-dashboard/global-setup.ts"),
   globalTeardown: resolve(__dirname, "tests-dashboard/global-teardown.ts"),
   expect: {
@@ -59,8 +69,11 @@ export default defineConfig({
     storageState: "./tests-dashboard/.auth/storageState.json",
     trace: process.env.CI ? "retain-on-failure" : "on-first-retry",
     screenshot: "only-on-failure",
-    actionTimeout: 10_000,
-    navigationTimeout: 15_000,
+    // Generous under CI's shared-server load (see the workers note above); the
+    // ceilings only bite when the server has genuinely stalled, not merely
+    // slowed. Kept tighter locally where each test hits a responsive server.
+    actionTimeout: process.env.CI ? 15_000 : 10_000,
+    navigationTimeout: process.env.CI ? 25_000 : 15_000,
   },
   projects: [
     {

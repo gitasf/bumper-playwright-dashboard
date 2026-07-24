@@ -51,7 +51,7 @@ export const GET = defineHandler.withValidator({
   // pass it type-safely; the schema flows into `.void/routes.d.ts`.
   query: z.object({ q: z.string().max(200).optional() }),
 })(async (c, { query }) => {
-  const ctx = await resolveProjectApiScope(c);
+  const ctx = await resolveProjectApiScope(c, "anyMember");
   if (ctx instanceof Response) return ctx;
   const { scope } = ctx;
 

@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   applyRunProgressEvent,
+  applyRunSummaryEvent,
   currentSummary,
   seedRunProgressState,
+  seedRunSummaryState,
   type RunProgressState,
+  type RunSummaryState,
 } from "@/realtime/run-progress";
 import type { RunProgressEvent, RunProgressTest } from "@/realtime/events";
 
@@ -27,6 +30,7 @@ function summary(
 ): RunProgressEvent["summary"] {
   return {
     totalTests: 1,
+    expectedTotalTests: null,
     passed: 1,
     failed: 0,
     flaky: 0,
@@ -157,6 +161,42 @@ describe("applyRunProgressEvent", () => {
     );
   });
 
+  it("bails out entirely (same top-level reference) on an empty-changedTests event with a shallow-equal summary", () => {
+    const prev: RunProgressState = {
+      byId: { "tr-1": test() },
+      summary: summary({ passed: 5, totalTests: 5 }),
+    };
+    const next = applyRunProgressEvent(
+      prev,
+      // Same field values as `prev.summary`, but a DIFFERENT object — the
+      // bail-out is a value comparison, not a reference check on the event.
+      progress([], { passed: 5, totalTests: 5 }),
+    );
+    expect(next).toBe(prev);
+  });
+
+  it("reuses `prev.summary`'s reference when changedTests is non-empty but the summary is shallow-equal", () => {
+    const prevSummary = summary({ passed: 5, totalTests: 5 });
+    const prev: RunProgressState = {
+      byId: { "tr-1": test({ id: "tr-1", status: "passed" }) },
+      summary: prevSummary,
+    };
+    const next = applyRunProgressEvent(
+      prev,
+      progress([test({ id: "tr-2", testId: "t-2", status: "passed" })], {
+        passed: 5,
+        totalTests: 5,
+      }),
+    );
+    // byId still clones/merges as usual...
+    expect(Object.keys(next.byId).sort()).toEqual(["tr-1", "tr-2"]);
+    expect(next.byId).not.toBe(prev.byId);
+    // ...but the unchanged summary keeps its ORIGINAL reference, so a
+    // summary-only subscriber folding the same event through
+    // `applyRunSummaryEvent` would bail even though this reducer didn't.
+    expect(next.summary).toBe(prevSummary);
+  });
+
   it("seeds from empty then folds a sequence of events", () => {
     let state = seedRunProgressState();
     state = applyRunProgressEvent(state, progress([test({ id: "tr-1" })]));
@@ -199,5 +239,82 @@ describe("currentSummary", () => {
     expect(currentSummary(state, fallback)).toEqual(
       summary({ passed: 4, failed: 1, totalTests: 5 }),
     );
+  });
+
+  it("accepts a summary-only RunSummaryState too (no byId field required)", () => {
+    const live = summary({ passed: 2, totalTests: 2 });
+    const state: RunSummaryState = { summary: live };
+    expect(currentSummary(state, fallback)).toBe(live);
+  });
+});
+
+describe("seedRunSummaryState", () => {
+  it("returns a null summary with no args", () => {
+    expect(seedRunSummaryState()).toEqual({ summary: null });
+  });
+
+  it("carries through the initial summary", () => {
+    const s = summary({ status: "completed", completedAt: 123 });
+    expect(seedRunSummaryState(s)).toEqual({ summary: s });
+  });
+
+  it("normalises undefined to null", () => {
+    expect(seedRunSummaryState(undefined).summary).toBeNull();
+  });
+});
+
+describe("applyRunSummaryEvent", () => {
+  it("ignores non-progress events and returns prev unchanged (same reference)", () => {
+    const prev: RunSummaryState = { summary: summary() };
+    const notProgress = { type: "other", changedTests: [], summary: null };
+    const next = applyRunSummaryEvent(
+      prev,
+      notProgress as unknown as RunProgressEvent,
+    );
+    expect(next).toBe(prev);
+  });
+
+  it("ignores changedTests entirely — the summary advances the same way whether or not rows changed", () => {
+    const prev: RunSummaryState = { summary: summary({ passed: 1 }) };
+    const withRows = applyRunSummaryEvent(
+      prev,
+      progress([test({ id: "tr-99" })], { passed: 2, totalTests: 2 }),
+    );
+    const withoutRows = applyRunSummaryEvent(
+      prev,
+      progress([], { passed: 2, totalTests: 2 }),
+    );
+    expect(withRows).toEqual(withoutRows);
+    expect(withRows.summary).toEqual(summary({ passed: 2, totalTests: 2 }));
+  });
+
+  it("bails out (same reference) when the event's summary is shallow-equal to prev.summary", () => {
+    const prev: RunSummaryState = {
+      summary: summary({ passed: 5, totalTests: 5 }),
+    };
+    const next = applyRunSummaryEvent(
+      prev,
+      // Different changedTests, but an identical (by value) summary.
+      progress([test({ id: "tr-1" })], { passed: 5, totalTests: 5 }),
+    );
+    expect(next).toBe(prev);
+  });
+
+  it("replaces the summary when it differs from prev.summary", () => {
+    const prev: RunSummaryState = {
+      summary: summary({ passed: 5, totalTests: 5 }),
+    };
+    const next = applyRunSummaryEvent(
+      prev,
+      progress([], { passed: 6, totalTests: 6 }),
+    );
+    expect(next).not.toBe(prev);
+    expect(next.summary).toEqual(summary({ passed: 6, totalTests: 6 }));
+  });
+
+  it("populates summary from null on the first event", () => {
+    const prev: RunSummaryState = { summary: null };
+    const next = applyRunSummaryEvent(prev, progress([test()]));
+    expect(next.summary).toEqual(summary());
   });
 });

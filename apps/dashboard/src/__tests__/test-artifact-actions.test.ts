@@ -24,7 +24,6 @@ function signed(over: Partial<SignedArtifact>): SignedArtifact {
     role: over.role ?? null,
     snapshotName: over.snapshotName ?? null,
     href: over.href ?? `/api/artifacts/${over.id ?? "a"}/download?t=tok`,
-    traceViewerUrl: over.traceViewerUrl,
   };
 }
 
@@ -142,6 +141,17 @@ describe("buildAttemptArtifactGroups", () => {
     expect(group?.copyPrompt?.id).toBe("prompt");
   });
 
+  it("keeps only the first `other` row as copyPrompt but surfaces additional `other` rows in media, not dropped", () => {
+    const rows: SignedArtifact[] = [
+      signed({ id: "prompt", type: "other", name: "error-context.md" }),
+      signed({ id: "extra", type: "other", name: "notes.txt" }),
+      signed({ id: "trace", type: "trace", name: "trace.zip" }),
+    ];
+    const group = buildAttemptArtifactGroups(rows).get(0);
+    expect(group?.copyPrompt?.id).toBe("prompt");
+    expect(group?.media.map((m) => m.id)).toEqual(["trace", "extra"]);
+  });
+
   it("buckets rows by attempt", () => {
     const rows: SignedArtifact[] = [
       signed({ id: "a0", type: "trace", attempt: 0 }),
@@ -166,21 +176,6 @@ describe("buildAttemptArtifactGroups", () => {
     ];
     const media = buildAttemptArtifactGroups(rows).get(0)?.media ?? [];
     expect(media.map((m) => m.id)).toEqual(["trace"]);
-  });
-
-  it("propagates traceViewerUrl onto the trace action", () => {
-    const rows: SignedArtifact[] = [
-      signed({
-        id: "trace",
-        type: "trace",
-        href: "/api/artifacts/trace/download?t=tok",
-        traceViewerUrl: "https://trace.playwright.dev/?trace=x",
-      }),
-    ];
-    const media = buildAttemptArtifactGroups(rows).get(0)?.media ?? [];
-    expect(media[0].traceViewerUrl).toBe(
-      "https://trace.playwright.dev/?trace=x",
-    );
   });
 });
 

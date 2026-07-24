@@ -16,10 +16,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { AnsiPre } from "@/components/ansi-pre";
 import { TraceViewerDialog } from "@/components/trace-viewer-dialog";
+import { isReplayTraceArtifact } from "@/lib/artifacts/trace";
 import { VisualDiffRailButton } from "@/components/visual-diff-dialog";
 import { cn } from "@/lib/cn";
-import { useCopiedFlag } from "@/lib/use-copied-flag";
+import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 
 /**
  * Sticky right rail on the test detail page. Three optional sections:
@@ -37,21 +39,28 @@ export function ArtifactsRail({
   copyPrompt,
   reproduceCommand,
   environment,
+  stdout,
+  stderr,
 }: {
   media: ArtifactAction[];
   copyPrompt: ArtifactAction | null;
   reproduceCommand: string | null;
   environment: EnvironmentFields;
+  /** The attempt's captured test-process stdout (Node-side `console.log`). */
+  stdout?: string | null;
+  /** The attempt's captured test-process stderr. */
+  stderr?: string | null;
 }): React.ReactElement | null {
   const envRows = environmentRows(environment);
   const hasArtifacts = media.length > 0;
+  const hasOutput = Boolean(stdout?.trim()) || Boolean(stderr?.trim());
   const hasRepro = Boolean(reproduceCommand) || Boolean(copyPrompt);
   const hasEnv = envRows.length > 0;
-  if (!hasArtifacts && !hasRepro && !hasEnv) return null;
+  if (!hasArtifacts && !hasOutput && !hasRepro && !hasEnv) return null;
   return (
     <div className="flex flex-col">
       {hasArtifacts ? (
-        <section className="p-5 border-b border-border">
+        <section className="p-5 border-b border-line-1">
           <SectionLabel>Artifacts</SectionLabel>
           <div className="flex flex-col gap-2">
             {media.map((a) => (
@@ -60,8 +69,21 @@ export function ArtifactsRail({
           </div>
         </section>
       ) : null}
+      {hasOutput ? (
+        <section className="p-5 border-b border-line-1">
+          <SectionLabel>Output</SectionLabel>
+          <div className="flex flex-col gap-3">
+            {stdout?.trim() ? (
+              <RailLogBlock label="stdout" text={stdout} />
+            ) : null}
+            {stderr?.trim() ? (
+              <RailLogBlock label="stderr" text={stderr} tone="error" />
+            ) : null}
+          </div>
+        </section>
+      ) : null}
       {hasRepro ? (
-        <section className="p-5 border-b border-border">
+        <section className="p-5 border-b border-line-1">
           <SectionLabel>Reproduction</SectionLabel>
           {reproduceCommand ? (
             <TerminalBlock command={reproduceCommand} />
@@ -79,8 +101,8 @@ export function ArtifactsRail({
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm font-mono">
             {envRows.map(([label, value]) => (
               <div key={label} className="contents">
-                <dt className="text-muted-foreground text-xs">{label}</dt>
-                <dd className="text-foreground">{value}</dd>
+                <dt className="text-fg-3 text-xs">{label}</dt>
+                <dd className="text-fg-1">{value}</dd>
               </div>
             ))}
           </dl>
@@ -110,9 +132,39 @@ function SectionLabel({
   children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <h4 className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground mb-3">
+    <h4 className="mb-3 text-caption font-medium tracking-[0.1px] text-fg-3">
       {children}
     </h4>
+  );
+}
+
+/**
+ * A captured stdout/stderr stream, rendered in the rail as a scrollable,
+ * ANSI-aware monospace block ({@link AnsiPre} — test-controlled output is not
+ * an injection sink). `stderr` is tinted so it reads as the error channel.
+ */
+function RailLogBlock({
+  label,
+  text,
+  tone,
+}: {
+  label: string;
+  text: string;
+  tone?: "error";
+}): React.ReactElement {
+  return (
+    <div>
+      <div className="text-micro font-mono uppercase tracking-wider text-fg-3 mb-1">
+        {label}
+      </div>
+      <AnsiPre
+        text={text}
+        className={cn(
+          "max-h-64 overflow-auto rounded border border-line-1 bg-muted/40 p-2 text-xs",
+          tone === "error" ? "text-destructive" : "text-fg-1",
+        )}
+      />
+    </div>
   );
 }
 
@@ -153,7 +205,7 @@ function RailIconLabel({
       {icon}
       {label}
       {count != null && count > 1 ? (
-        <span className="text-muted-foreground text-xs">({count})</span>
+        <span className="text-fg-3 text-xs">({count})</span>
       ) : null}
     </span>
   );
@@ -164,10 +216,10 @@ function RailTraceButton({
 }: {
   artifact: ArtifactAction;
 }): React.ReactElement {
-  if (!artifact.traceViewerUrl) return <></>;
+  if (!isReplayTraceArtifact(artifact)) return <></>;
   return (
     <TraceViewerDialog artifact={artifact}>
-      <RailIconLabel icon={<History />} label="Test Replay" />
+      <RailIconLabel icon={<History />} label="Replay" />
       <ArrowRight className="opacity-50" aria-hidden />
     </TraceViewerDialog>
   );
@@ -223,7 +275,7 @@ function RailScreenshotButton({
           Screenshot: {artifact.name}
         </DialogTitle>
         <img
-          className="w-full rounded-b-2xl bg-muted"
+          className="w-full rounded-b-2xl bg-muted outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
           alt={artifact.name}
           src={artifact.downloadHref}
         />
@@ -245,9 +297,9 @@ function TerminalBlock({ command }: { command: string }): React.ReactElement {
     }
   }
   return (
-    <div className="rounded-md border border-border bg-background overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/60 bg-muted/30">
-        <span className="inline-flex items-center gap-1.5 text-muted-foreground font-mono text-[10px] uppercase tracking-wider">
+    <div className="rounded-md border border-line-1 bg-bg-0 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-line-1/60 bg-muted/30">
+        <span className="inline-flex items-center gap-1.5 text-caption font-medium tracking-[0.1px] text-fg-3">
           <Terminal size={12} />
           Terminal
         </span>
@@ -256,13 +308,17 @@ function TerminalBlock({ command }: { command: string }): React.ReactElement {
           onClick={() => {
             void onCopy();
           }}
-          className="text-muted-foreground hover:text-foreground transition-colors"
+          className="relative -m-1.5 rounded-md p-1.5 text-fg-3 transition-colors hover:text-fg-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-2"
           aria-label={copied ? "Copied" : "Copy command"}
         >
-          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {copied ? (
+            <Check size={14} className="animate-copy-pop" />
+          ) : (
+            <Copy size={14} />
+          )}
         </button>
       </div>
-      <pre className="px-3 py-2.5 font-mono text-xs text-foreground/80 whitespace-pre-wrap break-all leading-relaxed">
+      <pre className="px-3 py-2.5 font-mono text-xs text-fg-1/80 whitespace-pre-wrap break-all leading-relaxed">
         {command}
       </pre>
     </div>
@@ -302,7 +358,7 @@ function CopyArtifactButton({
       loading={loading}
     >
       <RailIconLabel
-        icon={copied ? <Check /> : <Copy />}
+        icon={copied ? <Check className="animate-copy-pop" /> : <Copy />}
         label={copied ? "Copied" : "Copy prompt"}
       />
       <ArrowRight className="opacity-50" aria-hidden />

@@ -4,7 +4,11 @@ import { env } from "void/env";
 import { billingEnabled } from "@/lib/config";
 import { resolveTenantBundleForUser } from "@/lib/authz";
 import { isErrorPage, looksLikeStaticAsset } from "@/lib/error-outcome";
-import type { ResolvedActiveProject, SharedBundle } from "@/lib/shared-bundle";
+import type {
+  ResolvedActiveProject,
+  ResolvedActiveTeam,
+  SharedBundle,
+} from "@/lib/shared-bundle";
 import {
   clearWorkspaceCookie,
   readWorkspaceCookie,
@@ -35,6 +39,16 @@ declare module "void" {
   interface CloudContextVariables {
     /** Server-side handle to the active project; read via `getActiveProject(c)`. */
     activeProject?: ResolvedActiveProject | null;
+    /**
+     * Server-only: every team the user belongs to, with role — the full row set
+     * `resolveTenantBundleForUser` already fetches (unfiltered by team), kept for
+     * all teams not just the selected one. Lets URL-scoped authz seams
+     * (`settings-scope.ts`'s `requireRoleScope`/`resolveOwnedTeam`) answer role
+     * checks without a second membership query. Unset on the stub paths below
+     * (static assets/error pages, `/api/*`, anonymous) — fall back to a fresh DB
+     * resolve when absent. Server-only, not in `SharedBundle`, like `activeProject`.
+     */
+    memberTeams?: ResolvedActiveTeam[];
     /** Read on the client via `useShared()`. */
     shared: SharedBundle;
   }
@@ -121,6 +135,7 @@ export default defineMiddleware(async (c, next) => {
     selectedProject: bundle.activeProject,
     billingEnabled: billingEnabled(env),
   });
+  c.set("memberTeams", bundle.memberTeams);
 
   if (urlTeamSlug) {
     c.set("activeProject", bundle.activeProject);

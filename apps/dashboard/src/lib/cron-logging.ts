@@ -19,11 +19,11 @@ import { describeError } from "@/lib/error-cause";
  */
 export function loggedScheduled(
   name: string,
-  run: () => Promise<void>,
+  run: (controller: ScheduledController) => Promise<void>,
 ): ReturnType<typeof defineScheduled> {
-  return defineScheduled(async () => {
+  return defineScheduled(async (controller) => {
     try {
-      await run();
+      await run(controller);
     } catch (err) {
       logger.error(`cron failed: ${name}`, {
         cron: name,

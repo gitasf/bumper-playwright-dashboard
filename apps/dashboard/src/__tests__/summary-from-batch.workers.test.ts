@@ -24,6 +24,7 @@ import {
 describe("summaryFromBatchResults", () => {
   const summary: RunAggregateSummary = {
     totalTests: 12,
+    expectedTotalTests: null,
     passed: 9,
     failed: 1,
     flaky: 1,

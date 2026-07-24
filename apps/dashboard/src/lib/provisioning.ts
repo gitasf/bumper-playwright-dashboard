@@ -1,9 +1,10 @@
-import { db, eq, like, or } from "void/db";
+import type { Context } from "hono";
+import { db, eq, like, or, sql } from "void/db";
 import { env } from "void/env";
 import { ulid } from "ulid";
 import { memberships, projects, teams as teamsTable } from "@schema";
+import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { openSignupAllowed } from "@/lib/config";
-import { runBatch } from "@/lib/db-batch";
 import { SLUG_MAX_LEN } from "@/lib/slug";
 
 /**
@@ -95,10 +96,13 @@ export function pickUniqueSlug(base: string, taken: Set<string>): string {
  * {@link SlugDerivationError} when `name` has no usable slug. Pure-ish: the
  * only side effect is the read-only collision query.
  */
-async function resolveTeamSlug(name: string): Promise<string> {
+async function resolveTeamSlug(
+  name: string,
+  exec: Pick<typeof db, "select"> = db,
+): Promise<string> {
   const baseSlug = slugifyName(name);
   if (!baseSlug) throw new SlugDerivationError();
-  const existing = await db
+  const existing = await exec
     .select({ slug: teamsTable.slug })
     .from(teamsTable)
     .where(
@@ -132,15 +136,17 @@ export class TeamCreationNotAllowedError extends Error {
  * resource-granting action. A self-registered stranger holds a dead account:
  * no team, no projects, no API keys, no synthetic monitors (which execute
  * arbitrary Playwright code in containers on the operator's Cloudflare
- * account). Existing members may always create more teams, and the zero-teams
- * case lets the operator bootstrap a fresh instance.
+ * account). Existing members may always create more teams. A closed instance
+ * requires an explicit opt-in before its first team can be bootstrapped.
  */
 export function teamCreationAllowed(input: {
   openSignup: boolean;
   isMemberOfAnyTeam: boolean;
   anyTeamExists: boolean;
+  allowFirstTeamBootstrap: boolean;
 }): boolean {
-  return input.openSignup || input.isMemberOfAnyTeam || !input.anyTeamExists;
+  if (input.openSignup || input.isMemberOfAnyTeam) return true;
+  return !input.anyTeamExists && input.allowFirstTeamBootstrap;
 }
 
 /**
@@ -156,26 +162,34 @@ export async function createTeamForUser(
   userId: string,
   name: string,
 ): Promise<{ slug: string }> {
-  const [membershipRows, teamRows] = await Promise.all([
-    db
+  return db.transaction(async (tx) => {
+    // Every team creation takes the same transaction-scoped advisory lock.
+    // That makes the zero-team policy check and first insert indivisible even
+    // when a normal member/open-signup creation races a bootstrap request.
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext('wrightful:first-team-bootstrap'))`,
+    );
+    const membershipRows = await tx
       .select({ id: memberships.id })
       .from(memberships)
       .where(eq(memberships.userId, userId))
-      .limit(1),
-    db.select({ id: teamsTable.id }).from(teamsTable).limit(1),
-  ]);
-  const allowed = teamCreationAllowed({
-    openSignup: openSignupAllowed(env.ALLOW_OPEN_SIGNUP),
-    isMemberOfAnyTeam: Boolean(membershipRows[0]),
-    anyTeamExists: Boolean(teamRows[0]),
-  });
-  if (!allowed) throw new TeamCreationNotAllowedError();
+      .limit(1);
+    const teamRows = await tx
+      .select({ id: teamsTable.id })
+      .from(teamsTable)
+      .limit(1);
+    const allowed = teamCreationAllowed({
+      openSignup: openSignupAllowed(env.ALLOW_OPEN_SIGNUP),
+      isMemberOfAnyTeam: Boolean(membershipRows[0]),
+      anyTeamExists: Boolean(teamRows[0]),
+      allowFirstTeamBootstrap: env.WRIGHTFUL_BOOTSTRAP_FIRST_TEAM,
+    });
+    if (!allowed) throw new TeamCreationNotAllowedError();
 
-  const slug = await resolveTeamSlug(name);
-  const teamId = ulid();
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  await runBatch((tx) => [
-    tx.insert(teamsTable).values({
+    const slug = await resolveTeamSlug(name, tx);
+    const teamId = ulid();
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    await tx.insert(teamsTable).values({
       id: teamId,
       slug,
       name,
@@ -184,16 +198,16 @@ export async function createTeamForUser(
       tier: "pro", // D3: 14-day trial
       currentPeriodEnd: nowSeconds + TRIAL_SECONDS,
       polarCustomerId: null, // explicit-null: discriminates trial-pro from paid-pro
-    }),
-    tx.insert(memberships).values({
+    });
+    await tx.insert(memberships).values({
       id: ulid(),
       userId,
       teamId,
       role: "owner",
       createdAt: nowSeconds,
-    }),
-  ]);
-  return { slug };
+    });
+    return { slug };
+  });
 }
 
 /**
@@ -231,6 +245,32 @@ export async function createProjectForTeam(
     slug,
     name,
     createdAt: Math.floor(Date.now() / 1000),
+  });
+  return { slug };
+}
+
+/**
+ * Request-scoped companion to {@link createProjectForTeam}: create the project
+ * and record its `PROJECT_CREATE` audit row (both project-creating handlers
+ * previously re-spelled the same audit block). `recordAudit` is best-effort
+ * (never throws), so failure semantics match the bare create.
+ *
+ * The audit write stays out of `createProjectForTeam` so that function remains
+ * context-free for script/seeder callers; the audit row needs the request
+ * `Context` to resolve the actor.
+ */
+export async function createProjectAudited(
+  c: Context,
+  teamId: string,
+  name: string,
+): Promise<{ slug: string }> {
+  const { slug } = await createProjectForTeam(teamId, name);
+  await recordAudit(c, {
+    teamId,
+    action: AUDIT_ACTIONS.PROJECT_CREATE,
+    targetType: "project",
+    targetId: slug,
+    metadata: { projectName: name },
   });
   return { slug };
 }

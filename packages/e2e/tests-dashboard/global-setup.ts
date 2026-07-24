@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { chromium, type FullConfig } from "@playwright/test";
 
 import { bootDashboard, type DashboardFixture } from "../src/dashboard-fixture";
+import { clearMonitorSchedulerLease } from "./helpers/monitor-scheduler-lease";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../../..");
@@ -45,6 +46,7 @@ declare global {
 }
 
 export default async function globalSetup(_config: FullConfig): Promise<void> {
+  await clearMonitorSchedulerLease();
   const fixture = await bootDashboard({
     port: PORT,
     envBackupSuffix: "playwright-dashboard-backup",
@@ -89,6 +91,34 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
     // explicitly drop storageState in their own `test.use({...})`.
     const browser = await chromium.launch();
     const context = await browser.newContext();
+
+    // Preflight each important page family against the production bundle before
+    // workers start. This keeps a broken SSR route from burning minutes across
+    // dozens of specs and also locates a real seeded run for detail-page checks.
+    console.log("[playwright] Preflighting production SSR routes");
+    const { teamSlug, projectSlug } = fixture;
+    const projectBase = `/t/${teamSlug}/p/${projectSlug}`;
+    const settingsBase = `/settings/teams/${teamSlug}`;
+    const preflight = async (
+      path: string,
+      okStatuses = [200],
+    ): Promise<string> => {
+      const res = await context.request.get(`${fixture.url}${path}`);
+      if (!okStatuses.includes(res.status())) {
+        throw new Error(
+          `SSR preflight GET ${path} returned ${res.status()} — the dashboard ` +
+            "cannot render this route; aborting before the suite burns " +
+            "minutes failing every spec that visits it",
+        );
+      }
+      return res.text();
+    };
+
+    // Check auth pages while this context is still anonymous. Once the seeded
+    // session cookies are installed, both loaders redirect to `/`.
+    await preflight("/login");
+    await preflight("/signup");
+
     const cookies = fixture.sessionCookies
       .map((raw) => {
         const eq = raw.indexOf("=");
@@ -107,6 +137,26 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
       .filter((c): c is NonNullable<typeof c> => c !== null);
     await context.addCookies(cookies);
     await context.storageState({ path: STORAGE_STATE_PATH });
+
+    const runsListHtml = await preflight(projectBase);
+    // A real seeded runId (any run works — the page module is what we're
+    // checking). The tests/:id route 404s on the phantom id below;
+    // navigation.spec also exercises that deliberate not-found path.
+    const runId = runsListHtml.match(/\/runs\/([0-9A-HJKMNP-TV-Z]{26})/)?.[1];
+    if (!runId) throw new Error("SSR preflight: no run link on the runs list");
+    await preflight(`${projectBase}/runs/${runId}`);
+    await preflight(
+      `${projectBase}/runs/${runId}/tests/01HZZZZZZZZZZZZZZZZZZZZZZZ`,
+      [200, 404],
+    );
+    await preflight(`${projectBase}/monitors`);
+    await preflight(`${projectBase}/monitors/new`);
+    await preflight(settingsBase);
+    await preflight(`${settingsBase}/groups`);
+    await preflight(`${settingsBase}/billing`);
+    await preflight(`${settingsBase}/p/${projectSlug}/keys`);
+    await preflight(`/t/${teamSlug}/p/does-not-exist`, [404]);
+
     await browser.close();
 
     // Stash fixture metadata for teardown + spec consumption (the fixture
@@ -123,7 +173,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
           artifactTokenSecret: fixture.artifactTokenSecret,
           email: fixture.email,
           password: fixture.password,
-          devTriggerToken: fixture.devTriggerToken,
+          voidProxyToken: fixture.voidProxyToken,
         },
         null,
         2,
@@ -131,7 +181,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
       "utf8",
     );
   } catch (err) {
-    fixture.teardown();
+    await fixture.teardown();
     globalThis.__wrightfulDashboardFixture = undefined;
     throw err;
   }

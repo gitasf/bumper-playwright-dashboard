@@ -1,4 +1,4 @@
-import type { RunHistoryPoint } from "@/components/run-history-chart";
+import type { RunHistoryPoint } from "@/components/run/history-chart";
 import { statusGroupKey } from "@/lib/status";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
 
@@ -45,8 +45,8 @@ export interface TestHistoryView {
  * `interrupted` as a pass.
  *
  * `currentTestResultId` marks the result being viewed (result-detail only): its
- * bar is highlighted and inert (no self-link/hover). The test-level page omits
- * it, so every bar links to its result.
+ * bar is highlighted and doesn't self-link, but still shows its summary on
+ * hover. The test-level page omits it, so every bar links to its result.
  */
 export function buildTestHistoryView(
   rows: readonly TestHistoryRow[],
@@ -69,15 +69,14 @@ export function buildTestHistoryView(
         href: isCurrent
           ? undefined
           : `${opts.base}/runs/${h.runId}/tests/${h.testResultId}`,
-        hover: isCurrent
-          ? undefined
-          : {
-              kind: "testResult",
-              teamSlug: opts.teamSlug,
-              projectSlug: opts.projectSlug,
-              runId: h.runId,
-              testResultId: h.testResultId,
-            },
+        // Current bar still hovers to its summary; only the self-link is dropped.
+        hover: {
+          kind: "testResult",
+          teamSlug: opts.teamSlug,
+          projectSlug: opts.projectSlug,
+          runId: h.runId,
+          testResultId: h.testResultId,
+        },
         label: [
           h.status,
           formatDuration(h.durationMs),

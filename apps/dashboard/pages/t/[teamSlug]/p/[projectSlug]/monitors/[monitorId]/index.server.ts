@@ -38,7 +38,7 @@ import {
   setMonitorEnabled,
   updateMonitor,
 } from "@/lib/monitors/monitors-repo";
-import { redirectWithParam } from "@/lib/settings-scope";
+import { defineFlashSlots } from "@/lib/flash";
 import {
   requireOwnerTenantContext,
   requireTenantContext,
@@ -48,6 +48,9 @@ import { uptimeFromExecutions } from "../monitors-ui.shared";
 export type Props = InferProps<typeof loader>;
 
 const EXECUTIONS_LIMIT = 50;
+
+/** This page's form-flash slots — shared by the actions below and the loader. */
+export const MONITOR_FLASH = defineFlashSlots(["formError", "dangerError"]);
 
 /**
  * The `:monitorId` value reserved for the create form. `/monitors/new` resolves
@@ -81,6 +84,7 @@ export const loader = defineHandler(async (c) => {
   const { project, scope } = requireTenantContext(c);
   const monitorId = requireMonitorId(c);
   const url = new URL(c.req.url);
+  const flash = MONITOR_FLASH.read(url);
   const projectProps = {
     slug: project.slug,
     name: project.name,
@@ -100,7 +104,8 @@ export const loader = defineHandler(async (c) => {
       // Which create form to show: `?type=http` → uptime form, `?type=tcp` →
       // TCP form, `?type=browser` → browser form, absent → the type chooser.
       type: url.searchParams.get("type"),
-      formError: url.searchParams.get("formError"),
+      // Create mode surfaces only `formError` (there is no danger zone yet).
+      formError: flash.formError,
     };
   }
 
@@ -145,8 +150,8 @@ export const loader = defineHandler(async (c) => {
     // `?formError=` redirect re-opens it — the modal itself needs JS (it's a
     // portal), so editing is unavailable on the no-JS path.
     editing: url.searchParams.get("edit") === "1",
-    formError: url.searchParams.get("formError"),
-    dangerError: url.searchParams.get("dangerError"),
+    formError: flash.formError,
+    dangerError: flash.dangerError,
 
     // Everything below the header/config summary streams behind skeletons: the
     // executions table, the analytics (time-based uptime windows + response-time
@@ -268,10 +273,10 @@ export const actions = {
     const form = await c.req.formData();
     const type = formType(form);
     // Keep the chosen type on the redirect so the create form re-renders the
-    // right variant (browser vs uptime) with the error. `redirectWithParam`
+    // right variant (browser vs uptime) with the error. `MONITOR_FLASH.fail`
     // preserves the existing `?type=` and adds the `formError` param.
     const fail = (msg: string) =>
-      redirectWithParam(
+      MONITOR_FLASH.fail(
         c,
         `${monitorsBase}/new?type=${type}`,
         "formError",
@@ -354,7 +359,7 @@ export const actions = {
     // Keep the editor open (`edit=1`) on a validation error so the surfaced
     // `formError` lands beside the form the user was filling in.
     const fail = (msg: string) =>
-      redirectWithParam(c, `${here}?edit=1`, "formError", msg);
+      MONITOR_FLASH.fail(c, `${here}?edit=1`, "formError", msg);
 
     // `type` is immutable — dispatch on the EXISTING monitor's type, not the
     // posted one, and pick the matching update schema (a discriminated union

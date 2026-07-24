@@ -7,10 +7,10 @@
  * Email markup is authored separately from the app's `src/components/ui`
  * library: clients (Outlook/Gmail) need inline-styled, table-based HTML and
  * don't support flexbox/grid/media-queries, so the Base UI components can't be
- * reused. Build email templates from `@react-email/components` and wrap them
+ * reused. Build email templates from `react-email` and wrap them
  * in `EmailLayout` (`src/emails/layout.tsx`).
  */
-import { render } from "@react-email/components";
+import { render } from "react-email";
 import type { ReactElement } from "react";
 
 export interface RenderedEmail {

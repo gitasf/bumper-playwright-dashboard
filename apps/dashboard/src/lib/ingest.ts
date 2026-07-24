@@ -1,5 +1,6 @@
 import { ulid } from "ulid";
 import { and, db, eq, inArray, sql } from "void/db";
+import { env } from "void/env";
 import { logger } from "void/log";
 import {
   runs,
@@ -11,14 +12,14 @@ import {
   testTags,
   teams,
 } from "@schema";
-import type { BatchBuilder, BatchExecutor } from "@/lib/db-batch";
+import type { BatchExecutor } from "@/lib/db/batch";
 import {
   changedRows,
   isForeignKeyViolation,
   isUniqueViolation,
   runBatch,
-} from "@/lib/db-batch";
-import { maybePostGithubCheck } from "@/lib/github-checks";
+} from "@/lib/db/batch";
+import { postGithubRunSurfaces } from "@/lib/github-run-surfaces";
 import { setCodeownersFile } from "@/lib/owners-repo";
 import {
   childByTestResultsWhere,
@@ -28,7 +29,11 @@ import {
   type TenantScope,
 } from "@/lib/scope";
 import { STATUS_BUCKETS, WIRE_INVISIBLE_STATUSES } from "@/lib/status-buckets";
-import { monthStartSeconds, usageBumpStatement } from "@/lib/usage";
+import {
+  monthStartSeconds,
+  usageBumpStatement,
+  usageGuardedBumpStatement,
+} from "@/lib/usage";
 import { broadcastProjectRoom, broadcastRunRoom } from "@/realtime/publish";
 import type {
   AppendResultsPayload,
@@ -45,6 +50,7 @@ import type {
 /** Columns published in every `RunProgressEvent.summary`. */
 export const AGGREGATE_SUMMARY_COLUMNS = {
   totalTests: runs.totalTests,
+  expectedTotalTests: runs.expectedTotalTests,
   passed: runs.passed,
   failed: runs.failed,
   flaky: runs.flaky,
@@ -134,7 +140,7 @@ export interface ResultMapping {
   testResultId: string;
 }
 
-export async function resolveTestResultIds(
+async function resolveTestResultIds(
   scope: TenantScope,
   runId: string,
   testIds: string[],
@@ -179,7 +185,7 @@ export async function resolveTestResultIds(
   return { existingIds, assignedIds, prevStatusByTestId };
 }
 
-export function buildQueuePrefillStatements(
+function buildQueuePrefillStatements(
   scope: TenantScope,
   runId: string,
   plannedTests: ReadonlyArray<{
@@ -344,7 +350,7 @@ function resultUpsertSet() {
  * `resolveTestResultIds` result to `computeAggregateDelta`; `assignedIds` still
  * supplies each result's stable id (the existing id for a re-sent test).
  */
-export function buildResultInsertStatements(
+function buildResultInsertStatements(
   scope: TenantScope,
   runId: string,
   results: TestResultInput[],
@@ -393,6 +399,8 @@ export function buildResultInsertStatements(
     durationMs: number;
     errorMessage: string | null;
     errorStack: string | null;
+    stdout: string | null;
+    stderr: string | null;
     createdAt: number;
   }> = [];
   // Every touched result's id — the child rows of ALL of them are replaced (a
@@ -442,6 +450,8 @@ export function buildResultInsertStatements(
         durationMs: attempt.durationMs,
         errorMessage: attempt.errorMessage ?? null,
         errorStack: attempt.errorStack ?? null,
+        stdout: attempt.stdout ?? null,
+        stderr: attempt.stderr ?? null,
         createdAt: nowSeconds,
       });
     }
@@ -593,7 +603,7 @@ export function computeAggregateDelta(
   return delta;
 }
 
-export function aggregateDeltaStatement(
+function aggregateDeltaStatement(
   scope: TenantScope,
   runId: string,
   delta: AggregateDelta,
@@ -634,7 +644,7 @@ export function aggregateDeltaStatement(
  * the broadcast summary via `.returning()`, replacing the read-only summary
  * SELECT in that branch so the bump and the snapshot stay in one statement.
  */
-export function activityBumpStatement(
+function activityBumpStatement(
   scope: TenantScope,
   runId: string,
   nowSeconds: number,
@@ -712,7 +722,7 @@ export function summaryFromBatchResults(
  * Read how many rows a non-`.returning()` statement changed, from its element in
  * a transaction result. The dialect-specific shape (node-postgres `rowCount` in
  * prod, pglite `affectedRows` on the test lane) is owned by `changedRows`
- * (`@/lib/db-batch`); this is the run-scoped alias kept so `reconcileAndBroadcast`
+ * (`@/lib/db/batch`); this is the run-scoped alias kept so `reconcileAndBroadcast`
  * reads "did the guarded UPDATE flip a row?" through a name local to the ingest
  * pipeline (the head-of-batch counterpart to `summaryFromBatchResults`).
  */
@@ -783,7 +793,7 @@ export async function reconcileAndBroadcast(
  * way to clear it is the settings textarea). So we update iff the payload
  * carries non-blank content.
  */
-export function shouldUpdateCodeowners(
+function shouldUpdateCodeowners(
   codeowners: string | undefined,
 ): codeowners is string {
   return typeof codeowners === "string" && codeowners.trim().length > 0;
@@ -803,7 +813,7 @@ export function shouldUpdateCodeowners(
  * never fails the run open (a missing CODEOWNERS just leaves ownership
  * derivation on the previous file).
  */
-export async function maybeUpdateCodeowners(
+async function maybeUpdateCodeowners(
   scope: TenantScope,
   codeowners: string | undefined,
   nowSeconds: number,
@@ -824,7 +834,7 @@ export async function maybeUpdateCodeowners(
  * workerd terminates orphaned promises after the response so an unawaited
  * write can be silently dropped.
  */
-export async function bumpTeamActivity(
+async function bumpTeamActivity(
   teamId: string,
   nowSeconds: number,
 ): Promise<void> {
@@ -859,7 +869,7 @@ export function buildChangedTests(
  * counter delta to apply).
  * Awaited because the publish RPC mustn't be dropped by workerd termination.
  */
-export async function broadcastRunUpdate(
+async function broadcastRunUpdate(
   runId: string,
   changedTests: RunProgressTest[],
   summary: RunAggregateSummary,
@@ -910,6 +920,32 @@ export interface OpenRunResult {
   duplicate: boolean;
 }
 
+/** Rolls back a fresh run when its atomic quota bump is rejected. */
+export class RunQuotaOvershootError extends Error {
+  constructor(readonly limit: number) {
+    super("run quota exceeded");
+    this.name = "RunQuotaOvershootError";
+  }
+}
+
+/**
+ * A fresh open whose planned-test set exceeds the per-run test-result ceiling
+ * (`WRIGHTFUL_MAX_TEST_RESULTS_PER_RUN`). Thrown BEFORE any write: the payload
+ * schema's own `MAX_PLANNED_TESTS` (100k) can sit above a lower
+ * operator-configured ceiling, and every prefilled planned test persists a
+ * `testResults` row — without this, the stated per-run maximum is bypassable
+ * at open even though `appendRunResults` enforces it on every append.
+ */
+export class RunRowCapExceededError extends Error {
+  constructor(
+    readonly limit: number,
+    readonly count: number,
+  ) {
+    super("planned-test set exceeds the per-run test-result ceiling");
+    this.name = "RunRowCapExceededError";
+  }
+}
+
 /**
  * Build the `runs` row for an open. PURE — the single place the run-row shape is
  * derived from the open payload, so the field mapping is unit-testable without a
@@ -947,7 +983,16 @@ export function buildRunInsertValues(
     repo: payload.run.repo ?? null,
     actor: payload.run.actor ?? null,
     totalTests: plannedTests.length,
-    expectedTotalTests: payload.run.expectedTotalTests ?? plannedTests.length,
+    // For a sharded run this is only the OPENER's slice at insert time; each
+    // later shard's duplicate open merges its own count into
+    // `shardExpectedTests` and re-derives this as the sum over the map (see
+    // `reopenRunForWrites`), converging on the exact suite total.
+    expectedTotalTests: expectedTestsFromOpenPayload(payload),
+    // A sharded opener seeds the map with its own slice so the later re-sums
+    // include it; null for non-sharded runs (the count above is already exact).
+    shardExpectedTests: payload.shard
+      ? { [String(payload.shard.index)]: expectedTestsFromOpenPayload(payload) }
+      : null,
     // Total shards this run must wait for before it may finalize (from
     // `config.shard.total`). Null for a non-sharded suite — `completeRun` then
     // takes the legacy finalize-on-first-complete path. All shards send the
@@ -989,6 +1034,7 @@ export async function openRun(
   scope: TenantScope,
   payload: OpenRunPayload,
   nowSeconds: number,
+  opts: { runsQuotaLimit?: number } = {},
 ): Promise<OpenRunResult> {
   // Refresh the project's CODEOWNERS from the reporter's on-disk copy when it
   // sent one (roadmap 2.3). Runs on both the fresh-open and duplicate (CI
@@ -1018,50 +1064,75 @@ export async function openRun(
     // A later passing shard can no longer flip the run terminal early: the run
     // now stays 'running' until every shard has a `runShards` row and only then
     // takes the worst status across shards (see `completeRun`).
-    await reopenRunForWrites(
-      scope,
-      existing[0].id,
-      nowSeconds,
-      payload.shard?.total,
-    );
+    await reopenRunForWrites(scope, existing[0].id, nowSeconds, payload);
     return { runId: existing[0].id, duplicate: true };
   }
 
   const runId = ulid();
   const plannedTests = payload.run.plannedTests ?? [];
 
+  // The per-run row cap gates the open-time prefill too (fresh path only —
+  // the duplicate path above prefills nothing, and its appends are capped in
+  // `appendRunResults`). Checked before the transaction: the prefill count is
+  // exactly the planned set's size, so there's no concurrency to serialize.
+  const rowCap = env.WRIGHTFUL_MAX_TEST_RESULTS_PER_RUN;
+  if (rowCap > 0 && plannedTests.length > rowCap) {
+    throw new RunRowCapExceededError(rowCap, plannedTests.length);
+  }
+
   const runValues = buildRunInsertValues(runId, scope, payload, nowSeconds);
-  // All-or-nothing: the run insert, the queued-test prefill, the tests-catalog
-  // seed, and the usage meter bump (run open) commit atomically in one
-  // `db.transaction` (see `runBatch`). Every statement is built against the
-  // passed executor so it enrolls in that boundary. Extracted to a named builder
-  // so the FK-recovery path below can re-run the SAME batch after nulling a
-  // stale monitorId.
-  const buildOpenBatch: BatchBuilder = (tx) => {
-    const usageBump = usageBumpStatement(
-      scope.teamId,
-      monthStartSeconds(nowSeconds),
-      { runs: 1 },
-      nowSeconds,
-      tx,
-    );
-    return [
-      tx.insert(runs).values(runValues),
-      ...buildQueuePrefillStatements(
+  const runsQuotaLimit = opts.runsQuotaLimit;
+  const enforceRuns =
+    runsQuotaLimit !== undefined && Number.isFinite(runsQuotaLimit);
+  // Kept as a runner so the stale-monitor recovery path can retry the same
+  // transaction after clearing `monitorId`.
+  const runOpenBatch = () =>
+    db.transaction(async (tx) => {
+      await tx.insert(runs).values(runValues);
+      for (const stmt of buildQueuePrefillStatements(
         scope,
         runId,
         plannedTests,
         nowSeconds,
         tx,
         payload.shard?.index ?? null,
-      ),
+      )) {
+        await stmt;
+      }
       // Seed the tests catalog from the planned set so a test is searchable the
       // moment its run opens, before any result streams. Idempotent upsert, so
       // a re-opened run (CI re-run) just refreshes lastSeenAt.
-      ...buildTestCatalogUpsertStatements(scope, plannedTests, nowSeconds, tx),
-      ...(usageBump ? [usageBump] : []),
-    ];
-  };
+      for (const stmt of buildTestCatalogUpsertStatements(
+        scope,
+        plannedTests,
+        nowSeconds,
+        tx,
+      )) {
+        await stmt;
+      }
+      if (enforceRuns) {
+        const applied = await usageGuardedBumpStatement(
+          scope.teamId,
+          monthStartSeconds(nowSeconds),
+          { runs: 1 },
+          { dimension: "runs", limit: runsQuotaLimit },
+          nowSeconds,
+          tx,
+        );
+        if (applied.length === 0) {
+          throw new RunQuotaOvershootError(runsQuotaLimit);
+        }
+      } else {
+        const usageBump = usageBumpStatement(
+          scope.teamId,
+          monthStartSeconds(nowSeconds),
+          { runs: 1 },
+          nowSeconds,
+          tx,
+        );
+        if (usageBump) await usageBump;
+      }
+    });
 
   // Recover the winner of a lost (projectId, idempotencyKey) race: re-read its
   // row and re-arm it for writes. Returns null when no winner exists (the unique
@@ -1078,17 +1149,12 @@ export async function openRun(
       )
       .limit(1);
     if (!winner[0]) return null;
-    await reopenRunForWrites(
-      scope,
-      winner[0].id,
-      nowSeconds,
-      payload.shard?.total,
-    );
+    await reopenRunForWrites(scope, winner[0].id, nowSeconds, payload);
     return { runId: winner[0].id, duplicate: true };
   };
 
   try {
-    await runBatch(buildOpenBatch);
+    await runOpenBatch();
   } catch (err) {
     if (isForeignKeyViolation(err) && runValues.monitorId != null) {
       // A synthetic run whose monitor was deleted between scheduling and open:
@@ -1106,7 +1172,7 @@ export async function openRun(
       );
       runValues.monitorId = null;
       try {
-        await runBatch(buildOpenBatch);
+        await runOpenBatch();
       } catch (retryErr) {
         // The retry can still lose the (projectId, idempotencyKey) race to a
         // sibling shard — recover that the same way the first attempt would.
@@ -1133,6 +1199,7 @@ export async function openRun(
 
   const summary: RunAggregateSummary = {
     totalTests: plannedTests.length,
+    expectedTotalTests: runValues.expectedTotalTests ?? null,
     passed: 0,
     failed: 0,
     flaky: 0,
@@ -1160,6 +1227,7 @@ export async function openRun(
       flaky: 0,
       skipped: 0,
       totalTests: plannedTests.length,
+      expectedTotalTests: runValues.expectedTotalTests ?? null,
       durationMs: 0,
       completedAt: null,
       createdAt: nowSeconds,
@@ -1181,7 +1249,8 @@ export async function openRun(
 export type AppendRunResultsOutcome =
   | { kind: "ok"; mapping: ResultMapping[] }
   | { kind: "notFound" }
-  | { kind: "runClosed" };
+  | { kind: "runClosed" }
+  | { kind: "rowCapExceeded"; limit: number; count: number };
 
 /**
  * How long a terminal run keeps accepting ingest writes after its LAST write
@@ -1230,7 +1299,22 @@ export const RUN_WRITE_GUARD_COLUMNS = {
   // `completeRun` reads this off the same probe to decide the sharded
   // deferred-finalize path vs the legacy single-complete path.
   expectedShards: runs.expectedShards,
+  totalTests: runs.totalTests,
 } as const;
+
+/**
+ * The shard's planned-test count from an open payload: the reporter's explicit
+ * `onBegin` count, falling back to the planned-test list's length for a
+ * reporter that sends the list but not the count. In a sharded run this is one
+ * SHARD's slice, not the suite total — Playwright filters the suite before
+ * reporters see it, so the suite total only exists as the SUM across shards
+ * (see `runs.shardExpectedTests`).
+ */
+function expectedTestsFromOpenPayload(payload: OpenRunPayload): number {
+  return (
+    payload.run.expectedTotalTests ?? (payload.run.plannedTests ?? []).length
+  );
+}
 
 /**
  * Re-arm a terminal run's write window from `openRun`'s duplicate path: a
@@ -1238,27 +1322,161 @@ export const RUN_WRITE_GUARD_COLUMNS = {
  * re-run, late shard, seeder), so its appends/completes must not 409 against
  * the idle-run closure guard. Bumping `lastActivityAt` is sufficient —
  * `runClosedForWrites` keys on it.
+ *
+ * A sharded duplicate open (shards 2..N, or a shard's retry) additionally
+ * merges that shard's planned-test count into `runs.shardExpectedTests` and
+ * re-derives `expectedTotalTests` as the sum over the map — the only way to
+ * know the full suite size, since each shard's `onBegin` sees only its own
+ * slice. The merge arms are all evaluated in SQL inside one transaction that
+ * first takes `FOR UPDATE` on the run row, so racing sibling opens serialize
+ * and each loser re-evaluates against the winner's committed row.
+ *
+ * Idempotent per shard: `jsonb_set` keys on the shard index, so a reporter
+ * retry or CI re-run of one shard REPLACES its count, and the exact re-sum
+ * (not `greatest`) lets a shrunken re-run LOWER the total instead of showing
+ * phantom pending tests forever. This is hand-written jsonb SQL the pglite
+ * test lane can't fully vouch for — the statement shape is verified against
+ * real Postgres 16 (see the 2026-07-06 worklog).
+ *
+ * A deterministic re-run may also reuse the idempotency key with the SAME or
+ * different sharding. Stale shard state would strand or corrupt it: an
+ * unsharded /complete against a leftover `expectedShards > 1` takes the
+ * deferred-finalize path but inserts no `runShards` row, so the run never
+ * finalizes; a changed total 409s with `invalidShard`; and a same-total
+ * re-run would find the previous run's `runShards` completion rows already at
+ * the full count, letting its FIRST shard /complete finalize against the dead
+ * siblings' results. Both branches therefore RESET stale shard state on ANY
+ * terminal re-open, gated on `status <> 'running'` evaluated under the row
+ * lock — a duplicate open of a still-mid-flight run (a mixed-version fleet's
+ * shardless opener, or an open retry) must never wipe a sibling shard's
+ * backfill. The sharded branch additionally re-arms the run as in-flight
+ * (`status='running'`, `completedAt=null`) in the same UPDATE; that flip is
+ * the exactly-once latch for its reset arm (see `applyShardExpectedTests`).
+ *
+ * Exported for the pglite suites — the reset arms only fire on a terminal
+ * row, which `openRun`'s public surface can't reach without a full re-run
+ * round trip.
  */
-async function reopenRunForWrites(
+export async function reopenRunForWrites(
   scope: TenantScope,
   runId: string,
   nowSeconds: number,
-  expectedShards?: number,
+  payload: OpenRunPayload,
 ): Promise<void> {
-  await db
-    .update(runs)
-    .set({
-      lastActivityAt: nowSeconds,
-      // A duplicate open from a sharded suite backfills expectedShards if the
-      // run's opener didn't set it (e.g. a mixed-version fleet where an older
-      // shard opened first). `coalesce` never lowers an already-set total.
-      ...(expectedShards !== undefined
-        ? {
-            expectedShards: sql`coalesce(${runs.expectedShards}, ${expectedShards})`,
-          }
-        : {}),
-    })
-    .where(runByIdWhere(scope, runId));
+  const shard = payload.shard;
+  if (!shard) {
+    // Unsharded re-open of a terminal run = an unsharded re-run: clear any
+    // stale shard state so its /complete takes the legacy immediate-finalize
+    // path, and re-base the expected total on THIS open's payload (the old
+    // summed-across-shards value no longer describes the suite).
+    const isRerun = sql`${runs.status} <> 'running'`;
+    await db.transaction(async (tx) => {
+      await tx
+        .update(runs)
+        .set({
+          lastActivityAt: nowSeconds,
+          expectedShards: sql`case when ${isRerun} then null else ${runs.expectedShards} end`,
+          shardExpectedTests: sql`case when ${isRerun} then null else ${runs.shardExpectedTests} end`,
+          expectedTotalTests: sql`case when ${isRerun} then cast(${expectedTestsFromOpenPayload(payload)} as integer) else ${runs.expectedTotalTests} end`,
+        })
+        .where(runByIdWhere(scope, runId));
+      await tx
+        .delete(runShards)
+        .where(
+          and(
+            eq(runShards.projectId, scope.projectId),
+            eq(runShards.runId, runId),
+            sql`exists (select 1 from ${runs} where ${runByIdWhere(scope, runId)} and ${runs.status} <> 'running')`,
+          ),
+        );
+    });
+    return;
+  }
+  await applyShardExpectedTests(
+    scope,
+    runId,
+    shard,
+    expectedTestsFromOpenPayload(payload),
+    nowSeconds,
+  );
+}
+
+/**
+ * The locked transaction behind {@link reopenRunForWrites}' sharded branch
+ * (see its doc for the semantics). Exported so the `pg-integration/` suites can
+ * execute the EXACT production statements against a real schema — this is
+ * hand-written jsonb SQL the mocked unit lane can't vouch for.
+ */
+export async function applyShardExpectedTests(
+  scope: TenantScope,
+  runId: string,
+  shard: { index: number; total: number },
+  expectedTests: number,
+  nowSeconds: number,
+): Promise<void> {
+  // A terminal run re-opened with a shard identity is a RE-RUN: the stored
+  // expected-tests map and the previous run's `runShards` completion rows
+  // describe a dead execution. Kept, a SAME-total re-run's first shard
+  // /complete would see a full completion-row count and finalize against the
+  // dead siblings' results (and a changed total would 409 every /complete).
+  // So a terminal re-open starts the map over from '{}', REPLACES the total,
+  // drops every previous completion row, and re-arms the run as in-flight
+  // (status='running', completedAt=null). The status flip doubles as the
+  // exactly-once latch: sibling opens serialize on the row lock below, and
+  // the losers re-evaluate against the winner's now-'running' row, taking the
+  // coalesce arm (each sibling re-merges its own slice as it opens).
+  //
+  // Accepted trade-off: a duplicate open delayed past the run's finalize
+  // re-arms it and drops its completion rows, leaving the run 'running' for
+  // the stale-run watchdog to interrupt. Reaching this path requires the
+  // run's idempotency key, and the alternative — every same-total CI re-run
+  // silently finalizing off stale sibling rows — is strictly worse.
+  const isTerminalRerun = sql`${runs.status} <> 'running'`;
+  const baseMap = sql`case when ${isTerminalRerun} then '{}'::jsonb else coalesce(${runs.shardExpectedTests}, '{}'::jsonb) end`;
+  // The merged map, evaluated against the OLD row — SET expressions can't
+  // reference each other's new values, so the same fragment appears in both
+  // assignments (bound params duplicate; that's fine). `array[<text>]` is the
+  // jsonb_set path (top-level key = the shard index); casts keep node-postgres'
+  // text-typed bound params and the bigint `sum` driver-proof.
+  const mergedMap = sql`jsonb_set(${baseMap}, array[${String(shard.index)}], to_jsonb(cast(${expectedTests} as integer)))`;
+  await db.transaction(async (tx) => {
+    // Lock order matches `completeShardedRun` (runs row first, then runShards)
+    // so a terminal re-open racing a delayed shard /complete cannot deadlock.
+    // The lock also freezes the status every arm below evaluates against.
+    await tx
+      .select({ id: runs.id })
+      .from(runs)
+      .where(runByIdWhere(scope, runId))
+      .for("update");
+    // The previous run's completion rows would count toward (or block) this
+    // re-run's deferred finalize. Runs BEFORE the update flips the terminal
+    // latch, guarded in SQL on the pre-update status so a mid-flight open (or
+    // a losing sibling re-open) deletes nothing.
+    await tx
+      .delete(runShards)
+      .where(
+        and(
+          eq(runShards.projectId, scope.projectId),
+          eq(runShards.runId, runId),
+          sql`exists (select 1 from ${runs} where ${runByIdWhere(scope, runId)} and ${runs.status} <> 'running')`,
+        ),
+      );
+    await tx
+      .update(runs)
+      .set({
+        shardExpectedTests: mergedMap,
+        expectedTotalTests: sql`cast((select sum(cast(value as integer)) from jsonb_each_text(${mergedMap})) as integer)`,
+        // Backfill expectedShards if the run's opener didn't set it (e.g. a
+        // mixed-version fleet where an older shard opened first). `coalesce`
+        // never lowers an already-set MID-FLIGHT total; only the terminal
+        // re-run arm above may replace it.
+        expectedShards: sql`case when ${isTerminalRerun} then cast(${shard.total} as integer) else coalesce(${runs.expectedShards}, cast(${shard.total} as integer)) end`,
+        status: sql`case when ${isTerminalRerun} then 'running' else ${runs.status} end`,
+        completedAt: sql`case when ${isTerminalRerun} then null else ${runs.completedAt} end`,
+        lastActivityAt: nowSeconds,
+      })
+      .where(runByIdWhere(scope, runId));
+  });
 }
 
 /**
@@ -1315,6 +1533,7 @@ export async function appendRunResults(
     .limit(1);
   if (!owner[0]) return { kind: "notFound" };
   if (runClosedForWrites(owner[0], nowSeconds)) return { kind: "runClosed" };
+  const rowCap = env.WRIGHTFUL_MAX_TEST_RESULTS_PER_RUN;
 
   const results = dedupeResultsByTestId(payload.results);
   const testIds = results.map((r) => r.testId);
@@ -1322,6 +1541,9 @@ export async function appendRunResults(
   // steps (the clientKey→id map and the id assignment resolved under the lock).
   let mapping: ResultMapping[] = [];
   let assignedIds = new Map<string, string>();
+  let rowCapOutcome:
+    | { kind: "rowCapExceeded"; limit: number; count: number }
+    | undefined;
   //
   // testResults usage is deliberately NOT metered here. It used to upsert the
   // single `usageCounters` (teamId, month) row inside THIS transaction, which
@@ -1335,16 +1557,27 @@ export async function appendRunResults(
     // Serialize concurrent /results flushes for THIS run (see the docstring).
     // Scoped to the single run row via runByIdWhere (projectId + id), not a
     // table lock; sibling runs and other projects are unaffected.
-    await tx
-      .select({ id: runs.id })
+    const lockedRows = await tx
+      .select({ id: runs.id, totalTests: runs.totalTests })
       .from(runs)
       .where(runByIdWhere(scope, runId))
       .for("update");
+    if (!lockedRows[0]) return null;
 
     // Read prior status UNDER the lock so the delta and the upsert id-assignment
     // both see committed state — this is what closes the double-apply + phantom
     // -id races. Built against `tx` so it enrolls in the locked transaction.
     const resolved = await resolveTestResultIds(scope, runId, testIds, tx);
+    const projectedCount =
+      lockedRows[0].totalTests + testIds.length - resolved.existingIds.size;
+    if (rowCap > 0 && projectedCount > rowCap) {
+      rowCapOutcome = {
+        kind: "rowCapExceeded",
+        limit: rowCap,
+        count: projectedCount,
+      };
+      return null;
+    }
     assignedIds = resolved.assignedIds;
     const delta = computeAggregateDelta(results, resolved.prevStatusByTestId);
 
@@ -1378,6 +1611,7 @@ export async function appendRunResults(
       activityBumpStatement(scope, runId, nowSeconds, tx);
     return summaryFromBatchResults([await summaryStmt]);
   });
+  if (rowCapOutcome) return rowCapOutcome;
   // `bumpTeamActivity` runs only after the notFound guard below (origin/main's
   // review fix): a write that found no run must not record team activity.
   if (!summary) return { kind: "notFound" };
@@ -1403,7 +1637,8 @@ export async function appendRunResults(
 export type CompleteRunOutcome =
   | { kind: "ok"; status: string }
   | { kind: "notFound" }
-  | { kind: "runClosed" };
+  | { kind: "runClosed" }
+  | { kind: "invalidShard"; expectedShards: number };
 
 /**
  * Severity ranking for merging terminal run statuses across shards. A sharded
@@ -1512,8 +1747,7 @@ export function mergeRunStatusSql(incoming: string) {
  * recompute to reconcile any straggler /results writes that raced this
  * call. Broadcasts the final summary.
  *
- * Two paths, chosen by whether the completing reporter identifies itself as a
- * shard AND the run knows a shard total > 1:
+ * Two paths, chosen by the run's `expectedShards` value:
  *
  *   - SHARDED (deferred finalize): each shard's /complete records a `runShards`
  *     row and the run STAYS `running` until every shard has reported, then
@@ -1547,14 +1781,19 @@ export async function completeRun(
   // complete just bumped lastActivityAt), and re-runs re-arm it via openRun.
   if (runClosedForWrites(owner[0], nowSeconds)) return { kind: "runClosed" };
 
-  // Deferred finalize for a sharded suite: defer the terminal flip until every
-  // shard has reported. `expectedShards` is set at open from `config.shard.total`
-  // (owner probe), with the payload's own total as a mixed-version fallback. A
-  // missing shard identity, no total, or a 1-shard run falls through to the
-  // legacy single-complete merge below.
+  // Prefer the run-side shard total so a mixed-version completion without a
+  // shard identity cannot finalize while sibling shards are still running.
   const expectedShards =
     owner[0].expectedShards ?? payload.shard?.total ?? null;
-  if (payload.shard && expectedShards !== null && expectedShards > 1) {
+  if (expectedShards !== null && expectedShards > 1) {
+    if (
+      payload.shard &&
+      (payload.shard.total !== expectedShards ||
+        payload.shard.index < 1 ||
+        payload.shard.index > expectedShards)
+    ) {
+      return { kind: "invalidShard", expectedShards };
+    }
     return completeShardedRun(
       scope,
       runId,
@@ -1592,10 +1831,9 @@ export async function completeRun(
     scope,
   );
   await bumpTeamActivity(scope.teamId, nowSeconds);
-  // Best-effort GitHub check run (no-op unless the App is configured + the
-  // repo's org installed it). Awaited per the no-fire-and-forget rule; it
-  // swallows its own errors so a GitHub outage never fails /complete.
-  await maybePostGithubCheck(runId);
+  // Best-effort: posts both GitHub surfaces (check run + sticky PR comment)
+  // and swallows its own errors.
+  await postGithubRunSurfaces(runId, scope.projectId);
 
   return { kind: "ok", status: summary?.status ?? payload.status };
 }
@@ -1630,7 +1868,7 @@ async function completeShardedRun(
   payload: CompleteRunPayload,
   completedAt: number,
   nowSeconds: number,
-  shard: NonNullable<CompleteRunPayload["shard"]>,
+  shard: CompleteRunPayload["shard"] | undefined,
   expectedShards: number,
 ): Promise<CompleteRunOutcome> {
   const { summary, allDone } = await db.transaction(async (tx) => {
@@ -1641,30 +1879,31 @@ async function completeShardedRun(
       .where(runByIdWhere(scope, runId))
       .for("update");
 
-    // Record this shard's terminal outcome, idempotent on the shard-index
-    // unique so a retried /complete can't inflate the completed-shard count.
-    await tx
-      .insert(runShards)
-      .values({
-        id: ulid(),
-        projectId: scope.projectId,
-        runId,
-        shardIndex: shard.index,
-        shardTotal: shard.total,
-        status: payload.status,
-        durationMs: payload.durationMs,
-        completedAt,
-        createdAt: nowSeconds,
-      })
-      .onConflictDoUpdate({
-        target: [runShards.projectId, runShards.runId, runShards.shardIndex],
-        set: {
+    // Anonymous completions cannot advance the completed-shard count.
+    if (shard) {
+      await tx
+        .insert(runShards)
+        .values({
+          id: ulid(),
+          projectId: scope.projectId,
+          runId,
+          shardIndex: shard.index,
+          shardTotal: shard.total,
           status: payload.status,
           durationMs: payload.durationMs,
           completedAt,
-          shardTotal: shard.total,
-        },
-      });
+          createdAt: nowSeconds,
+        })
+        .onConflictDoUpdate({
+          target: [runShards.projectId, runShards.runId, runShards.shardIndex],
+          set: {
+            status: payload.status,
+            durationMs: payload.durationMs,
+            completedAt,
+            shardTotal: shard.total,
+          },
+        });
+    }
 
     const shardRows = await tx
       .select({
@@ -1736,9 +1975,10 @@ async function completeShardedRun(
     await broadcastRunProgress(runId, scope.projectId, summary);
   }
 
-  // Post the merge-gating GitHub check only once the run is actually terminal —
-  // an in-progress (still-sharding) run must not publish a "completed" check.
-  if (allDone) await maybePostGithubCheck(runId);
+  // Do not publish completed GitHub surfaces until every shard is done.
+  if (allDone) {
+    await postGithubRunSurfaces(runId, scope.projectId);
+  }
 
   return {
     kind: "ok",
@@ -1808,9 +2048,8 @@ export async function finalizeStaleRun(
     { projectId: run.projectId },
     { requireStatusFlip: true },
   );
-  // Watchdog-finalized runs (CI killed before /complete) still post their check
-  // — same best-effort, self-silencing path as completeRun.
-  await maybePostGithubCheck(run.id);
+  // Watchdog-finalized runs still update the best-effort GitHub surfaces.
+  await postGithubRunSurfaces(run.id, run.projectId);
 }
 
 /** Counts a watchdog sweep emits: rows seen, finalized, and failed. */

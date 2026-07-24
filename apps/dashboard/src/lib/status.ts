@@ -1,6 +1,6 @@
 // Single status registry for the whole dashboard UI. Every presentation
 // concern keyed off a test/run status — the colour token, the human label,
-// the Badge variant, and the worst-status sort order — lives here, so a
+// and the worst-status sort order — lives here, so a
 // maintainer adding a new Playwright status or renaming a token edits one
 // record instead of hunting ~10 components.
 //
@@ -32,16 +32,11 @@ export type Status =
   | "timedout"
   | "interrupted";
 
-/** Badge variant a status maps to — a subset of the `ui/badge` variants. */
-export type StatusBadgeVariant = "success" | "error" | "warning" | "secondary";
-
 interface StatusEntry {
   /** CSS custom-property name (no `var(...)` wrapper). styles.css owns the value. */
   cssVar: `--${string}`;
   /** Human-readable label (sentence case). */
   label: string;
-  /** Variant for `<StatusBadge>` / `ui/badge`. */
-  badge: StatusBadgeVariant;
   /**
    * Worst-status-first sort key (lower = worse). Drives group ordering and
    * within-group row ordering. `timedout` slots just after `failed`.
@@ -53,37 +48,31 @@ export const STATUS = {
   failed: {
     cssVar: "--fail",
     label: "Failed",
-    badge: "error",
     sortKey: 0,
   },
   timedout: {
     cssVar: "--fail",
     label: "Timed out",
-    badge: "error",
     sortKey: 1,
   },
   flaky: {
     cssVar: "--flaky",
     label: "Flaky",
-    badge: "warning",
     sortKey: 2,
   },
   interrupted: {
     cssVar: "--flaky",
     label: "Interrupted",
-    badge: "warning",
     sortKey: 3,
   },
   skipped: {
     cssVar: "--skipped",
     label: "Skipped",
-    badge: "secondary",
     sortKey: 4,
   },
   passed: {
     cssVar: "--pass",
     label: "Passed",
-    badge: "success",
     sortKey: 5,
   },
 } as const satisfies Record<Status, StatusEntry>;
@@ -112,11 +101,13 @@ export function statusLabel(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-/** Badge variant for `<StatusBadge>` / `ui/badge`. Unknown → `outline`. */
-export function statusBadgeVariant(
-  status: string,
-): StatusBadgeVariant | "outline" {
-  return isStatus(status) ? STATUS[status].badge : "outline";
+/**
+ * CSS custom-property NAME for a status (e.g. `--fail`) — for `<StatusPill>`,
+ * which derives both the `-soft` tint and the text colour from it. Unknown
+ * statuses fall back to the neutral `--skipped` pair.
+ */
+export function statusCssVar(status: string): `--${string}` {
+  return isStatus(status) ? STATUS[status].cssVar : "--skipped";
 }
 
 /** Worst-status-first sort key (lower = worse). Unknown → trailing. */

@@ -9,8 +9,8 @@ import {
 } from "@/components/analytics/line-chart";
 import { DeferredSection } from "@/components/defer-error-boundary";
 import { PageHeader } from "@/components/page-header";
-import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { RunHistoryBranchFilter } from "@/components/run/history-branch-filter";
+import { ALL_BRANCHES } from "@/components/run/history-branch-filter.shared";
 import {
   ChartSkeleton,
   KpiCardSkeleton,
@@ -25,7 +25,7 @@ import { rate } from "@/lib/rate";
 import type { Props } from "./suite-size.server";
 
 const COUNT_SERIES: LineChartSeries[] = [
-  { key: "count", label: "Tests", color: "var(--color-foreground)" },
+  { key: "count", label: "Tests", color: "var(--color-chart-4)" },
 ];
 
 /**
@@ -105,10 +105,10 @@ export default function SuiteSizePage({
 
         <Card className="overflow-hidden rounded-[9px] border-line-1">
           <div className="border-b border-line-1 px-[18px] py-3">
-            <h2 className="text-[13px] font-semibold tracking-tight">
+            <h2 className="text-body font-semibold tracking-tight">
               Test count over time
             </h2>
-            <p className="mt-0.5 text-[11.5px] text-fg-3">
+            <p className="mt-0.5 text-caption text-fg-3">
               Peak suite size per {segment}. Catches accidental deletions and
               big-bang additions.
             </p>
@@ -207,16 +207,16 @@ function TrendChart({
       values: [peak ?? null],
       tooltip: (
         <>
-          <div className="mb-1 border-b border-border/50 pb-1 font-mono text-[10px] text-muted-foreground">
+          <div className="mb-1 border-b border-line-1/50 pb-1 font-mono text-micro text-fg-3">
             {s.label}
           </div>
           <div className="font-mono text-xs">
             {peak == null ? (
-              <span className="text-muted-foreground">No data</span>
+              <span className="text-fg-3">No data</span>
             ) : (
               <>
-                <span className="text-foreground">{peak.toLocaleString()}</span>{" "}
-                <span className="text-muted-foreground">tests</span>
+                <span className="text-fg-1">{peak.toLocaleString()}</span>{" "}
+                <span className="text-fg-3">tests</span>
               </>
             )}
           </div>
@@ -247,10 +247,10 @@ function DistributionSection({
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
       <Card className="overflow-hidden rounded-[9px] border-line-1 lg:col-span-2">
         <div className="border-b border-line-1 px-[18px] py-3">
-          <h2 className="text-[13px] font-semibold tracking-tight">
+          <h2 className="text-body font-semibold tracking-tight">
             Distribution by spec file
           </h2>
-          <p className="mt-0.5 text-[11.5px] text-fg-3">
+          <p className="mt-0.5 text-caption text-fg-3">
             Top {fileRows.length} files by distinct test count.
           </p>
         </div>
@@ -274,8 +274,8 @@ function DistributionSection({
 
       <Card className="overflow-hidden rounded-[9px] border-line-1">
         <div className="border-b border-line-1 px-[18px] py-3">
-          <h2 className="text-[13px] font-semibold tracking-tight">Top tags</h2>
-          <p className="mt-0.5 text-[11.5px] text-fg-3">
+          <h2 className="text-body font-semibold tracking-tight">Top tags</h2>
+          <p className="mt-0.5 text-caption text-fg-3">
             Distinct tests per tag.
           </p>
         </div>
@@ -286,7 +286,7 @@ function DistributionSection({
             <div className="flex flex-wrap gap-1.5">
               {tagRows.map((r) => (
                 <span
-                  className="inline-flex items-center gap-1.5 rounded-full border border-line-1 bg-bg-2 px-2 py-px font-mono text-[11.5px] text-fg-2"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-line-1 bg-bg-2 px-2 py-px font-mono text-caption text-fg-2"
                   key={r.tag}
                   style={{ lineHeight: "18px" }}
                 >
@@ -304,7 +304,7 @@ function DistributionSection({
 
 /**
  * Suspense fallback matching the two-card distribution layout. Boxes mirror
- * `DistributionSection`: headers reserve the real `text-[13px]`/`text-[11.5px]`
+ * `DistributionSection`: headers reserve the real `text-body`/`text-caption`
  * line boxes (with the same `mt-0.5`), each file row is 26px (a `text-xs` label
  * line + `mt-1` + the `h-1.5` bar, like `DistributionRow`), and tag pills are
  * 22px (18px inline line box + `py-px` + 1px borders). The row/pill counts are
@@ -318,8 +318,8 @@ function DistributionSkeleton() {
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
       <Card className="overflow-hidden rounded-[9px] border-line-1 lg:col-span-2">
         <div className="border-b border-line-1 px-[18px] py-3">
-          <TextLineSkeleton className="w-40" text="text-[13px]" />
-          <TextLineSkeleton className="mt-0.5 w-56" text="text-[11.5px]" />
+          <TextLineSkeleton className="w-40" text="text-body" />
+          <TextLineSkeleton className="mt-0.5 w-56" text="text-caption" />
         </div>
         <CardPanel className="px-[18px] py-3">
           <ul className="space-y-2.5">
@@ -338,8 +338,8 @@ function DistributionSkeleton() {
 
       <Card className="overflow-hidden rounded-[9px] border-line-1">
         <div className="border-b border-line-1 px-[18px] py-3">
-          <TextLineSkeleton className="w-20" text="text-[13px]" />
-          <TextLineSkeleton className="mt-0.5 w-36" text="text-[11.5px]" />
+          <TextLineSkeleton className="w-20" text="text-body" />
+          <TextLineSkeleton className="mt-0.5 w-36" text="text-caption" />
         </div>
         <CardPanel className="px-[18px] py-3">
           <div className="flex flex-wrap gap-1.5">
@@ -372,20 +372,18 @@ function DistributionRow({
   return (
     <li className="flex items-center gap-4">
       <div className="min-w-0 flex-1">
-        <div className="truncate font-mono text-xs text-foreground">
-          {label}
-        </div>
+        <div className="truncate font-mono text-xs text-fg-1">{label}</div>
         <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
           <div
-            className={cn("h-full rounded-full bg-foreground/80")}
+            className={cn("h-full rounded-full bg-fg-1/80")}
             style={{ width: `${pct}%` }}
           />
         </div>
       </div>
-      <div className="w-16 text-right font-mono text-sm text-foreground">
+      <div className="w-16 text-right font-mono text-sm text-fg-1">
         {value.toLocaleString()}
       </div>
-      <div className="w-12 text-right font-mono text-[11px] text-muted-foreground">
+      <div className="w-12 text-right font-mono text-micro text-fg-3">
         {pct.toFixed(0)}%
       </div>
     </li>
@@ -393,9 +391,5 @@ function DistributionRow({
 }
 
 function EmptyRow({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="py-6 text-center text-xs text-muted-foreground">
-      {children}
-    </div>
-  );
+  return <div className="py-6 text-center text-xs text-fg-3">{children}</div>;
 }

@@ -61,7 +61,7 @@ describe("groupCatalogRows", () => {
     expect(b.failCount).toBe(1);
   });
 
-  it("preserves first-seen group order (rows arrive lastSeen-desc)", () => {
+  it("preserves first-seen group order from the active catalog sort", () => {
     const rows = [
       row({ file: "z.ts", title: "t" }),
       row({ file: "a.ts", title: "t" }),

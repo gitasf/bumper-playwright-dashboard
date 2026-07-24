@@ -1,24 +1,32 @@
+import { all } from "better-all";
 import { defineHandler, type InferProps } from "void";
 import { and, db, desc, eq, isNull, ne } from "void/db";
 import { apiKeys, projects } from "@schema";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { CODEOWNERS_FILE_MAX } from "@/lib/owner-schemas";
 import { setCodeownersFile } from "@/lib/owners-repo";
-import { makeTenantScope } from "@/lib/scope";
+import { defineFlashSlots } from "@/lib/flash";
 import { readField } from "@/lib/form";
 import { teardownProject } from "@/lib/project-teardown";
-import {
-  redirectWithParam,
-  requireOwnedProjectScope,
-} from "@/lib/settings-scope";
-import { logger } from "void/log";
+import { requireOwnedProjectScope } from "@/lib/settings-scope";
 import { isValidSlug, SLUG_ERROR } from "@/lib/slug";
-import { mutationErrorMessage } from "@/lib/action-errors";
+import { logMutationFailure, mutationErrorMessage } from "@/lib/action-errors";
 
 export type Props = InferProps<typeof loader>;
 
 const hereFor = (project: { teamSlug: string; slug: string }) =>
   `/settings/teams/${project.teamSlug}/p/${project.slug}/keys`;
+
+/**
+ * This page's form-flash slots — one declaration shared by the actions below
+ * and the loader, so a typo'd slot is a compile error rather than a
+ * silently-dropped banner.
+ */
+export const KEYS_FLASH = defineFlashSlots([
+  "generalError",
+  "codeownersError",
+  "dangerError",
+]);
 
 /**
  * Settings → Project keys loader. Owner-only. Returns the project's keys list
@@ -32,34 +40,40 @@ export const loader = defineHandler(async (c) => {
   const { project } = await requireOwnedProjectScope(c, hereFor);
 
   const url = new URL(c.req.url);
-  const generalError = url.searchParams.get("generalError");
-  const dangerError = url.searchParams.get("dangerError");
-  const codeownersError = url.searchParams.get("codeownersError");
 
-  // Explicit column list: loader props serialize into the page payload, and a
-  // bare `select()` would ship every key's `keyHash` to the browser. The hash
-  // isn't invertible, but it has no business in client-visible props.
-  const keys = await db
-    .select({
-      id: apiKeys.id,
-      label: apiKeys.label,
-      keyPrefix: apiKeys.keyPrefix,
-      createdAt: apiKeys.createdAt,
-      lastUsedAt: apiKeys.lastUsedAt,
-      revokedAt: apiKeys.revokedAt,
-    })
-    .from(apiKeys)
-    .where(eq(apiKeys.projectId, project.id))
-    .orderBy(desc(apiKeys.createdAt));
-
-  const codeownersRows = await db
-    .select({
-      file: projects.codeownersFile,
-      updatedAt: projects.codeownersUpdatedAt,
-    })
-    .from(projects)
-    .where(eq(projects.id, project.id))
-    .limit(1);
+  // The keys list and the codeowners row are independent reads (one from
+  // `apiKeys`, one from `projects`), so they run in one parallel wave instead
+  // of two serial round trips.
+  const { keys, codeownersRows } = await all({
+    async keys() {
+      // Explicit column list: loader props serialize into the page payload,
+      // and a bare `select()` would ship every key's `keyHash` to the
+      // browser. The hash isn't invertible, but it has no business in
+      // client-visible props.
+      return db
+        .select({
+          id: apiKeys.id,
+          label: apiKeys.label,
+          keyPrefix: apiKeys.keyPrefix,
+          createdAt: apiKeys.createdAt,
+          lastUsedAt: apiKeys.lastUsedAt,
+          revokedAt: apiKeys.revokedAt,
+        })
+        .from(apiKeys)
+        .where(eq(apiKeys.projectId, project.id))
+        .orderBy(desc(apiKeys.createdAt));
+    },
+    async codeownersRows() {
+      return db
+        .select({
+          file: projects.codeownersFile,
+          updatedAt: projects.codeownersUpdatedAt,
+        })
+        .from(projects)
+        .where(eq(projects.id, project.id))
+        .limit(1);
+    },
+  });
 
   return {
     project: {
@@ -74,9 +88,7 @@ export const loader = defineHandler(async (c) => {
       file: codeownersRows[0]?.file ?? "",
       updatedAt: codeownersRows[0]?.updatedAt ?? null,
     },
-    generalError,
-    dangerError,
-    codeownersError,
+    ...KEYS_FLASH.read(url),
   };
 });
 
@@ -131,12 +143,12 @@ export const actions = {
    * the repo has none (or to override before the next run streams).
    */
   updateCodeowners: defineHandler(async (c) => {
-    const { project, here } = await requireOwnedProjectScope(c, hereFor);
+    const { project, here, scope } = await requireOwnedProjectScope(c, hereFor);
 
     const form = await c.req.formData();
     const raw = readField(form, "codeowners");
     if (raw.length > CODEOWNERS_FILE_MAX) {
-      return redirectWithParam(
+      return KEYS_FLASH.fail(
         c,
         here,
         "codeownersError",
@@ -146,21 +158,15 @@ export const actions = {
 
     // The seam owns trim-then-null-clear normalization (a blank paste clears
     // the file) and the unchanged-guard. This adapter keeps only size
-    // validation and the flash-error mapping.
-    const scope = makeTenantScope({
-      teamId: project.teamId,
-      projectId: project.id,
-      teamSlug: project.teamSlug,
-      projectSlug: project.slug,
-    });
+    // validation and the flash-error mapping; `scope` comes branded from
+    // `requireOwnedProjectScope` rather than being re-minted here.
     try {
       await setCodeownersFile(scope, raw, Math.floor(Date.now() / 1000));
     } catch (err) {
-      logger.error("update codeowners failed", {
+      logMutationFailure("update codeowners failed", err, {
         projectId: project.id,
-        message: err instanceof Error ? err.message : String(err),
       });
-      return redirectWithParam(
+      return KEYS_FLASH.fail(
         c,
         here,
         "codeownersError",
@@ -180,10 +186,10 @@ export const actions = {
     const slug = readField(form, "slug").trim().toLowerCase();
 
     if (!name) {
-      return redirectWithParam(c, here, "generalError", "Name is required.");
+      return KEYS_FLASH.fail(c, here, "generalError", "Name is required.");
     }
     if (!isValidSlug(slug)) {
-      return redirectWithParam(c, here, "generalError", SLUG_ERROR);
+      return KEYS_FLASH.fail(c, here, "generalError", SLUG_ERROR);
     }
 
     if (slug !== project.slug) {
@@ -199,7 +205,7 @@ export const actions = {
         )
         .limit(1);
       if (clash[0]) {
-        return redirectWithParam(
+        return KEYS_FLASH.fail(
           c,
           here,
           "generalError",
@@ -220,7 +226,7 @@ export const actions = {
           "That slug is already used by another project in this team.",
         genericMessage: "Could not save changes.",
       });
-      return redirectWithParam(c, here, "generalError", friendly);
+      return KEYS_FLASH.fail(c, here, "generalError", friendly);
     }
 
     return c.redirect(`/settings/teams/${project.teamSlug}/p/${slug}/keys`);
@@ -240,7 +246,7 @@ export const actions = {
     const form = await c.req.formData();
     const confirm = readField(form, "confirm").trim();
     if (confirm !== project.slug) {
-      return redirectWithParam(
+      return KEYS_FLASH.fail(
         c,
         here,
         "dangerError",
@@ -264,11 +270,10 @@ export const actions = {
     try {
       await teardownProject(c, project.teamId, project.id);
     } catch (err) {
-      logger.error("delete project failed", {
+      logMutationFailure("delete project failed", err, {
         projectId: project.id,
-        message: err instanceof Error ? err.message : String(err),
       });
-      return redirectWithParam(
+      return KEYS_FLASH.fail(
         c,
         here,
         "dangerError",

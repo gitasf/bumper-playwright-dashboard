@@ -37,5 +37,13 @@ export const POST = defineHandler.withValidator({
       409,
     );
   }
+  if (result.kind === "invalidShard") {
+    return c.json(
+      {
+        error: `Shard metadata must use total ${result.expectedShards} and an index within that range`,
+      },
+      400,
+    );
+  }
   return c.json({ runId, status: result.status }, 200);
 });

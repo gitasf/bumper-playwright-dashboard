@@ -1,6 +1,7 @@
-import { CheckCircle2, TriangleAlert, XCircle } from "lucide-react";
+import { CircleCheckBig, CircleX, TriangleAlert } from "lucide-react";
+import { RowLink } from "@/components/row-link";
 import { use } from "react";
-import { Link, PREFETCH_STABLE } from "@/components/ui/link";
+import { PREFETCH_STABLE } from "@/components/ui/link";
 import { AnalyticsButtonGroup } from "@/components/analytics/button-group";
 import {
   BucketBarChart,
@@ -11,8 +12,8 @@ import { AnalyticsKpiCard } from "@/components/analytics/kpi-card";
 import { MetricSparkline } from "@/components/analytics/metric-sparkline";
 import { DeferredSection } from "@/components/defer-error-boundary";
 import { PageHeader } from "@/components/page-header";
-import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { RunHistoryBranchFilter } from "@/components/run/history-branch-filter";
+import { ALL_BRANCHES } from "@/components/run/history-branch-filter.shared";
 import {
   ChartSkeleton,
   KpiCardSkeleton,
@@ -135,10 +136,10 @@ export default function SlowestTestsPage({
         <Card className="overflow-hidden rounded-[9px] border-line-1">
           <div className="flex items-center justify-between gap-3 border-b border-line-1 px-[18px] py-3">
             <div className="min-w-0">
-              <h2 className="text-[13px] font-semibold tracking-tight">
+              <h2 className="text-body font-semibold tracking-tight">
                 Execution time distribution
               </h2>
-              <p className="mt-0.5 text-[11.5px] text-fg-3">
+              <p className="mt-0.5 text-caption text-fg-3">
                 Count of test results per duration bin
                 {totals.maxDurationMs > 0
                   ? ` · bin width ${formatDuration(bucketMs)}`
@@ -146,7 +147,7 @@ export default function SlowestTestsPage({
                 .
               </p>
             </div>
-            <span className="shrink-0 font-mono text-[11.5px] text-fg-3">
+            <span className="shrink-0 font-mono text-caption text-fg-3">
               n={totals.totalResults.toLocaleString()}
             </span>
           </div>
@@ -163,10 +164,10 @@ export default function SlowestTestsPage({
         <Card className="overflow-hidden rounded-[9px] border-line-1">
           <div className="flex items-center justify-between gap-4 border-b border-line-1 px-[18px] py-3">
             <div className="min-w-0">
-              <h2 className="text-[13px] font-semibold tracking-tight">
+              <h2 className="text-body font-semibold tracking-tight">
                 Slowest tests
               </h2>
-              <p className="mt-0.5 text-[11.5px] text-fg-3">
+              <p className="mt-0.5 text-caption text-fg-3">
                 {totals.totalUniqueTests.toLocaleString()} unique test
                 {totals.totalUniqueTests === 1 ? "" : "s"} sorted by p95.
               </p>
@@ -177,7 +178,7 @@ export default function SlowestTestsPage({
                 <input name="branch" type="hidden" value={branchParam} />
               ) : null}
               <input
-                className="w-56 rounded-md border border-line-1 bg-card px-3 py-1 font-mono text-[12.5px] text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-[3px] focus:ring-ring/24"
+                className="w-56 rounded-md border border-line-1 bg-bg-1 px-3 py-1 font-mono text-body text-fg-1 placeholder:text-fg-3 focus:border-ring focus:outline-none focus:ring-[3px] focus:ring-ring/24"
                 defaultValue={q}
                 name="q"
                 placeholder="Filter path or name…"
@@ -263,11 +264,11 @@ function HistogramChart({
       return {
         key: String(i),
         label,
-        segments: [{ count: cnt, color: "var(--color-primary)" }],
+        segments: [{ count: cnt, color: "var(--color-chart-4)" }],
         total: cnt,
         tooltip: (
           <>
-            <div className="mb-1 font-mono text-[10px] text-muted-foreground">
+            <div className="mb-1 font-mono text-micro text-fg-3">
               {i === topBin
                 ? `${formatDuration(loMs)}+`
                 : `${formatDuration(loMs)} – ${formatDuration(hiMs)}`}
@@ -298,21 +299,11 @@ function BottlenecksTableHead() {
     <TableHeader>
       <TableRow>
         <TableHead className="w-10 px-4" />
-        <TableHead className="px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Test
-        </TableHead>
-        <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Avg
-        </TableHead>
-        <TableHead className="w-[100px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          P95
-        </TableHead>
-        <TableHead className="w-[120px] px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Trend
-        </TableHead>
-        <TableHead className="w-[80px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Runs
-        </TableHead>
+        <TableHead className="px-4">Test</TableHead>
+        <TableHead className="w-[100px] px-4 text-right">Avg</TableHead>
+        <TableHead className="w-[100px] px-4 text-right">P95</TableHead>
+        <TableHead className="w-[120px] px-4">Trend</TableHead>
+        <TableHead className="w-[80px] px-4 text-right">Runs</TableHead>
       </TableRow>
     </TableHeader>
   );
@@ -371,15 +362,7 @@ function BottlenecksSection({
                 return (
                   <TableRow key={row.testId}>
                     <TableCell className="w-10 px-4 py-3 align-middle">
-                      {/* Stretched-link pattern — `<Link>` is
-                       * position: static so its `after:inset-0`
-                       * pseudo fills the TableRow (which is
-                       * `relative`). Whole row = click target. */}
-                      <Link
-                        cacheFor={PREFETCH_STABLE}
-                        className="flex items-center justify-center focus-visible:outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring"
-                        href={href}
-                      >
+                      <RowLink cacheFor={PREFETCH_STABLE} href={href}>
                         <span className="sr-only">
                           View {row.title ?? row.testId}
                         </span>
@@ -387,32 +370,32 @@ function BottlenecksSection({
                           size={16}
                           style={{ color: tone.iconColor }}
                         />
-                      </Link>
+                      </RowLink>
                     </TableCell>
                     <TableCell className="px-4 py-3 align-middle">
                       <div className="min-w-0">
                         <div
-                          className="truncate text-[13px] text-foreground"
+                          className="truncate text-body text-fg-1"
                           title={row.title ?? row.testId}
                         >
                           {row.title ?? row.testId}
                         </div>
                         <div
-                          className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground"
+                          className="mt-0.5 truncate font-mono text-micro text-fg-3"
                           title={row.file ?? ""}
                         >
                           {row.file ?? ""}
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="w-[100px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-foreground">
+                    <TableCell className="w-[100px] px-4 py-3 text-right align-middle font-mono text-caption tabular-nums text-fg-1">
                       {row.avgDur === null
                         ? "—"
                         : formatDuration(Math.round(row.avgDur))}
                     </TableCell>
                     <TableCell
                       className={cn(
-                        "w-[100px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums font-medium",
+                        "w-[100px] px-4 py-3 text-right align-middle font-mono text-caption tabular-nums font-medium",
                         tone.p95Text,
                       )}
                     >
@@ -434,7 +417,7 @@ function BottlenecksSection({
                         width={80}
                       />
                     </TableCell>
-                    <TableCell className="w-[80px] px-4 py-3 text-right align-middle font-mono text-[12px] tabular-nums text-muted-foreground">
+                    <TableCell className="w-[80px] px-4 py-3 text-right align-middle font-mono text-caption tabular-nums text-fg-3">
                       {row.n.toLocaleString()}
                     </TableCell>
                   </TableRow>
@@ -446,7 +429,7 @@ function BottlenecksSection({
       </CardPanel>
       {bottlenecks.length > 0 && (
         <TablePaginationFooter
-          className="border-border/50"
+          className="border-line-1/50"
           currentPage={currentPage}
           fromRow={fromRow}
           itemNoun="test"
@@ -466,7 +449,7 @@ function BottlenecksSection({
  * page), so the table doesn't grow or collapse on resolve; `rowCount === 0`
  * mirrors `BottlenecksSection`'s Empty branch (no table, no footer). Table
  * cells inherit `leading-none` (line-height 1) from `TableCell`, so the Test
- * cell reserves `h-[13px]` + `h-[11px]` (its `text-[13px]`/`text-[11px]` lines,
+ * cell reserves `h-[13px]` + `h-[11px]` (its `text-body`/`text-micro` lines,
  * NOT their 1.5× line boxes) for a 26px content stack, matching the real row.
  * The footer placeholder reserves `TablePaginationFooter`'s box, which the old
  * skeleton omitted entirely (the footer popped in below the table on resolve).
@@ -508,7 +491,7 @@ function BottlenecksSkeleton({
                   <Skeleton className="mx-auto h-4 w-4 rounded-full" />
                 </TableCell>
                 <TableCell className="px-4 py-3 align-middle">
-                  {/* leading-none: text-[13px] + mt-0.5 + text-[11px] = 26px */}
+                  {/* leading-none: text-body + mt-0.5 + text-micro = 26px */}
                   <div className="min-w-0">
                     <Skeleton className="h-[13px] w-2/3" />
                     <Skeleton className="mt-0.5 h-[11px] w-1/2" />
@@ -531,11 +514,11 @@ function BottlenecksSkeleton({
           </TableBody>
         </Table>
       </CardPanel>
-      {/* Mirrors the real footer (which passes className="border-border/50");
+      {/* Mirrors the real footer (which passes className="border-line-1/50");
        * the page-number strip only appears when totalPages > 1, so this lands at
        * ~57px (multi-page) / ~41px (single page), same as the resolved footer. */}
       <TablePaginationFooterSkeleton
-        className="border-border/50"
+        className="border-line-1/50"
         showPager={totalPages > 1}
       />
     </>
@@ -543,7 +526,7 @@ function BottlenecksSkeleton({
 }
 
 interface RowTone {
-  Icon: typeof CheckCircle2;
+  Icon: typeof CircleCheckBig;
   iconColor: string;
   border: string;
   p95Text: string;
@@ -553,7 +536,7 @@ interface RowTone {
 function rowTone(row: BottleneckRow): RowTone {
   if (row.failCount > 0) {
     return {
-      Icon: XCircle,
+      Icon: CircleX,
       iconColor: statusToken("failed"),
       border: "border-l-destructive",
       p95Text: "text-destructive",
@@ -570,10 +553,10 @@ function rowTone(row: BottleneckRow): RowTone {
     };
   }
   return {
-    Icon: CheckCircle2,
+    Icon: CircleCheckBig,
     iconColor: statusToken("passed"),
     border: "border-l-border",
-    p95Text: "text-muted-foreground",
+    p95Text: "text-fg-3",
     sparkColor: statusToken("passed"),
   };
 }

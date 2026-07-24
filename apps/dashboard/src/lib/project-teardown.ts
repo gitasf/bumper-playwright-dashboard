@@ -1,8 +1,8 @@
 import type { Context } from "hono";
-import { db, eq } from "void/db";
+import { and, db, eq } from "void/db";
 import { logger } from "void/log";
 import { projects } from "@schema";
-import { deleteProjectArtifactObjects } from "@/lib/artifacts";
+import { deleteProjectArtifactObjects } from "@/lib/artifacts/store";
 
 /**
  * Schedule the best-effort R2 byte sweep for a project whose rows are already
@@ -58,6 +58,8 @@ export async function teardownProject(
   teamId: string,
   projectId: string,
 ): Promise<void> {
-  await db.delete(projects).where(eq(projects.id, projectId));
+  await db
+    .delete(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.teamId, teamId)));
   scheduleProjectArtifactCleanup(c, teamId, projectId);
 }

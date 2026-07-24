@@ -34,12 +34,13 @@ export interface RunProgressTest {
    */
   shardIndex: number | null;
   /**
-   * Whether this test has a trace artifact → gates the per-row "Test Replay"
-   * button. Server-derived on the run-detail row page (`loadRunResultsPage`
-   * with `includeTraceFlags`); absent on live `changedTests` events, since
-   * artifacts register in a flush AFTER results post so the realtime event
-   * can't carry it (a test streamed in live gets the button only after reload,
-   * which is fine — replay is a finished-run action).
+   * Whether this test recorded a `trace` artifact → gates the per-row "Test
+   * Replay" button in the Tests tab. Populated ONLY on the paginated
+   * `GET …/results` read (a batch artifacts lookup over the page's ids); the
+   * live broadcast path leaves it `undefined` (artifacts register in a flush
+   * AFTER the result posts, so the realtime event genuinely can't carry it — a
+   * test streamed in live gets the button only after the group re-fetches on a
+   * reload, which is fine: replay is a finished-run action).
    */
   hasTrace?: boolean;
 }
@@ -54,6 +55,15 @@ export interface RunProgressEvent {
   changedTests: RunProgressTest[];
   summary: {
     totalTests: number;
+    /**
+     * Reporter-declared suite size (`runs.expectedTotalTests`), or `null` for
+     * runs opened before the column existed. On a sharded run this GROWS as
+     * shards open: each shard's `onBegin` sees only its own slice, so ingest
+     * re-derives the run's value as the sum over per-shard counts
+     * (`runs.shardExpectedTests`) on every duplicate open — carried on the
+     * summary so live viewers converge on the exact suite total.
+     */
+    expectedTotalTests: number | null;
     passed: number;
     failed: number;
     flaky: number;
@@ -86,6 +96,15 @@ export interface RunListRowData {
   flaky: number;
   skipped: number;
   totalTests: number;
+  /**
+   * Reporter-declared suite size (`runs.expectedTotalTests`), or `null` for
+   * runs opened before the column existed. Lets the list render a
+   * still-pending remainder (`expected - reported buckets`) while results
+   * stream. Carried on every `run-progress` summary too, so the overlay keeps
+   * it fresh — on a sharded run the value grows as each shard's open adds its
+   * slice to the per-shard sum (see the summary field's doc above).
+   */
+  expectedTotalTests: number | null;
   durationMs: number;
   completedAt: number | null;
   createdAt: number;
@@ -142,10 +161,17 @@ export type ProjectFeedEvent =
   | {
       type: "monitor-result";
       monitorId: string;
-      /** The monitor's new denormalized last result (mirrors `recordExecutionResult`). */
-      lastStatus: string;
-      /** Epoch seconds of this settle — the monitor's new `lastRunAt`. */
-      lastRunAt: number;
+      /**
+       * The monitor's denormalized badge after this settle, from the same
+       * `monitorBadgeUpdate` projection (`@/lib/monitors/executor`) that
+       * `recordExecutionResult` persists, so broadcast and database agree. A
+       * real outcome carries the new state; a retryable infra error re-asserts
+       * the prior badge (`null` if the monitor never recorded a real result).
+       */
+      lastStatus: string | null;
+      /** Epoch seconds of `lastRunAt` after this settle (prior value, possibly
+       * `null`, on an infra error; see `lastStatus`). */
+      lastRunAt: number | null;
       execution: MonitorExecutionRow;
     };
 
@@ -176,6 +202,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 const summarySchema = z.object({
   totalTests: z.number(),
+  expectedTotalTests: z.number().nullable(),
   passed: z.number(),
   failed: z.number(),
   flaky: z.number(),
@@ -200,8 +227,10 @@ export const projectRoomServerSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("monitor-result"),
     monitorId: z.string(),
-    lastStatus: z.string(),
-    lastRunAt: z.number(),
+    // Nullable: an infra-error settle re-asserts the prior badge, which is null
+    // for a monitor that has never recorded a real result (see the wire type).
+    lastStatus: z.string().nullable(),
+    lastRunAt: z.number().nullable(),
     execution: z.custom<MonitorExecutionRow>(
       (v) => isRecord(v) && typeof v.id === "string",
     ),

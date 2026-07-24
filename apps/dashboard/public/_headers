@@ -1,0 +1,27 @@
+# Cloudflare Workers Static Assets header rules (Pages-compatible).
+#
+# On the own-account `wrangler deploy` path (deploy:cf) there is no Void
+# managed dispatch worker, so `routing.headers` in void.json is NOT applied —
+# `/assets/*` are served directly by Workers Static Assets with the platform
+# default `Cache-Control: public, max-age=0, must-revalidate`. That forces the
+# browser (and the edge) to re-request + revalidate every content-hashed chunk
+# on each navigation/prefetch, so a transient origin blip surfaces as a hard
+# 500 on a chunk → "Failed to fetch dynamically imported module".
+#
+# These filenames are content-hashed and therefore immutable: pin them to a
+# one-year immutable cache so they are fetched once and survive across deploys.
+# Mirrors the intended rule in void.json `routing.headers` (which only takes
+# effect on the managed `void deploy` platform).
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Vendored Playwright Trace Viewer (see scripts/vendor-trace-viewer.mjs). On the
+# managed `void deploy` path these come from void.json `routing.headers`; mirror
+# them here so the own-account `deploy:cf` path also serves the framing + SW
+# scope + relaxed CSP the in-app iframe embed needs. On own-account there is no
+# global `/*` CSP either (routing.headers off), so this is the ONLY policy on the
+# path. KEEP IN SYNC with the `/trace-viewer/*` block in void.json.
+/trace-viewer/*
+  X-Frame-Options: SAMEORIGIN
+  Service-Worker-Allowed: /trace-viewer/
+  Content-Security-Policy: default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self' data: blob: https://*.r2.cloudflarestorage.com; worker-src 'self' blob:; frame-src 'self' data: blob:; frame-ancestors 'self'; base-uri 'self'; object-src 'none'

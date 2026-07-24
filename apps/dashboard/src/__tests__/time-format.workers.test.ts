@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
-import { formatDuration, formatRelativeTime } from "@/lib/time-format";
+import {
+  formatDateLabel,
+  formatDateTabular,
+  formatDuration,
+  formatRelativeTime,
+  toIsoDate,
+} from "@/lib/time-format";
 
 describe("formatDuration", () => {
   it("renders sub-second durations in milliseconds", () => {
@@ -52,5 +58,20 @@ describe("formatRelativeTime", () => {
   it("accepts a Date as well as unix seconds", () => {
     const date = new Date(NOW_MS - 5 * 60 * 1000);
     expect(formatRelativeTime(date, NOW_MS)).toBe("5m ago");
+  });
+});
+
+describe("date formats", () => {
+  it("formatDateLabel spells the month so DD/MM vs MM/DD can't be misread", () => {
+    expect(formatDateLabel("2026-07-06")).toBe("6 Jul 26");
+    expect(formatDateLabel("2026-12-31")).toBe("31 Dec 26");
+  });
+
+  it("formatDateTabular renders sortable yyyy-MM-dd", () => {
+    expect(formatDateTabular(new Date(2026, 6, 6))).toBe("2026-07-06");
+  });
+
+  it("toIsoDate matches the URL-param shape", () => {
+    expect(toIsoDate(new Date(2026, 0, 2))).toBe("2026-01-02");
   });
 });

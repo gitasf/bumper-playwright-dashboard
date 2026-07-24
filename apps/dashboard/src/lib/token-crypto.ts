@@ -74,12 +74,10 @@ export function timingSafeEqualHex(a: string, b: string): boolean {
 
 /** Parse a lowercase/uppercase hex string to bytes; null if malformed. */
 function hexToBytes(hex: string): Uint8Array | null {
-  if (hex.length % 2 !== 0) return null;
+  if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) return null;
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) {
-    const byte = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    if (Number.isNaN(byte)) return null;
-    bytes[i] = byte;
+    bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return bytes;
 }

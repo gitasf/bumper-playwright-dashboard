@@ -1,24 +1,42 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 /**
- * The last-owner invariant (roadmap 3.1): demoting OR removing a team's sole
- * owner must be impossible, and impossible RACE-SAFELY — the owner-count guard
- * rides INSIDE the UPDATE/DELETE WHERE, never a check-then-write. These tests
- * pin that the guard predicate (`notLastOwner`) is actually carried into the
- * statement and has the right shape, mirroring how `quarantine-repo.test.ts`
- * asserts scoping against the `void/db` stub — no real D1 needed.
+ * The last-owner invariant (roadmap 3.1): demoting or removing a team's sole
+ * owner must be impossible, and race-safely so. Two race shapes (see the
+ * `members-repo` module doc):
  *
- * The stub records every operator call as `{ __op, args }`, and the chainable
- * `db` builder captures the `.where(...)` argument so we can read the predicate
- * tree back out. The terminal awaited result is controllable per-test so we can
- * drive the "row updated", "guard blocked (0 rows, still an owner)", and
- * "row vanished (0 rows, gone)" branches.
+ *  - same-row race: closed by the owner-count guard inside the UPDATE/DELETE
+ *    WHERE (`notLastOwner`), never a separate check-then-write;
+ *  - cross-row write-skew (two owners demoting/removing each other): closed by
+ *    locking the team's owner rows first (`SELECT ... FOR UPDATE`) inside a
+ *    `db.transaction`, before the guarded write runs on the same `tx`.
+ *
+ * These pin both: that `notLastOwner` is carried into the statement with the
+ * right shape, and that the owner-row lock fires ahead of the write for
+ * demote/remove/leave (skipped for promote-to-owner).
+ *
+ * The stub records operator calls as `{ __op, args }` and captures each
+ * top-level `tx` call as an ordered `Call` (its `.where`, `.orderBy`,
+ * `.for("update")`), so tests read the guard predicate back out and assert the
+ * lock-then-write order. `db.transaction(fn)` invokes `fn` with that same `tx`.
+ * Each call's awaited result comes from a per-test queue consumed in call order
+ * (the lock consumes one slot too), driving the row-updated / guard-blocked /
+ * row-vanished branches.
  */
 
+type Call = {
+  kind: "select" | "update" | "delete";
+  where: unknown;
+  orderBy?: unknown;
+  forUpdate?: boolean;
+};
+
 let capturedWhere: unknown = null;
-// Queue of result-sets the chainable thenable yields, in call order. `update`/
-// `delete` consume the first (the `.returning()` set); the disambiguating
-// `select` consumes the next.
+// Ordered top-level select/update/delete calls per invocation, so tests can
+// assert the owner-row lock (a `select ... for update`) fires before the write.
+let calls: Call[] = [];
+// Result-sets the thenable yields, in call order: lock (if it fires) →
+// `update`/`delete` `.returning()` set → the disambiguating `select`.
 let resultQueue: unknown[][] = [];
 
 vi.mock("void/db", async () => {
@@ -31,6 +49,18 @@ vi.mock("void/db", async () => {
   node.limit = chain;
   node.where = (w: unknown) => {
     capturedWhere = w;
+    const current = calls[calls.length - 1];
+    if (current) current.where = w;
+    return node;
+  };
+  node.orderBy = (o: unknown) => {
+    const current = calls[calls.length - 1];
+    if (current) current.orderBy = o;
+    return node;
+  };
+  node.for = (mode: unknown) => {
+    const current = calls[calls.length - 1];
+    if (current) current.forUpdate = mode === "update";
     return node;
   };
   node.returning = chain;
@@ -41,11 +71,22 @@ vi.mock("void/db", async () => {
     return Promise.resolve(onFulfilled ? onFulfilled(next) : next);
   };
 
+  function makeEntry(kind: Call["kind"]) {
+    return () => {
+      calls.push({ kind, where: undefined });
+      return node;
+    };
+  }
+
+  const tx = {
+    select: makeEntry("select"),
+    update: makeEntry("update"),
+    delete: makeEntry("delete"),
+  };
+
   const db = {
-    select: chain,
-    insert: chain,
-    update: chain,
-    delete: chain,
+    ...tx,
+    transaction: (fn: (exec: typeof tx) => unknown) => fn(tx),
   };
   return { ...stub, db };
 });
@@ -78,8 +119,28 @@ function findOwnerCountGuard(node: unknown): boolean {
   return false;
 }
 
+/**
+ * Whether a captured `.where(...)` is the plain owner-row lock predicate
+ * `and(eq(teamId), eq(role, "owner"))` (not `notLastOwner`'s count(*) guard).
+ * Walks the `and(...)` args rather than assuming order.
+ */
+function isOwnerRowLockWhere(node: unknown, teamId: string): boolean {
+  if (!node || typeof node !== "object") return false;
+  const op = node as RecordedOp;
+  if (op.__op !== "and") return false;
+  const args = (op.args ?? []) as RecordedOp[];
+  const hasTeamEq = args.some(
+    (a) => a.__op === "eq" && a.args.includes(teamId),
+  );
+  const hasOwnerRoleEq = args.some(
+    (a) => a.__op === "eq" && a.args.includes("owner"),
+  );
+  return hasTeamEq && hasOwnerRoleEq;
+}
+
 beforeEach(() => {
   capturedWhere = null;
+  calls = [];
   resultQueue = [];
 });
 
@@ -105,7 +166,8 @@ describe("notLastOwner (the shared race-safe guard predicate)", () => {
 
 describe("setMemberRole — last-owner-safe demotion", () => {
   it("carries the owner-count guard in the UPDATE WHERE when demoting (non-owner target role)", async () => {
-    resultQueue = [[{ id: "m_1" }]]; // returning() → one row updated
+    // Lock select consumes the first slot, then update().returning() → one row.
+    resultQueue = [[], [{ id: "m_1" }]];
     const result = await setMemberRole("team_1", "user_2", "viewer");
     expect(result).toEqual({ ok: true });
     expect(findOwnerCountGuard(capturedWhere)).toBe(true);
@@ -120,15 +182,16 @@ describe("setMemberRole — last-owner-safe demotion", () => {
   });
 
   it("reports `lastOwner` when the guarded UPDATE matches 0 rows but the row still exists as owner", async () => {
-    // update().returning() → 0 rows (guard blocked); follow-up select → still
-    // present (the sole owner).
-    resultQueue = [[], [{ role: "owner" }]];
+    // Lock select, then update().returning() → 0 rows (guard blocked); follow-up
+    // select → still present (the sole owner).
+    resultQueue = [[], [], [{ role: "owner" }]];
     const result = await setMemberRole("team_1", "user_1", "member");
     expect(result).toEqual({ ok: false, reason: "lastOwner" });
   });
 
   it("reports `noop` when the row simply doesn't exist", async () => {
-    resultQueue = [[], []]; // 0 rows updated, 0 rows on the existence check
+    // Lock select, 0 rows updated, 0 rows on the existence check.
+    resultQueue = [[], [], []];
     const result = await setMemberRole("team_1", "ghost", "member");
     expect(result).toEqual({ ok: false, reason: "noop" });
   });
@@ -136,37 +199,70 @@ describe("setMemberRole — last-owner-safe demotion", () => {
 
 describe("removeMemberGuarded — last-owner-safe removal", () => {
   it("carries the owner-count guard in the DELETE WHERE", async () => {
-    resultQueue = [[{ id: "m_1" }]];
+    resultQueue = [[], [{ id: "m_1" }]];
     const result = await removeMemberGuarded("team_1", "user_2");
     expect(result).toEqual({ ok: true });
     expect(findOwnerCountGuard(capturedWhere)).toBe(true);
   });
 
   it("reports `lastOwner` when removing the sole owner is blocked (0 rows, still present)", async () => {
-    resultQueue = [[], [{ role: "owner" }]];
+    resultQueue = [[], [], [{ role: "owner" }]];
     const result = await removeMemberGuarded("team_1", "user_1");
     expect(result).toEqual({ ok: false, reason: "lastOwner" });
   });
 
   it("reports `noop` when the member is already gone", async () => {
-    resultQueue = [[], []];
+    resultQueue = [[], [], []];
     const result = await removeMemberGuarded("team_1", "ghost");
     expect(result).toEqual({ ok: false, reason: "noop" });
   });
 });
 
+describe("lockOwnerRows — cross-row write-skew guard (owner-row SELECT ... FOR UPDATE)", () => {
+  it("locks the team's owner rows FIRST, before the guarded UPDATE, when demoting", async () => {
+    resultQueue = [[], [{ id: "m_1" }]];
+    await setMemberRole("team_1", "user_2", "viewer");
+    expect(calls.map((c) => c.kind)).toEqual(["select", "update"]);
+    expect(calls[0]?.forUpdate).toBe(true);
+    expect(isOwnerRowLockWhere(calls[0]?.where, "team_1")).toBe(true);
+  });
+
+  it("is SKIPPED when promoting to owner", async () => {
+    resultQueue = [[{ id: "m_1" }]];
+    await setMemberRole("team_1", "user_2", "owner");
+    expect(calls.map((c) => c.kind)).toEqual(["update"]);
+  });
+
+  it("locks the team's owner rows FIRST, before the guarded DELETE, for removeMemberGuarded", async () => {
+    resultQueue = [[], [{ id: "m_1" }]];
+    await removeMemberGuarded("team_1", "user_2");
+    expect(calls.map((c) => c.kind)).toEqual(["select", "delete"]);
+    expect(calls[0]?.forUpdate).toBe(true);
+    expect(isOwnerRowLockWhere(calls[0]?.where, "team_1")).toBe(true);
+  });
+
+  it("locks the team's owner rows FIRST, before the guarded DELETE, for leaveTeamGuarded", async () => {
+    resultQueue = [[], [{ id: "m_1" }]];
+    await leaveTeamGuarded("team_1", "user_2");
+    expect(calls.map((c) => c.kind)).toEqual(["select", "delete"]);
+    expect(calls[0]?.forUpdate).toBe(true);
+    expect(isOwnerRowLockWhere(calls[0]?.where, "team_1")).toBe(true);
+  });
+});
+
 describe("leaveTeamGuarded — last-owner-safe self-leave", () => {
   it("carries the owner-count guard in the DELETE WHERE and reports ok on a deleted row", async () => {
-    resultQueue = [[{ id: "m_1" }]];
+    resultQueue = [[], [{ id: "m_1" }]];
     const result = await leaveTeamGuarded("team_1", "user_2");
     expect(result).toEqual({ ok: true });
     expect(findOwnerCountGuard(capturedWhere)).toBe(true);
   });
 
   it("reports `lastOwner` on a 0-row delete WITHOUT a vanished-vs-blocked re-check (membership is proven live)", async () => {
-    // Only ONE result set is consumed (the delete's returning()); a second
-    // queued set would be left untouched if a re-check fired — assert it isn't.
-    resultQueue = [[], [{ role: "owner" }]];
+    // Lock select consumes the first slot, the delete's returning() the
+    // second; a THIRD queued set would be left untouched if a re-check fired
+    // — assert it isn't.
+    resultQueue = [[], [], [{ role: "owner" }]];
     const result = await leaveTeamGuarded("team_1", "user_1");
     expect(result).toEqual({ ok: false, reason: "lastOwner" });
     expect(resultQueue.length).toBe(1); // the existence-check set was NOT consumed

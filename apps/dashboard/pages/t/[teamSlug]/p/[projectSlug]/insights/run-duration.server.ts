@@ -13,7 +13,8 @@ import {
 } from "@/lib/analytics/params";
 import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
-import { runRow, runRows } from "@/lib/db-run";
+import { runRow, runRows } from "@/lib/runs/db";
+import { deferredNoStore, pageProjectFields } from "@/lib/page-loader";
 import { requireTenantContext } from "@/lib/tenant-context";
 
 export type Props = InferProps<typeof loader>;
@@ -72,20 +73,9 @@ export const loader = defineHandler(async (c) => {
   const branches = await loadProjectBranches(scope);
   const branchSql = branchFragment(branchFilter);
 
-  // A deferred loader streams a variant-specific body (NDJSON on SPA nav /
-  // chunked HTML on document load, keyed by `Vary: X-VoidPages`); SWR/max-age
-  // caching would let the browser replay the wrong variant. Deferred pages must
-  // not be stored — the perceived-load win comes from streaming, not the cache.
-  // (Was `private, max-age=300, stale-while-revalidate=900`.)
-  c.header("Cache-Control", "private, no-store");
+  deferredNoStore(c);
   return {
-    project: {
-      id: project.id,
-      teamId: project.teamId,
-      slug: project.slug,
-      name: project.name,
-      teamSlug: project.teamSlug,
-    },
+    project: pageProjectFields(project),
     range,
     segment,
     days,
@@ -102,7 +92,10 @@ export const loader = defineHandler(async (c) => {
     // (`perBucket`) can't tear. Returns plain rows only — the chart builds its
     // JSX (buckets + tooltips) in the client child that reads this via `use()`.
     duration: defer(async () => {
-      const perBucket = await runRows<PerBucketDurationRow>(sql`
+      // Independent CTE queries (neither reads the other's result) — run
+      // together instead of two serial round trips.
+      const [perBucket, overallRow] = await Promise.all([
+        runRows<PerBucketDurationRow>(sql`
         with ranked as (
           select
             ${expr} as bucket,
@@ -123,10 +116,8 @@ export const loader = defineHandler(async (c) => {
           ${percentilePick(0.95)} as p95
         from ranked
         group by bucket
-      `);
-
-      const overall: OverallDurationStats =
-        (await runRow<OverallDurationStats>(sql`
+      `),
+        runRow<OverallDurationStats>(sql`
         with ranked as (
           select
             runs."durationMs" as duration,
@@ -144,7 +135,14 @@ export const loader = defineHandler(async (c) => {
           ${percentilePick(0.9)} as p90,
           ${percentilePick(0.95)} as p95
         from ranked
-      `)) ?? { cnt: 0, p50: null, p90: null, p95: null };
+      `),
+      ]);
+      const overall: OverallDurationStats = overallRow ?? {
+        cnt: 0,
+        p50: null,
+        p90: null,
+        p95: null,
+      };
 
       return { perBucket, overall };
     }),

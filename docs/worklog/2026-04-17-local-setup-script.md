@@ -73,8 +73,7 @@ Ran from a clean state (no `.dev.vars`, no `.wrangler/` local D1):
   `SELECT`.
 - `db:seed-api-key --team ghost --project missing --local` — clean error
   ("no project found…") with pointer to the admin UI.
-- `db:seed-api-key --local` (no `--team` / `--project`) — prints usage, exits
-  1.
+- `db:seed-api-key --local` (no `--team` / `--project`) — prints usage, exits 1.
 - `db:seed-api-key --team "BAD SLUG" --project web --local` — rejected by the
   slug regex.
 - `pnpm typecheck` — clean (both packages).

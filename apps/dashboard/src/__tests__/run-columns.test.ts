@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { getTableConfig } from "void/schema-pg";
 import { runs } from "../../db/schema";
-import { RUN_PUBLIC_COLUMNS } from "@/lib/run-columns";
+import { RUN_PUBLIC_COLUMNS } from "@/lib/runs/columns";
 
 /**
  * `RUN_PUBLIC_COLUMNS` is the allowlist of `runs` columns safe to serialize into
@@ -13,8 +13,10 @@ import { RUN_PUBLIC_COLUMNS } from "@/lib/run-columns";
  * the excluded set below) rather than silently re-leaking via a bare `.select()`.
  */
 describe("RUN_PUBLIC_COLUMNS", () => {
-  // The only column deliberately withheld from client props (see run-columns.ts).
-  const EXCLUDED = new Set(["idempotencyKey"]);
+  // The columns deliberately withheld from client props (see run-columns.ts):
+  // `idempotencyKey` is the write-reopen credential; `githubCheckClaimedAt` is
+  // server-side check-run claim-coordination state no page reads.
+  const EXCLUDED = new Set(["idempotencyKey", "githubCheckClaimedAt"]);
 
   it("never exposes idempotencyKey", () => {
     expect(Object.keys(RUN_PUBLIC_COLUMNS)).not.toContain("idempotencyKey");

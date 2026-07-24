@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 // Drives the mocked sweep transaction: when true, `runBatch` rejects.
 let runBatchShouldThrow = false;
 
-vi.mock("@/lib/db-batch", () => ({
+vi.mock("@/lib/db/batch", () => ({
   // The builder arg is intentionally ignored — we never touch a real DB; we only
   // exercise cleanupUserData's try/catch around the transaction.
   runBatch: async () => {

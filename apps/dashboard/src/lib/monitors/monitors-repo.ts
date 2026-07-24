@@ -2,8 +2,10 @@ import { ulid } from "ulid";
 import { and, asc, db, desc, eq, inArray, lt, or, sql } from "void/db";
 import { monitorExecutions, monitors } from "@schema";
 import type { Monitor, MonitorExecution } from "@schema";
-import { runBatch } from "@/lib/db-batch";
+import { runBatch } from "@/lib/db/batch";
+import { runRows } from "@/lib/runs/db";
 import { numericSql } from "@/lib/db/sql-ops";
+import { monitorBadgeUpdate } from "@/lib/monitors/executor";
 import {
   childByIdWhere,
   childProjectScopeWhere,
@@ -318,23 +320,96 @@ export function listExecutions(
 
 /**
  * Recent executions for MANY monitors at once, keyed by monitorId — feeds the
- * list page's per-row history sparkline (`ExecStrip`) + uptime without an N+1 in
- * the page. One bounded query per monitor, run concurrently: the per-project
- * monitor cap (`WRIGHTFUL_MONITOR_MAX_PER_PROJECT`) keeps the fan-out small, and
- * each query rides the same `(projectId, monitorId, createdAt)` index
- * `listExecutions` uses. Returns an empty array for a monitor with no executions.
+ * list page's per-row history sparkline (`ExecStrip`) + uptime without an N+1.
+ *
+ * One raw query instead of a per-monitor `Promise.all` fan-out: an inner query
+ * ranks each monitor's executions by recency
+ * (`row_number() over (partition by "monitorId" order by "createdAt" desc)`),
+ * scoped by `projectId` (tenant isolation) and `"monitorId" in (...)`; the
+ * outer query keeps `rn <= perMonitor`. Still rides the `(monitorId, createdAt)`
+ * index the old per-monitor `listExecutions` used, walked once not N times. A
+ * monitorId with zero rows gets no entry (not an empty array) — matching the
+ * `.get(id) ?? []` read at the only call site.
+ *
+ * Raw-SQL caveats (bypasses Drizzle's field decoders, see `db/sql-ops.ts`):
+ *   - `row_number()` is only filtered on, never selected, so its int8-as-string
+ *     trap never reaches JS.
+ *   - the bigint timestamp columns ARE selected, so each is
+ *     `cast(... as double precision)` — node-postgres returns int8 as a string
+ *     (pglite returns a number, hiding it); double precision (not `integer`)
+ *     matches the insights loaders' `numAggExpr` and dodges the int4 2038
+ *     overflow on epoch-seconds.
+ *   - `resultDetail` (jsonb) needs no cast — both drivers pre-parse it.
  */
 export async function listRecentExecutionsByMonitor(
   scope: TenantScope,
   monitorIds: string[],
   perMonitor: number,
 ): Promise<Map<string, MonitorExecution[]>> {
-  const entries = await Promise.all(
-    monitorIds.map(
-      async (id) => [id, await listExecutions(scope, id, perMonitor)] as const,
-    ),
+  const result = new Map<string, MonitorExecution[]>();
+  // An empty `in (...)` list is invalid/always-false SQL — short-circuit
+  // before building the query (mirrors the guard in `latestFilePerTestId`).
+  if (monitorIds.length === 0) return result;
+
+  const rows = await runRows<MonitorExecution>(
+    sql`
+    select
+      "id",
+      "projectId",
+      "monitorId",
+      cast("scheduledFor" as double precision) as "scheduledFor",
+      cast("startedAt" as double precision) as "startedAt",
+      cast("completedAt" as double precision) as "completedAt",
+      "state",
+      "attempt",
+      "runId",
+      "durationMs",
+      "statusCode",
+      "resultDetail",
+      "errorMessage",
+      cast("createdAt" as double precision) as "createdAt"
+    from (
+      select
+        "id",
+        "projectId",
+        "monitorId",
+        "scheduledFor",
+        "startedAt",
+        "completedAt",
+        "state",
+        "attempt",
+        "runId",
+        "durationMs",
+        "statusCode",
+        "resultDetail",
+        "errorMessage",
+        "createdAt",
+        row_number() over (
+          partition by "monitorId"
+          order by "createdAt" desc
+        ) as rn
+      from "monitorExecutions"
+      where "projectId" = ${scope.projectId}
+        and "monitorId" in (${sql.join(
+          monitorIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})
+    ) ranked
+    where rn <= ${perMonitor}
+    order by "monitorId", "createdAt" desc
+    `,
+    { feature: "monitor-recent-executions" },
   );
-  return new Map(entries);
+
+  for (const row of rows) {
+    const list = result.get(row.monitorId);
+    if (list) {
+      list.push(row);
+    } else {
+      result.set(row.monitorId, [row]);
+    }
+  }
+  return result;
 }
 
 /** A single execution by id within the tenant, or null. */
@@ -414,9 +489,8 @@ export async function claimExecution(
       and(
         eq(monitorExecutions.projectId, execution.projectId),
         eq(monitorExecutions.id, execution.id),
-        // `error` is re-enterable to support infra retries; without a
-        // persisted infra/real distinction this also lets a duplicate
-        // redelivery re-run a settled real-error outcome (see docstring).
+        // `error` remains claimable because infra failures are retryable and the
+        // schema does not yet distinguish them from settled test failures.
         inArray(monitorExecutions.state, ["queued", "error"]),
       ),
     )
@@ -446,13 +520,19 @@ export async function claimExecution(
  * pollute the health baseline the alert classifier reads on the retry, turning
  * one transient hiccup into a "down" + spurious "recovered" email pair. The
  * badge therefore stays owned by real recorded executions — the same policy the
- * stale-execution reaper (`sweepStaleExecutions`) already follows.
+ * stale-execution reaper (`sweepStaleExecutions`) already follows. That rule
+ * lives in the shared `monitorBadgeUpdate` projection (`@/lib/monitors/executor`),
+ * which the broadcast path (`monitorResultEvent`) also derives from — so the
+ * persisted badge and the live `monitor-result` event can never disagree.
  */
 export async function recordExecutionResult(
   execution: MonitorExecution,
   result: ExecutionResult,
   now: number,
 ): Promise<void> {
+  // The one settled-result → badge rule, shared with the broadcast path:
+  // `null` = retryable infra error, leave the monitor's badge untouched.
+  const badge = monitorBadgeUpdate(result, now);
   await runBatch((tx) => [
     tx
       .update(monitorExecutions)
@@ -474,12 +554,16 @@ export async function recordExecutionResult(
         ),
       ),
     // Skip the monitor badge/baseline bump for a retryable infra error (above).
-    ...(result.infraError
+    ...(badge === null
       ? []
       : [
           tx
             .update(monitors)
-            .set({ lastStatus: result.state, lastRunAt: now, updatedAt: now })
+            .set({
+              lastStatus: badge.lastStatus,
+              lastRunAt: badge.lastRunAt,
+              updatedAt: now,
+            })
             .where(
               and(
                 eq(monitors.projectId, execution.projectId),

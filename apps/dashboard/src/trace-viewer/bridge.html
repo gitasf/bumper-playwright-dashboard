@@ -1,0 +1,189 @@
+<!doctype html>
+<!--
+  Wrightful trace bridge — the ONLY page of our custom trace viewer that runs
+  under the Playwright service worker's control.
+
+  The custom viewer UI lives natively in the dashboard React tree (outside the
+  /trace-viewer/ SW scope), but the SW only serves its endpoints (`contexts`,
+  `snapshot/*`, `snapshotInfo/*`, `sha1/*`, `ping`) to CONTROLLED clients —
+  and for a controlled client it resolves any out-of-scope subresource against
+  the trace archive instead of the network. So the dashboard page itself must
+  never be controlled; instead the viewer mounts this document in a hidden
+  same-origin iframe. It registers sw.bundle.js (scope /trace-viewer/), keeps
+  the SW alive (`ping` every 10s — this iframe staying mounted is also what
+  keeps the SW's per-client trace cache from being GC'd), fetches the parsed
+  trace model from `contexts?trace=…`, and relays progress/model/errors to the
+  parent via postMessage. Mirrors the official viewer's bootstrap (index.*.js)
+  including its Local-Network-Access retry (HEAD, `x-pw-serviceworker: skip`).
+
+  It also exposes a FETCH PROXY to the parent: `{method:"fetch", id, path,
+  as}` requests are fetched from inside this controlled client (so the SW
+  answers them) and returned as `fetchResult` messages — this is how the
+  dashboard reads `snapshotInfo/*` JSON, `sha1/*` bytes (source files,
+  attachment previews, screencast frames), which it cannot fetch itself.
+  Paths are validated to stay inside the SW scope.
+
+  WARM MODE: loaded without `?trace=`, the bridge only registers the service
+  worker, reports `warm`, and idles — used to pre-warm the SW on hover of a
+  Replay button (see src/trace-viewer/warm.ts).
+
+  Everything is inline on purpose: once controlled, this document must not
+  load any subresources.
+
+  This file is copied into public/trace-viewer/ by scripts/vendor-trace-viewer.mjs
+  (the directory is generated + gitignored) — edit it HERE, not there.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="robots" content="noindex" />
+    <title>Wrightful trace bridge</title>
+  </head>
+  <body>
+    <script>
+      (async () => {
+        // Explicit parent origin for cross-origin bridge messaging.
+        const HOST = (() => {
+          const raw = new URLSearchParams(location.search).get("host");
+          if (!raw) return location.origin;
+          try {
+            return new URL(raw).origin;
+          } catch {
+            return location.origin;
+          }
+        })();
+
+        const send = (method, params) =>
+          parent.postMessage(
+            { source: "wrightful-trace-bridge", method, params },
+            HOST,
+          );
+
+        // Fetch proxy: answer parent requests from inside this controlled
+        // client. Installed before the (slow) model load so snapshotInfo /
+        // sha1 requests work as soon as the parent has the model.
+        window.addEventListener("message", (event) => {
+          const data = event.data;
+          if (event.origin !== HOST) return;
+          if (event.source !== parent) return;
+          if (!data || data.source !== "wrightful-trace-host") return;
+          if (data.method !== "fetch") return;
+          const { id, path, as } = data;
+          const reply = (params) =>
+            send("fetchResult", Object.assign({ id }, params));
+          Promise.resolve()
+            .then(async () => {
+              const url = new URL(path, location.href);
+              if (
+                url.origin !== location.origin ||
+                !url.pathname.startsWith("/trace-viewer/")
+              ) {
+                throw new Error("Path outside the trace-viewer scope.");
+              }
+              const res = await fetch(url.toString());
+              if (!res.ok) {
+                reply({ ok: false, status: res.status });
+                return;
+              }
+              const body =
+                as === "blob" ? await res.blob() : await res.json();
+              reply({ ok: true, status: res.status, body });
+            })
+            .catch((err) => {
+              reply({
+                ok: false,
+                status: 0,
+                error: err && err.message ? err.message : String(err),
+              });
+            });
+        });
+
+        try {
+          const trace = new URLSearchParams(location.search).get("trace");
+          if (!navigator.serviceWorker)
+            throw new Error(
+              "Service workers are unavailable, so the trace cannot be replayed here. Serve the dashboard over HTTPS or localhost.",
+            );
+
+          await navigator.serviceWorker.register("sw.bundle.js");
+          if (!navigator.serviceWorker.controller) {
+            await new Promise((resolve) => {
+              navigator.serviceWorker.oncontrollerchange = () => resolve();
+            });
+          }
+
+          if (!trace) {
+            // Warm mode: SW registered + active; nothing to load.
+            send("warm", {});
+            return;
+          }
+
+          // Keep the SW (and its trace cache entry for this client) alive for
+          // as long as the viewer stays open.
+          setInterval(() => {
+            fetch("ping").catch(() => {});
+          }, 10000);
+
+          navigator.serviceWorker.addEventListener("message", (event) => {
+            const data = event.data;
+            if (data && data.method === "progress")
+              send("progress", data.params);
+          });
+
+          const load = async () => {
+            const query = new URLSearchParams();
+            query.set("trace", trace);
+            const res = await fetch("contexts?" + query.toString());
+            if (!res.ok) {
+              const body = await res.json().catch(() => null);
+              return (body && body.error) || "Failed to load the trace.";
+            }
+            send("model", { contextEntries: await res.json() });
+            return null;
+          };
+
+          let error = await load();
+          if (error && error.includes("Local Network Access")) {
+            // Same dance as the official viewer: a direct HEAD (bypassing the
+            // SW) prompts the browser's permission flow, then retry.
+            await fetch(trace, {
+              method: "HEAD",
+              headers: { "x-pw-serviceworker": "skip" },
+            }).catch(() => {});
+            error = await load();
+          }
+          if (error) {
+            // The SW's load error doesn't say WHY the zip fetch failed (a 404
+            // from a missing artifact reads the same as a blocked network).
+            // Probe the trace URL directly (bypassing the SW) and surface the
+            // actual HTTP status — this turns "make sure a valid trace is
+            // accessible" into "the trace URL returned HTTP 404".
+            try {
+              const probe = await fetch(trace, {
+                method: "HEAD",
+                headers: { "x-pw-serviceworker": "skip" },
+              });
+              if (!probe.ok) {
+                error +=
+                  "\n\nThe trace URL returned HTTP " +
+                  probe.status +
+                  (probe.status === 404
+                    ? " — the trace bytes are missing from artifact storage (in local dev this usually means the DB has the artifact row but the dev R2 state was reset; re-run the fixture seed)."
+                    : probe.status === 403 || probe.status === 401
+                      ? " — the download token was rejected (likely expired; reopen the Replay modal to mint a fresh one)."
+                      : ".");
+              }
+            } catch {
+              /* probe is best-effort */
+            }
+            send("error", { error });
+          }
+        } catch (err) {
+          send("error", {
+            error: err && err.message ? err.message : String(err),
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

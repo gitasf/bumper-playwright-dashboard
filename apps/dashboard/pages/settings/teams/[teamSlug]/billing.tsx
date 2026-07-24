@@ -108,7 +108,7 @@ function BillingPanel({
             <>
               <div className="flex items-center gap-2">
                 <Badge variant="secondary">Free</Badge>
-                <span className="text-[length:var(--text-fs-13)] text-fg-3">
+                <span className="text-body text-fg-3">
                   Upgrade to Pro for higher limits — {priceLabel}.
                 </span>
               </div>
@@ -122,7 +122,7 @@ function BillingPanel({
             <>
               <div className="flex items-center gap-2">
                 <Badge variant="info">Pro · Trial</Badge>
-                <span className="text-[length:var(--text-fs-13)] text-fg-3">
+                <span className="text-body text-fg-3">
                   {billing.trialDaysLeft != null
                     ? `${billing.trialDaysLeft} day${
                         billing.trialDaysLeft === 1 ? "" : "s"
@@ -130,7 +130,7 @@ function BillingPanel({
                     : "Trial active."}
                 </span>
               </div>
-              <p className="text-[length:var(--text-fs-13)] text-fg-3">
+              <p className="text-body text-fg-3">
                 Upgrade to keep Pro after your trial ends — {priceLabel}.
               </p>
               <div>
@@ -143,7 +143,7 @@ function BillingPanel({
             <>
               <div className="flex items-center gap-2">
                 <Badge variant="success">Pro</Badge>
-                <span className="text-[length:var(--text-fs-13)] text-fg-3">
+                <span className="text-body text-fg-3">
                   {billing.status === "canceled"
                     ? periodEndLabel
                       ? `Cancels on ${periodEndLabel}.`

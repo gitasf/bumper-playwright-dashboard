@@ -14,7 +14,7 @@ export function ScrollArea({
 }): React.ReactElement {
   return (
     <ScrollAreaPrimitive.Root
-      className={cn("size-full min-h-0", className)}
+      className={cn("size-full min-h-0 min-w-0", className)}
       {...props}
     >
       <ScrollAreaPrimitive.Viewport

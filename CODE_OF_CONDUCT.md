@@ -49,7 +49,7 @@ an individual is officially representing the community in public spaces.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the maintainers privately via GitHub (open a report through
-[private vulnerability reporting](https://github.com/joefairburn/greenroom/security/advisories/new)
+[private vulnerability reporting](https://github.com/joefairburn/wrightful/security/advisories/new)
 if you need a confidential channel, or contact a maintainer directly). All
 complaints will be reviewed and investigated promptly and fairly. Community
 leaders are obligated to respect the privacy and security of the reporter.

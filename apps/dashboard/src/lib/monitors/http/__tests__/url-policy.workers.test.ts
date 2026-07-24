@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { checkUrlPolicy } from "@/lib/monitors/http/url-policy";
+import {
+  checkUrlPolicy,
+  isBlockedHostname,
+} from "@/lib/monitors/http/url-policy";
 
 /**
  * `checkUrlPolicy` is the pure write/read-path guard for http monitor URLs:
@@ -120,5 +123,25 @@ describe("checkUrlPolicy — rejected", () => {
 
   it("rejects an over-long URL", () => {
     expect(ok(`https://example.com/${"a".repeat(2100)}`)).toBe(false);
+  });
+});
+
+describe("isBlockedHostname — bare IPv6 (no brackets)", () => {
+  // `checkUrlPolicy` never sees a bare IPv6 literal (WHATWG `URL.hostname`
+  // always brackets it), but `checkTcpHostPolicy` passes its raw host straight
+  // through — `isBlockedHostname` must not fall through to the IPv4 parser
+  // (which silently reads any non-dotted-quad as "not blocked") for this shape.
+  it("rejects bare IPv6 loopback / unique-local / link-local literals", () => {
+    expect(isBlockedHostname("::1")).toBe(true);
+    expect(isBlockedHostname("fe80::1")).toBe(true);
+    expect(isBlockedHostname("fc00::1")).toBe(true);
+  });
+
+  it("still blocks the bracketed form", () => {
+    expect(isBlockedHostname("[::1]")).toBe(true);
+  });
+
+  it("allows a public bare IPv6 literal (no over-blocking)", () => {
+    expect(isBlockedHostname("2606:4700:4700::1111")).toBe(false);
   });
 });

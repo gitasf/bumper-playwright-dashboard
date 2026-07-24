@@ -1,6 +1,6 @@
 import { sql } from "void/db";
 import { percentilePick } from "@/lib/analytics/bucketing-sql";
-import { runRow, runRows } from "@/lib/db-run";
+import { runRow, runRows } from "@/lib/runs/db";
 import { castIntAggFragment } from "@/lib/db/sql-ops";
 import type { TenantScope } from "@/lib/scope";
 

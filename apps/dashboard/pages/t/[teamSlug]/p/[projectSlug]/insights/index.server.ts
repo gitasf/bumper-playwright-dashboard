@@ -10,6 +10,7 @@ import {
 import { makeRangeParser } from "@/lib/analytics/range";
 import { loadProjectBranches } from "@/lib/branches-query";
 import { numericSql } from "@/lib/db/sql-ops";
+import { deferredNoStore, pageProjectFields } from "@/lib/page-loader";
 import { rate } from "@/lib/rate";
 import { ciRunsScopeWhere } from "@/lib/scope";
 import { requireTenantContext } from "@/lib/tenant-context";
@@ -113,20 +114,9 @@ export const loader = defineHandler(async (c) => {
 
   // Drizzle's groupBy accepts an SQL fragment; we reuse the same `expr`
   // both in the SELECT (aliased "bucket") and the GROUP BY.
-  // A deferred loader streams a variant-specific body (NDJSON on SPA nav /
-  // chunked HTML on document load, keyed by `Vary: X-VoidPages`); SWR/max-age
-  // caching would let the browser replay the wrong variant. Deferred pages must
-  // not be stored — the perceived-load win comes from streaming, not the cache.
-  // (Was `private, max-age=300, stale-while-revalidate=900`.)
-  c.header("Cache-Control", "private, no-store");
+  deferredNoStore(c);
   return {
-    project: {
-      id: project.id,
-      teamId: project.teamId,
-      slug: project.slug,
-      name: project.name,
-      teamSlug: project.teamSlug,
-    },
+    project: pageProjectFields(project),
     range,
     segment,
     days,

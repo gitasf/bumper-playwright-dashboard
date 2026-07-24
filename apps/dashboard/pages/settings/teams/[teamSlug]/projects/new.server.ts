@@ -1,8 +1,7 @@
 import { defineHandler, type InferProps } from "void";
-import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { mutationErrorMessage } from "@/lib/action-errors";
 import { readField } from "@/lib/form";
-import { createProjectForTeam, SlugDerivationError } from "@/lib/provisioning";
+import { createProjectAudited, SlugDerivationError } from "@/lib/provisioning";
 import { requireOwnerScope } from "@/lib/settings-scope";
 
 export type Props = InferProps<typeof loader>;
@@ -23,10 +22,10 @@ export const loader = defineHandler(async (c) => {
 
 /**
  * Settings → New project action. Owner-only. Delegates the slug-pick + insert
- * to the shared `createProjectForTeam` provisioning seam (also called by
- * `POST /api/teams/:teamSlug/projects`); uniqueness is scoped to the team (the
- * schema enforces `(teamId, slug)` uniqueness). This handler owns only the
- * form-decode + error-to-`?error=` mapping.
+ * + PROJECT_CREATE audit row to the shared `createProjectAudited` provisioning
+ * seam (also called by `POST /api/teams/:teamSlug/projects`); uniqueness is
+ * scoped to the team (the schema enforces `(teamId, slug)` uniqueness). This
+ * handler owns only the form-decode + error-to-`?error=` mapping.
  */
 export const action = defineHandler(async (c) => {
   const { team, here: formUrl } = await requireOwnerScope(c, hereFor);
@@ -41,14 +40,7 @@ export const action = defineHandler(async (c) => {
   }
 
   try {
-    const { slug } = await createProjectForTeam(team.id, name);
-    await recordAudit(c, {
-      teamId: team.id,
-      action: AUDIT_ACTIONS.PROJECT_CREATE,
-      targetType: "project",
-      targetId: slug,
-      metadata: { projectName: name },
-    });
+    await createProjectAudited(c, team.id, name);
   } catch (err) {
     if (err instanceof SlugDerivationError) {
       return c.redirect(`${formUrl}?error=${encodeURIComponent(err.message)}`);

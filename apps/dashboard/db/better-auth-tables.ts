@@ -28,6 +28,11 @@ export const authAccount = pgTable("account", {
   id: text("id").primaryKey(),
   providerId: text("providerId").notNull(),
   userId: text("userId").notNull(),
+  // The OAuth user-to-server access token Better Auth persists for a social
+  // provider (nullable — `credential` rows have none). Read for the `github`
+  // provider by `getUserGithubAccessToken` to prove installation ownership in
+  // the GitHub App setup callback (H1). Nullable to match the real column.
+  accessToken: text("accessToken"),
   createdAt: timestamp("createdAt", {
     mode: "date",
     withTimezone: true,

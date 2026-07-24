@@ -1,6 +1,6 @@
 import { and, eq, ne, sql } from "void/db";
 import { runs, testResults } from "@schema";
-import { escapeLike } from "@/lib/runs-filters-where";
+import { escapeLike } from "@/lib/runs/filters-where";
 import type { TenantScope } from "@/lib/scope";
 
 /** Drizzle `SQL` fragment — the exact return type of a `sql\`…\`` template literal. */

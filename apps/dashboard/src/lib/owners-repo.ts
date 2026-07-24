@@ -2,8 +2,10 @@ import { ulid } from "ulid";
 import { and, db, eq, inArray, sql } from "void/db";
 import { projects, testOwners, testResults } from "@schema";
 import type { TestOwner } from "@schema";
+import { listTeamMembers } from "@/lib/auth-users";
 import { matchOwners, parseCodeowners } from "@/lib/codeowners";
-import { runRows } from "@/lib/db-run";
+import { runBatch } from "@/lib/db/batch";
+import { runRows } from "@/lib/runs/db";
 import type { TenantScope } from "@/lib/scope";
 
 /**
@@ -28,6 +30,12 @@ import type { TenantScope } from "@/lib/scope";
 export interface OwnerEntry {
   owner: string;
   source: "manual" | "codeowners";
+  /**
+   * Display label: the team member's NAME when `owner` is a member email,
+   * else the raw owner label. UI surfaces render this (never the email);
+   * the opaque `owner` stays the stored identity/mutation key.
+   */
+  label?: string;
 }
 
 /**
@@ -92,7 +100,7 @@ export async function resolveTestOwners(
   if (testIds.length === 0) return result;
 
   const ids = [...testIds];
-  const [manualRows, projectRows, fileRows] = await Promise.all([
+  const [manualRows, projectRows, fileRows, teamMembers] = await Promise.all([
     db
       .select({ testId: testOwners.testId, owner: testOwners.owner })
       .from(testOwners)
@@ -109,7 +117,15 @@ export async function resolveTestOwners(
       .where(eq(projects.id, scope.projectId))
       .limit(1),
     latestFilePerTestId(scope, ids),
+    // Member email → name, so entries whose opaque label is a member email
+    // carry the member's NAME as their display label (UI never shows emails).
+    listTeamMembers(scope.teamId),
   ]);
+
+  const nameByEmail = new Map<string, string>();
+  for (const m of teamMembers) {
+    nameByEmail.set(m.email, m.name);
+  }
 
   const manualByTestId = new Map<string, string[]>();
   for (const row of manualRows) {
@@ -125,7 +141,10 @@ export async function resolveTestOwners(
     const manual = manualByTestId.get(testId) ?? [];
     const file = fileRows.get(testId);
     const derived = file && rules.length > 0 ? matchOwners(file, rules) : [];
-    const merged = mergeOwners(manual, derived);
+    const merged = mergeOwners(manual, derived).map((entry) => ({
+      ...entry,
+      label: nameByEmail.get(entry.owner) ?? entry.owner,
+    }));
     if (merged.length > 0) result.set(testId, merged);
   }
   return result;
@@ -171,7 +190,9 @@ async function latestFilePerTestId(
 /**
  * Assign a manual owner to a test. Upserts on the unique
  * `(projectId, testId, owner)` so re-assigning the same owner is a no-op rather
- * than a constraint error. Returns the resulting row.
+ * than a constraint error. Returns the resulting row via `.returning()`; on the
+ * no-op conflict path that comes back empty, so we read the existing row by its
+ * unique key rather than fabricating one from the discarded insert values.
  */
 export async function assignOwner(
   scope: TenantScope,
@@ -186,13 +207,71 @@ export async function assignOwner(
     source: "manual" as const,
     createdAt: now,
   };
-  await db
+  const [inserted] = await db
     .insert(testOwners)
     .values(row)
     .onConflictDoNothing({
       target: [testOwners.projectId, testOwners.testId, testOwners.owner],
-    });
-  return row as TestOwner;
+    })
+    .returning();
+  if (inserted) return inserted;
+
+  const [existing] = await db
+    .select()
+    .from(testOwners)
+    .where(ownerRowWhere(scope, input.testId, input.owner))
+    .limit(1);
+  // onConflictDoNothing only returns empty when a conflicting row already
+  // exists, so the fallback SELECT should always find it.
+  if (!existing) {
+    throw new Error(
+      `assignOwner: row missing after onConflictDoNothing for (${scope.projectId}, ${input.testId}, ${input.owner})`,
+    );
+  }
+  return existing;
+}
+
+/**
+ * Replace a test's manual owner set wholesale. The assign popover posts the
+ * full desired selection, so this is delete-then-insert of the manual rows for
+ * `(projectId, testId)` inside one transaction (`runBatch`) — a failed insert
+ * can't leave the test half-cleared. CODEOWNERS-derived owners are untouched
+ * (they're never persisted); an empty `owners` clears every manual row, which
+ * un-shadows the CODEOWNERS leg per `mergeOwners`. Input is de-duplicated,
+ * order-preserving.
+ */
+export async function setManualOwners(
+  scope: TenantScope,
+  testId: string,
+  owners: readonly string[],
+  now: number,
+): Promise<void> {
+  const unique = [...new Set(owners)];
+  await runBatch((tx) => [
+    tx
+      .delete(testOwners)
+      .where(
+        and(
+          eq(testOwners.projectId, scope.projectId),
+          eq(testOwners.testId, testId),
+          eq(testOwners.source, "manual"),
+        ),
+      ),
+    ...(unique.length > 0
+      ? [
+          tx.insert(testOwners).values(
+            unique.map((owner) => ({
+              id: ulid(),
+              projectId: scope.projectId,
+              testId,
+              owner,
+              source: "manual" as const,
+              createdAt: now,
+            })),
+          ),
+        ]
+      : []),
+  ]);
 }
 
 /**

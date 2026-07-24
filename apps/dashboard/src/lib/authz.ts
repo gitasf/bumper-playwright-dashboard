@@ -25,19 +25,6 @@ export interface WorkspaceListItem {
   name: string;
 }
 
-/** Returns the user's role within the team, or null if they're not a member. */
-export async function getTeamRole(
-  userId: string,
-  teamId: string,
-): Promise<TeamRole | null> {
-  const rows = await db
-    .select({ role: memberships.role })
-    .from(memberships)
-    .where(and(eq(memberships.userId, userId), eq(memberships.teamId, teamId)))
-    .limit(1);
-  return rows[0]?.role ?? null;
-}
-
 /**
  * Resolve a team by slug + verify membership in one round-trip. Returns null
  * when the team doesn't exist OR the user isn't a member — callers should
@@ -69,15 +56,6 @@ export async function resolveTeamBySlug(
   const row = rows[0];
   if (!row) return null;
   return row;
-}
-
-export async function getTeamProjects(
-  teamId: string,
-): Promise<WorkspaceListItem[]> {
-  return db
-    .select({ slug: projects.slug, name: projects.name })
-    .from(projects)
-    .where(eq(projects.teamId, teamId));
 }
 
 export async function getUserTeams(
@@ -168,6 +146,16 @@ export interface TenantBundle {
   activeTeam: ResolvedActiveTeam | null;
   teamProjects: WorkspaceListItem[];
   activeProject: ResolvedActiveProject | null;
+  /**
+   * Every team the user belongs to, each with their role — not just `teamSlug`.
+   * Free: the query has no team filter (`.where(eq(memberships.userId, userId))`),
+   * so this just retains rows the `activeTeam` reduction used to discard. Lets
+   * request-scoped callers answer "does this user have role X on team Y" for a
+   * team OTHER than the selected one (e.g. `settings-scope.ts`, where the URL
+   * team can differ from the cookie-selected workspace) without re-querying.
+   * Server-only — NOT part of `SharedBundle`, same separation as `activeProject`.
+   */
+  memberTeams: ResolvedActiveTeam[];
 }
 
 /**
@@ -202,7 +190,7 @@ export async function resolveTenantBundleForUser(
     .where(eq(memberships.userId, userId));
 
   const userTeamsBySlug = new Map<string, WorkspaceListItem>();
-  let activeTeam: ResolvedActiveTeam | null = null;
+  const memberTeamsBySlug = new Map<string, ResolvedActiveTeam>();
   let activeProject: ResolvedActiveProject | null = null;
   const teamProjectsBySlug = new Map<string, WorkspaceListItem>();
 
@@ -210,15 +198,17 @@ export async function resolveTenantBundleForUser(
     if (!userTeamsBySlug.has(r.teamSlug)) {
       userTeamsBySlug.set(r.teamSlug, { slug: r.teamSlug, name: r.teamName });
     }
+    // Capture the role for every team, not just the active one (see the
+    // `memberTeams` field doc) — free, no team filter on the query.
+    if (!memberTeamsBySlug.has(r.teamSlug)) {
+      memberTeamsBySlug.set(r.teamSlug, {
+        id: r.teamId,
+        slug: r.teamSlug,
+        name: r.teamName,
+        role: r.role,
+      });
+    }
     if (teamSlug && r.teamSlug === teamSlug) {
-      if (!activeTeam) {
-        activeTeam = {
-          id: r.teamId,
-          slug: r.teamSlug,
-          name: r.teamName,
-          role: r.role,
-        };
-      }
       if (
         r.projectSlug &&
         r.projectName &&
@@ -249,26 +239,38 @@ export async function resolveTenantBundleForUser(
     }
   }
 
+  const activeTeam = teamSlug
+    ? (memberTeamsBySlug.get(teamSlug) ?? null)
+    : null;
+
   return {
     userTeams: [...userTeamsBySlug.values()],
     activeTeam,
     teamProjects: [...teamProjectsBySlug.values()],
     activeProject,
+    memberTeams: [...memberTeamsBySlug.values()],
   };
 }
 
-export async function resolveProjectBySlugs(
-  userId: string,
-  teamSlug: string,
-  projectSlug: string,
-): Promise<{
+/**
+ * The membership-checked project row `resolveProjectBySlugs` returns — the
+ * project's identity plus the caller's `role` within its team, for
+ * capability gates (`can(role, …)`).
+ */
+export interface UserProjectMembership {
   id: string;
   teamId: string;
   slug: string;
   name: string;
   teamSlug: string;
   role: TeamRole;
-} | null> {
+}
+
+export async function resolveProjectBySlugs(
+  userId: string,
+  teamSlug: string,
+  projectSlug: string,
+): Promise<UserProjectMembership | null> {
   const rows = await db
     .select({
       id: projects.id,

@@ -6,7 +6,7 @@ import type { TeamBilling } from "@/lib/billing/subscription";
 /**
  * Billing settings UI — the ON-path render branches + the checkout button
  * contract. These close the two gaps the DB-backed billing suite
- * (`pg-integration.test.ts`) structurally can't: that suite proves the mirror
+ * (`pg-integration/`) structurally can't: that suite proves the mirror
  * state machine + `loadTeamBilling` classification, but nothing exercised the
  * `.tsx` that turns a classified state into a CTA, nor the client island's
  * checkout call. The OFF state is intentionally NOT retested here — it's owned

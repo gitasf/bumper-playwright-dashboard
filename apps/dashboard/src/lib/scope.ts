@@ -1,6 +1,7 @@
 import { and, db, eq, inArray, lt, ne } from "void/db";
 import { projects, runs, teams } from "@schema";
 import type { ApiKey } from "@schema";
+import type { UserProjectMembership } from "@/lib/authz";
 
 /**
  * A Drizzle column reference, as `eq` accepts it. Derived from `eq`'s own
@@ -31,10 +32,11 @@ export interface TenantScope {
 
 /**
  * The single point where raw `teamId` / `projectId` strings cross the brand
- * boundary into a `TenantScope`. Every scope producer — `tenantScopeForUserBySlugs`,
- * `tenantScopeForApiKey`, and `toScope` in `@/lib/tenant-context` — funnels
+ * boundary into a `TenantScope`. Every scope producer —
+ * `tenantContextForUserBySlugs`, `tenantScopeForApiKey`, `tenantScopeForMonitor`,
+ * `toScope` (`@/lib/tenant-context`), and `requireOwnedProjectScope` — funnels
  * through here, so the two security-load-bearing `as Authorized*Id` casts live
- * in exactly one place instead of being re-applied at each call site.
+ * in one place instead of at each call site.
  *
  * The two casts are the ONLY sanctioned launder from `string` to a branded id.
  * Callers must only pass ids they have already auth-checked (a membership join,
@@ -57,34 +59,71 @@ export function makeTenantScope(parts: {
 }
 
 /**
- * Resolve the tenant scope for a session-authenticated request that *isn't*
- * gated by `middleware/01.context.ts` (i.e. an API route under
- * `/api/t/...` where the middleware regex doesn't fire). Looks up the
- * project + verifies membership in one query.
+ * Type-only re-export of `resolveProjectBySlugs`'s return row (declared in
+ * `authz.ts`), so existing `scope.ts` importers of `UserProjectMembership` keep
+ * working without a second hand-maintained copy. `authz.ts`'s values are
+ * imported dynamically below to dodge a module cycle; a type-only re-export is
+ * erased at compile time, so it doesn't reintroduce one.
+ */
+export type { UserProjectMembership };
+
+/**
+ * The `{ project, scope }` pair for a user-authed by-slug resolve — symmetric
+ * with `TenantContext` (`@/lib/tenant-context`), which derives the same shape
+ * from the middleware-resolved active project.
+ */
+export interface UserTenantContext {
+  project: UserProjectMembership;
+  scope: TenantScope;
+}
+
+/**
+ * Resolve the tenant context for a session-authed request NOT gated by
+ * `middleware/01.context.ts` (an `/api/t/...` route the middleware regex misses).
+ * One query looks up the project + verifies membership, returning both the rich
+ * membership row (carrying `role`, for capability gates) and the branded
+ * `TenantScope`.
  *
- * For `/t/:teamSlug/p/:projectSlug/*` page loaders, use
- * `requireTenantContext(c)` from `@/lib/tenant-context` — it reads the
- * already-resolved active project from middleware context and skips the
- * extra DB round trip.
+ * `role` lives on `project`, not `TenantScope`: the API-key and monitor scope
+ * producers have no user, so a role on the scope would be a nullable field on
+ * every scope. Role belongs to the user-authed carrier only.
  *
- * Returns null when the team doesn't exist, the project doesn't exist, or
- * the user isn't a member. Callers should map null to 404 — don't leak
- * existence.
+ * For `/t/:teamSlug/p/:projectSlug/*` page loaders, use `requireTenantContext(c)`
+ * (`@/lib/tenant-context`) instead — it reuses the middleware-resolved active
+ * project and skips this round-trip. Returns null (map to 404, don't leak
+ * existence) when the team/project doesn't exist or the user isn't a member.
+ */
+export async function tenantContextForUserBySlugs(
+  userId: string,
+  teamSlug: string,
+  projectSlug: string,
+): Promise<UserTenantContext | null> {
+  const { resolveProjectBySlugs } = await import("@/lib/authz");
+  const project = await resolveProjectBySlugs(userId, teamSlug, projectSlug);
+  if (!project) return null;
+  return {
+    project,
+    scope: makeTenantScope({
+      teamId: project.teamId,
+      projectId: project.id,
+      teamSlug: project.teamSlug,
+      projectSlug: project.slug,
+    }),
+  };
+}
+
+/**
+ * Scope-only projection of {@link tenantContextForUserBySlugs}, for callers
+ * that don't need the membership `role` (the run-scoped read API, MCP tools).
+ * Same one-query resolve, same null-means-404 contract.
  */
 export async function tenantScopeForUserBySlugs(
   userId: string,
   teamSlug: string,
   projectSlug: string,
 ): Promise<TenantScope | null> {
-  const { resolveProjectBySlugs } = await import("@/lib/authz");
-  const project = await resolveProjectBySlugs(userId, teamSlug, projectSlug);
-  if (!project) return null;
-  return makeTenantScope({
-    teamId: project.teamId,
-    projectId: project.id,
-    teamSlug: project.teamSlug,
-    projectSlug: project.slug,
-  });
+  const ctx = await tenantContextForUserBySlugs(userId, teamSlug, projectSlug);
+  return ctx?.scope ?? null;
 }
 
 /**

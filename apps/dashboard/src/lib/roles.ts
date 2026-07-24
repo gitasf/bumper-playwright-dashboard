@@ -29,6 +29,16 @@ export type Capability =
   | "deleteTeam";
 
 /**
+ * What an authz gate (`requireRoleScope` / `resolveProjectApiScope`) accepts in
+ * place of a `Capability`. `"anyMember"` is the explicit bare-membership bar
+ * (any membership, viewer included, passes) — it exists so gates require a
+ * stated bar at every call site rather than a permissive default on omission,
+ * so a mutation route can't inherit the most-permissive behaviour by leaving
+ * the argument out.
+ */
+export type CapabilityGate = Capability | "anyMember";
+
+/**
  * The capability matrix. Defined explicitly (a full row per role) rather than
  * derived from a hierarchy so the grant set for every role reads off the page
  * and a future role can't silently inherit a capability.
@@ -37,8 +47,9 @@ export type Capability =
  *   The pre-3.1 codebase has exactly two roles. Every *mutation* — key minting
  *   (`requireOwnedProjectScope`), config writes (`requireOwnerScope`), project
  *   creation, monitors, quarantine, member management, team delete — is already
- *   OWNER-gated; a plain `member` could only *read* the settings pages
- *   (`requireMemberScope`). So preserving TODAY's member capabilities (the hard
+ *   OWNER-gated; a plain `member` could only *read* the settings pages (the
+ *   bare-membership gate, today `requireRoleScope(c, "anyMember")`). So
+ *   preserving TODAY's member capabilities (the hard
  *   constraint — don't downgrade existing members, and don't silently UPGRADE
  *   them either) means `member` maps to `viewSettings` and nothing more. If
  *   members were ever to gain write/mint rights it would be an intentional,

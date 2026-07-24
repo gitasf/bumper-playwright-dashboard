@@ -43,6 +43,9 @@ export function makeResult(opts: {
   errorMessage?: string;
   attachments?: TestResult["attachments"];
   workerIndex?: number;
+  /** Playwright's per-attempt stdout/stderr chunks (string | Buffer). */
+  stdout?: Array<string | Buffer>;
+  stderr?: Array<string | Buffer>;
 }): TestResult {
   return {
     status: opts.status,
@@ -53,6 +56,9 @@ export function makeResult(opts: {
       : [],
     attachments: opts.attachments ?? [],
     workerIndex: opts.workerIndex ?? 0,
+    // Default to [] — Playwright always provides the arrays, empty when unused.
+    stdout: opts.stdout ?? [],
+    stderr: opts.stderr ?? [],
     startTime: new Date(),
   } as unknown as TestResult;
 }

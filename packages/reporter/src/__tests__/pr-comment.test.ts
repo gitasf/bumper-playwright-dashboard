@@ -110,6 +110,14 @@ describe("buildCommentBody", () => {
     const body = buildCommentBody({ ...baseSummary, runUrl: null });
     expect(body).toContain("https://wrightful.example.com");
   });
+
+  it("carries a rounded-up seconds remainder into the minutes place", () => {
+    // 119_700ms = 119.7s -> naive per-part rounding gives "1m 60s"; rounding
+    // to whole seconds first must carry to "2m 0s".
+    const body = buildCommentBody({ ...baseSummary, durationMs: 119_700 });
+    expect(body).toContain("2m 0s");
+    expect(body).not.toContain("1m 60s");
+  });
 });
 
 describe("postPrComment", () => {

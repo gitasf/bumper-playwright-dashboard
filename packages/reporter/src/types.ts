@@ -26,6 +26,19 @@ export interface TestAttemptPayload {
   durationMs: number;
   errorMessage: string | null;
   errorStack: string | null;
+  /**
+   * Everything the test wrote to stdout/stderr during THIS attempt — the
+   * decoded + joined `TestResult.stdout`/`stderr` chunks Playwright exposes at
+   * `onTestEnd`, truncated to `MAX.MESSAGE`. Always emitted (`null` when nothing
+   * was captured), matching the emit-always-nullable convention `errorMessage`/
+   * `errorStack` already use so the `contract.test.ts` key-set canary stays
+   * exact. Surfaced per-attempt so `console.log` CI debugging (invisible before)
+   * shows up in the dashboard + the `get_test_result` MCP tool. Mirrors the
+   * `stdout`/`stderr` fields on `TestAttemptSchema` in
+   * apps/dashboard/src/lib/schemas.ts.
+   */
+  stdout: string | null;
+  stderr: string | null;
 }
 
 export interface TestResultPayload {

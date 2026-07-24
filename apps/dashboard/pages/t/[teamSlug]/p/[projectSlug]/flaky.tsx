@@ -5,11 +5,10 @@ import { FlakyTestRow } from "@/components/flaky-test-row";
 import { KpiInline } from "@/components/kpi-inline";
 import { PageHeader } from "@/components/page-header";
 import { PageToolbar } from "@/components/page-toolbar";
-import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { RunHistoryBranchFilter } from "@/components/run/history-branch-filter";
+import { ALL_BRANCHES } from "@/components/run/history-branch-filter.shared";
 import { TablePaginationFooterSkeleton } from "@/components/skeletons";
 import { TablePaginationFooter } from "@/components/table-pagination-footer";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Empty,
   EmptyContent,
@@ -26,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/cn";
 import { makeHrefBuilder } from "@/lib/page-links";
 import type { Props } from "./flaky.server";
 
@@ -54,13 +54,10 @@ export default function FlakyTestsPage({
   branches,
   rangeDays,
   flaky,
-  ownerError,
   pathname,
-  fullPath,
   ranges,
 }: Props) {
   const base = `/t/${project.teamSlug}/p/${project.slug}`;
-  const ownerActionPath = `/api/t/${project.teamSlug}/p/${project.slug}/owners`;
   const { with: hrefWith } = makeHrefBuilder(pathname, {
     range,
     branch: branchParam,
@@ -98,14 +95,6 @@ export default function FlakyTestsPage({
         />
       </PageToolbar>
 
-      {ownerError && (
-        <div className="shrink-0 px-6 pt-3">
-          <Alert variant="error">
-            <AlertDescription>{ownerError}</AlertDescription>
-          </Alert>
-        </div>
-      )}
-
       <DeferredSection
         resetKey={resetKey}
         skeleton={<FlakyTableSkeleton rangeDays={rangeDays} />}
@@ -115,11 +104,7 @@ export default function FlakyTestsPage({
           branchAll={branchAll}
           branchFilter={branchFilter}
           branches={branches}
-          canManageOwners={project.canManageOwners}
           flaky={flaky}
-          fullPath={fullPath}
-          ownerActionPath={ownerActionPath}
-          pathname={pathname}
           rangeDays={rangeDays}
         />
       </DeferredSection>
@@ -153,11 +138,11 @@ function FlakyKpiSkeleton() {
     <>
       {widths.map((valueW, i) => (
         <div
-          className="flex items-baseline gap-1.5 border-r border-border pr-3 mr-1"
+          className="flex items-baseline gap-1.5 border-r border-line-1 pr-3 mr-1"
           key={i}
         >
-          <Skeleton className="h-[10.5px] w-20" />
-          <Skeleton className={`h-[13px] ${valueW}`} />
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className={cn("h-[13px]", valueW)} />
         </div>
       ))}
     </>
@@ -170,25 +155,17 @@ function FlakyKpiSkeleton() {
 function FlakyTableRegion({
   flaky,
   base,
-  ownerActionPath,
-  fullPath,
   rangeDays,
   branchAll,
   branchFilter,
   branches,
-  canManageOwners,
-  pathname,
 }: {
   flaky: Props["flaky"];
   base: string;
-  ownerActionPath: string;
-  fullPath: string;
   rangeDays: number;
   branchAll: boolean;
   branchFilter: string | null;
   branches: string[];
-  canManageOwners: boolean;
-  pathname: string;
 }) {
   const { totalFlakyTests, ranked, sparkByTest, failsByTest, ownersByTestId } =
     use(flaky);
@@ -207,7 +184,7 @@ function FlakyTableRegion({
               </EmptyDescription>
             </EmptyHeader>
             <EmptyContent>
-              <span className="text-xs text-muted-foreground font-mono">
+              <span className="text-xs text-fg-3 font-mono">
                 {branches.length > 0 && (
                   <>
                     Branches: {branches.slice(0, 3).join(", ")}
@@ -225,7 +202,7 @@ function FlakyTableRegion({
   return (
     <>
       <div className="flex-1 overflow-y-auto min-h-0">
-        <Table className="table-fixed">
+        <Table className="table-fixed" stickyHeader>
           <FlakyTableHead rangeDays={rangeDays} />
           <TableBody>
             {ranked.map((row) => {
@@ -237,11 +214,8 @@ function FlakyTableRegion({
                 : base;
               return (
                 <FlakyTestRow
-                  canManageOwners={canManageOwners}
                   file={meta?.file ?? ""}
                   key={row.testId}
-                  ownerActionPath={ownerActionPath}
-                  ownerRedirectTo={fullPath}
                   owners={ownersByTestId[row.testId] ?? []}
                   pct={row.pct}
                   rangeDays={rangeDays}
@@ -249,7 +223,6 @@ function FlakyTableRegion({
                   rowHref={rowHref}
                   sparklinePoints={meta?.sparkline ?? []}
                   tags={meta?.tags ?? []}
-                  testId={row.testId}
                   title={meta?.title ?? row.testId}
                 />
               );
@@ -258,13 +231,10 @@ function FlakyTableRegion({
         </Table>
       </div>
       <TablePaginationFooter
-        currentPage={1}
         fromRow={1}
         itemNoun="flaky test"
-        pageHref={() => pathname}
         toRow={ranked.length}
         totalCount={totalFlakyTests}
-        totalPages={1}
       />
     </>
   );
@@ -274,27 +244,15 @@ function FlakyTableRegion({
  *  skeleton so the column widths can't drift between states. */
 function FlakyTableHead({ rangeDays }: { rangeDays: number }) {
   return (
-    <TableHeader className="sticky top-0 z-10 bg-bg-0/95 backdrop-blur-sm">
+    <TableHeader className="sticky top-0 z-20 bg-bg-0/95 backdrop-blur-sm">
       <TableRow>
         <TableHead className="w-10 px-4" />
-        <TableHead className="px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Test
-        </TableHead>
-        <TableHead className="w-[110px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Flake rate
-        </TableHead>
-        <TableHead className="w-[180px] px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          {rangeDays}d trend
-        </TableHead>
-        <TableHead className="w-[280px] px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Last failure
-        </TableHead>
-        <TableHead className="w-[210px] px-4 text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Owner
-        </TableHead>
-        <TableHead className="w-[90px] px-4 text-right text-[10.5px] font-semibold uppercase tracking-[0.5px] text-muted-foreground">
-          Last seen
-        </TableHead>
+        <TableHead className="px-4">Test</TableHead>
+        <TableHead className="w-[110px] px-4 text-right">Flake rate</TableHead>
+        <TableHead className="w-[180px] px-4">{rangeDays}d trend</TableHead>
+        <TableHead className="w-[280px] px-4">Last failure</TableHead>
+        <TableHead className="w-[210px] px-4">Owner</TableHead>
+        <TableHead className="w-[90px] px-4 text-right">Last seen</TableHead>
       </TableRow>
     </TableHeader>
   );
@@ -308,7 +266,7 @@ function FlakyTableSkeleton({ rangeDays }: { rangeDays: number }) {
   return (
     <>
       <div className="flex-1 overflow-y-auto min-h-0">
-        <Table className="table-fixed">
+        <Table className="table-fixed" stickyHeader>
           <FlakyTableHead rangeDays={rangeDays} />
           <TableBody>
             {Array.from({ length: SKELETON_ROWS }, (_, i) => (
@@ -317,7 +275,7 @@ function FlakyTableSkeleton({ rangeDays }: { rangeDays: number }) {
                   <Skeleton className="mx-auto h-3.5 w-3.5 rounded-full" />
                 </TableCell>
                 <TableCell className="px-4 py-3 align-middle">
-                  {/* leading-none: text-[13px] + mt-0.5 + text-[11px] = 26px */}
+                  {/* leading-none: text-body + mt-0.5 + text-micro = 26px */}
                   <div className="min-w-0">
                     <Skeleton className="h-[13px] w-2/3" />
                     <Skeleton className="mt-0.5 h-[11px] w-1/2" />

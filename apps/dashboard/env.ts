@@ -1,4 +1,5 @@
 import { boolean, defineEnv, number, oneOf, string, url } from "void/env";
+import { z } from "zod";
 
 export default defineEnv({
   /**
@@ -58,6 +59,13 @@ export default defineEnv({
   R2_ACCESS_KEY_ID: string().secret().optional(),
   R2_SECRET_ACCESS_KEY: string().secret().optional(),
   R2_BUCKET: string().optional(),
+
+  // ---------- Trace viewer ----------
+  /**
+   * Optional cookieless origin for `/trace-viewer/*`. Set before building;
+   * unset keeps snapshots same-origin with scripts disabled. See SELF-HOSTING.md.
+   */
+  VITE_WRIGHTFUL_TRACE_VIEWER_ORIGIN: url().optional(),
 
   /**
    * GitHub OAuth credentials, in Void's `AUTH_<PROVIDER>_CLIENT_{ID,SECRET}`
@@ -128,6 +136,16 @@ export default defineEnv({
    */
   WRIGHTFUL_SWEEP_BATCH_SIZE: number().default(200),
 
+  /**
+   * Maximum distinct test-result rows accepted for one run. Further appends
+   * return 413. Defaults to 500,000; set to 0 to disable.
+   */
+  WRIGHTFUL_MAX_TEST_RESULTS_PER_RUN: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(500000),
+
   // ---------- Billing / usage quotas ----------
 
   /**
@@ -179,6 +197,16 @@ export default defineEnv({
   POLAR_MODE: oneOf(["sandbox", "production"]).default("sandbox"),
   /** Polar Product ID for the flat monthly Pro plan (per-environment). */
   POLAR_PRO_PRODUCT_ID: string().optional(),
+
+  /**
+   * Maximum teams checked by each billing reconciliation. The randomly ordered
+   * sample rotates coverage between runs. Defaults to 500.
+   */
+  WRIGHTFUL_BILLING_RECONCILE_BATCH_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(500),
 
   // ---------- Pro-tier caps (apply only when billing is ON; PLACEHOLDER / TBA defaults) ----------
   /**
@@ -261,6 +289,12 @@ export default defineEnv({
    * `false` and create users via invites.
    */
   ALLOW_OPEN_SIGNUP: boolean().default(false),
+
+  /**
+   * Allows the first team to be created on an otherwise closed instance.
+   * Disable it again after bootstrapping. Defaults to false.
+   */
+  WRIGHTFUL_BOOTSTRAP_FIRST_TEAM: boolean().default(false),
 
   // ---------- Data export / public query API (roadmap 2.5) ----------
 

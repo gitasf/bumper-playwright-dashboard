@@ -24,6 +24,11 @@
  *         (`docs/*` owns `docs/a.md`, not `docs/sub/a.md`) — a GitHub quirk
  *         that diverges from pure gitignore.
  *
+ * Hard bounds (`MAX_RULES`, `MAX_PATTERN_LENGTH` below): a CODEOWNERS file is
+ * tenant-authored, so a pathological one (thousands of rules, an absurdly long
+ * pattern) must not make every owner lookup expensive. Over-cap lines/rules are
+ * dropped silently — no error channel back to the author.
+ *
  * See `src/__tests__/codeowners.test.ts` for the behavior table.
  */
 
@@ -34,6 +39,11 @@ export interface CodeownersRule {
   owners: string[];
 }
 
+/** Rules beyond this many are dropped (a 64KB file could pack ~13k one-liners). */
+const MAX_RULES = 1000;
+/** A pattern (not the whole line) longer than this is skipped. */
+const MAX_PATTERN_LENGTH = 256;
+
 /**
  * Parse CODEOWNERS text into ordered rules. Order is preserved because matching
  * is last-match-wins. Blank lines and `#` comments are dropped; a line that is
@@ -42,6 +52,7 @@ export interface CodeownersRule {
 export function parseCodeowners(text: string): CodeownersRule[] {
   const rules: CodeownersRule[] = [];
   for (const rawLine of text.split(/\r?\n/)) {
+    if (rules.length >= MAX_RULES) break;
     // Strip a trailing comment? GitHub does NOT support inline comments after a
     // rule — only whole-line `#` comments — so we only skip lines whose first
     // non-space char is `#`.
@@ -50,6 +61,7 @@ export function parseCodeowners(text: string): CodeownersRule[] {
     const parts = line.split(/\s+/);
     const pattern = parts[0];
     if (!pattern) continue;
+    if (pattern.length > MAX_PATTERN_LENGTH) continue;
     rules.push({ pattern, owners: parts.slice(1) });
   }
   return rules;
@@ -171,14 +183,34 @@ function matchAnchored(
  *   - `**` → any run of chars INCLUDING `/` (crosses path segments)
  * All other characters are literals. Anchored at both ends (full match).
  *
- * Compiled to a RegExp; characters outside the wildcard set are escaped.
+ * Compiled to a memoized token list (`compileGlob`) and matched with a linear
+ * DP scan (`matchTokens`), not a RegExp: a `**`-heavy pattern regex can
+ * backtrack catastrophically on tenant-controlled `text`, so worst-case cost
+ * must stay polynomial.
  */
 function globMatch(pattern: string, text: string): boolean {
-  return globToRegExp(pattern).test(text);
+  return matchTokens(compileGlob(pattern), text);
 }
 
-function globToRegExp(pattern: string): RegExp {
-  let re = "^";
+/** A single compiled glob wildcard/literal, in left-to-right pattern order. */
+type GlobToken =
+  | { readonly kind: "lit"; readonly ch: string }
+  | { readonly kind: "one" } // `?` — one char, not `/`
+  | { readonly kind: "star" } // `*` — any run of chars, not crossing `/`
+  | { readonly kind: "globstar" } // `**` — any run of chars, crosses `/`
+  | { readonly kind: "globstarSlash" }; // `**/` — optional (any chars)+`/`
+
+/** Bounded memo of `pattern -> tokens` (rule patterns are reused across every
+ * path segment probed). Cleared wholesale past the cap rather than evicting
+ * LRU-style — cheap enough to refill. */
+const MAX_GLOB_CACHE_ENTRIES = 2000;
+const globCache = new Map<string, GlobToken[]>();
+
+function compileGlob(pattern: string): GlobToken[] {
+  const cached = globCache.get(pattern);
+  if (cached) return cached;
+
+  const tokens: GlobToken[] = [];
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i]!;
     if (ch === "*") {
@@ -188,25 +220,84 @@ function globToRegExp(pattern: string): RegExp {
         // `**/` collapses the following slash so `**/x` also matches `x` at root.
         if (pattern[i + 1] === "/") {
           i++;
-          re += "(?:.*/)?";
+          tokens.push({ kind: "globstarSlash" });
         } else {
-          re += ".*";
+          tokens.push({ kind: "globstar" });
         }
       } else {
-        // Single `*` — anything but a slash.
-        re += "[^/]*";
+        tokens.push({ kind: "star" });
       }
     } else if (ch === "?") {
-      re += "[^/]";
+      tokens.push({ kind: "one" });
     } else {
-      re += escapeRegExpChar(ch);
+      tokens.push({ kind: "lit", ch });
     }
   }
-  re += "$";
-  return new RegExp(re);
+
+  if (globCache.size >= MAX_GLOB_CACHE_ENTRIES) globCache.clear();
+  globCache.set(pattern, tokens);
+  return tokens;
 }
 
-/** Escape a single character for use as a RegExp literal. */
-function escapeRegExpChar(ch: string): string {
-  return /[.+^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch;
+/**
+ * Whether `tokens` matches `text` in full, via row-by-row DP where `dp[i][j]` =
+ * "first `i` tokens match first `j` chars" — O(tokens * text), no backtracking.
+ * `row[j]` builds from `prevRow` plus, for variable-width tokens, `row[j - 1]`
+ * (the "extend the wildcard by one char" trick that keeps it linear per token).
+ */
+function matchTokens(tokens: GlobToken[], text: string): boolean {
+  const textLen = text.length;
+  let prevRow = new Array<boolean>(textLen + 1).fill(false);
+  prevRow[0] = true; // zero tokens matches an empty prefix.
+
+  for (const token of tokens) {
+    const row = new Array<boolean>(textLen + 1).fill(false);
+
+    switch (token.kind) {
+      case "lit": {
+        for (let j = 1; j <= textLen; j++) {
+          row[j] = prevRow[j - 1]! && text[j - 1] === token.ch;
+        }
+        break;
+      }
+      case "one": {
+        for (let j = 1; j <= textLen; j++) {
+          row[j] = prevRow[j - 1]! && text[j - 1] !== "/";
+        }
+        break;
+      }
+      case "star": {
+        // Minimum width 0: an empty match carries `prevRow[0]` forward.
+        row[0] = prevRow[0]!;
+        for (let j = 1; j <= textLen; j++) {
+          row[j] = prevRow[j]! || (row[j - 1]! && text[j - 1] !== "/");
+        }
+        break;
+      }
+      case "globstar": {
+        row[0] = prevRow[0]!;
+        for (let j = 1; j <= textLen; j++) {
+          row[j] = prevRow[j]! || row[j - 1]!;
+        }
+        break;
+      }
+      case "globstarSlash": {
+        // `(?:.*/)?` — contributes nothing (`prevRow[j]`), or any run of chars
+        // (reachable from ANY earlier `prevRow[p]`, tracked in `reachable`)
+        // then one required `/`.
+        row[0] = prevRow[0]!;
+        let reachable = prevRow[0]!;
+        for (let j = 1; j <= textLen; j++) {
+          const throughSlash = text[j - 1] === "/" && reachable;
+          row[j] = prevRow[j]! || throughSlash;
+          reachable = reachable || prevRow[j]!;
+        }
+        break;
+      }
+    }
+
+    prevRow = row;
+  }
+
+  return prevRow[textLen]!;
 }

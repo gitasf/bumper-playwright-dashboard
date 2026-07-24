@@ -1,4 +1,4 @@
-import { db, eq, isNotNull } from "void/db";
+import { db, eq, isNotNull, sql } from "void/db";
 import { env } from "void/env";
 import { logger } from "void/log";
 import { Polar } from "@polar-sh/sdk";
@@ -22,6 +22,15 @@ import { BILLING_PERIOD_GRACE_SECONDS } from "@/lib/billing/tier";
  *
  * Reached only via `PolarBillingProvider` (billing on); the early
  * `!env.POLAR_ACCESS_TOKEN` return is a defensive belt for a direct call.
+ * The randomly ordered, bounded sample rotates coverage without unbounded
+ * Polar subrequests in a single invocation. `order by random() limit k` is a
+ * deliberate simplicity trade-off: it scans every Polar-LINKED team, but that
+ * set's cardinality is paying customers (not event data) and the sort is a
+ * top-k heap, so the weekly selection stays sub-second far past 10^5 linked
+ * teams. If the fleet outgrows that, replace it with a persisted keyset
+ * cursor (a stored last-seen id that wraps around) rather than a random
+ * string start — uniform random ULID bounds mostly sort past every real id
+ * and would resample the wraparound prefix.
  */
 export async function reconcileBilling(
   nowSeconds: number,
@@ -39,7 +48,9 @@ export async function reconcileBilling(
       currentPeriodEnd: teams.currentPeriodEnd,
     })
     .from(teams)
-    .where(isNotNull(teams.polarCustomerId));
+    .where(isNotNull(teams.polarCustomerId))
+    .orderBy(sql`random()`)
+    .limit(env.WRIGHTFUL_BILLING_RECONCILE_BATCH_SIZE);
   let corrected = 0;
   for (const t of rows) {
     if (t.polarCustomerId == null) continue; // narrowed by isNotNull; belt-and-braces
@@ -49,17 +60,27 @@ export async function reconcileBilling(
       // own customers.getStateExternal({ externalId }) is USER-keyed
       // (externalId = user.id), not team-keyed, so it's unusable here.
       // `subscriptions.list` returns a PageIterator — an async-iterable of pages —
-      // so consume the first match with `for await`, NOT `page.result.items[0]`
-      // on the bare return value (fact 10).
+      // so consume it with `for await`, NOT `page.result.items[0]` on the bare
+      // return value (fact 10).
       const result = await sdk.subscriptions.list({
         customerId: t.polarCustomerId,
         limit: 100,
       });
+      // Prefer an active subscription wherever it appears in the paged results:
+      // a customer can have a stale canceled/incomplete subscription ordered
+      // ahead of their active one, and taking page.result.items[0] blindly would
+      // downgrade a paying customer. Fall back to the first seen only if none is active.
       let sub: Subscription | undefined;
+      let fallback: Subscription | undefined;
       for await (const page of result) {
-        sub = page.result.items[0];
-        if (sub) break;
+        const active = page.result.items.find((s) => s.status === "active");
+        if (active) {
+          sub = active;
+          break;
+        }
+        fallback ??= page.result.items[0];
       }
+      sub ??= fallback;
       const desiredTier = sub && sub.status === "active" ? "pro" : "free";
       const desiredEnd =
         polarDateToSeconds(sub?.currentPeriodEnd) ?? t.currentPeriodEnd;
@@ -68,12 +89,21 @@ export async function reconcileBilling(
         t.tier === "pro" &&
         t.currentPeriodEnd != null &&
         nowSeconds > t.currentPeriodEnd + BILLING_PERIOD_GRACE_SECONDS;
-      if (t.tier !== desiredTier && (desiredTier === "pro" || expired)) {
+      const tierChanged =
+        t.tier !== desiredTier && (desiredTier === "pro" || expired);
+      // Correct currentPeriodEnd independently of the tier decision above: a
+      // still-`pro` team whose renewal webhook was lost otherwise keeps a stale
+      // `currentPeriodEnd` forever, since tier never flips to trigger the write.
+      const endChanged = desiredEnd !== t.currentPeriodEnd;
+      if (tierChanged || endChanged) {
         // NB: no billingUpdatedAt here — reconcile must not advance the webhook
         // ordering guard (see the doc-comment above).
         await db
           .update(teams)
-          .set({ tier: desiredTier, currentPeriodEnd: desiredEnd })
+          .set({
+            tier: tierChanged ? desiredTier : t.tier,
+            currentPeriodEnd: desiredEnd,
+          })
           .where(eq(teams.id, t.id));
         corrected++;
       }

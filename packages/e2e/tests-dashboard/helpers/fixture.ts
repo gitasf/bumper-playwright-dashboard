@@ -24,11 +24,10 @@ export interface SerializedFixture {
    */
   password: string;
   /**
-   * Void's per-project dev-trigger token. Sent as `x-void-dev-trigger` to
-   * authorize POSTs to `/__void/scheduled` and `/__void/queue` — how
-   * monitors.spec fires one scheduled cycle without real Cloudflare cron/queue.
+   * Ephemeral Void proxy token compiled into the production preview. Sent as
+   * `x-void-internal` to authorize deterministic cron/queue dispatches.
    */
-  devTriggerToken: string;
+  voidProxyToken: string;
 }
 
 /**
@@ -50,7 +49,7 @@ export function readFixture(): SerializedFixture {
     !("artifactTokenSecret" in parsed) ||
     !("email" in parsed) ||
     !("password" in parsed) ||
-    !("devTriggerToken" in parsed)
+    !("voidProxyToken" in parsed)
   ) {
     throw new Error(
       `Fixture file at ${FIXTURE_PATH} is missing required fields. Did global-setup run?`,

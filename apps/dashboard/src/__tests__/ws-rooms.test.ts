@@ -43,6 +43,7 @@ const projectRoom = (await import("../../routes/ws/project/[projectId].ws"))
 const SECRET = "internal-secret";
 const summary = {
   totalTests: 1,
+  expectedTotalTests: null,
   passed: 1,
   failed: 0,
   flaky: 0,

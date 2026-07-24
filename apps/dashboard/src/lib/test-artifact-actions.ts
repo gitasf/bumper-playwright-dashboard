@@ -1,18 +1,10 @@
 import { asc, db } from "void/db";
-import { env } from "void/env";
 import { artifacts } from "@schema";
 import type { ArtifactAction } from "@/components/artifact-actions";
 import {
-  ARTIFACT_TOKEN_TTL_SECONDS,
-  signArtifactToken,
+  signArtifactDownloadToken,
   signedDownloadHref,
-  signedTraceViewerUrl,
-  traceViewerUrlFor,
-} from "@/lib/artifact-tokens";
-import { artifactContentDisposition } from "@/lib/artifacts";
-import { signGetUrl } from "@/lib/artifacts/presign";
-import { r2DirectConfig } from "@/lib/config";
-import { safeContentType } from "@/lib/content-types";
+} from "@/lib/artifacts/tokens";
 import { childByTestResultWhere, type TenantScope } from "@/lib/scope";
 
 // Order within an attempt: trace first (most useful for debugging), then the
@@ -41,14 +33,15 @@ function compareByTypeThenName(
 }
 
 /**
- * An artifact row whose download capability has already been minted server-side
- * — `href` is the signed download URL, `traceViewerUrl` is set for traces. The
- * pure presentation transforms (`buildAttemptArtifactGroups`) operate on these
- * so token minting / DB access stays out of the orderable/groupable core. The
- * raw `r2Key` does NOT appear as a field here, and `href` never embeds it. One
- * exception when the direct-R2 path is on (ADR 0003): a trace's `traceViewerUrl`
- * wraps a presigned R2 object URL, whose path contains the `r2Key` — an
- * intentional, scoped read capability (the viewer's own tenant), not a leak.
+ * An artifact row whose download capability has already been minted
+ * server-side — `href` is the signed download URL. The pure presentation
+ * transforms (`buildAttemptArtifactGroups`) operate on these so token minting
+ * / DB access stays out of the orderable/groupable core. The raw `r2Key`
+ * never appears as a field here, and `href` doesn't embed it — it goes
+ * through the token-authed worker download route. Consumers that need the
+ * self-hosted trace-viewer link (the rail button, the replay dialog) first
+ * apply the shared replay-eligibility predicate, then derive the viewer link
+ * from `href`; they do not need a separate minted field.
  */
 export interface SignedArtifact {
   id: string;
@@ -59,7 +52,6 @@ export interface SignedArtifact {
   role: string | null;
   snapshotName: string | null;
   href: string;
-  traceViewerUrl?: string;
 }
 
 /**
@@ -123,11 +115,15 @@ export function buildAttemptArtifactGroups(
 
   const out = new Map<number, AttemptArtifactGroup>();
   for (const [attempt, bucket] of byAttempt) {
+    // Only the FIRST `other` row becomes the copyPrompt slot. Any further
+    // `other` rows on the same attempt (multiple non-media attachments are
+    // plausible — see attachments.ts's `other` catch-all) fall through into
+    // `nonVisual`/`media` instead of being silently dropped.
     const copyPromptRow = bucket.find((a) => a.type === "other");
     const copyPrompt = copyPromptRow ? signedToAction(copyPromptRow) : null;
 
     const nonVisual = bucket
-      .filter((a) => a.type !== "other" && a.type !== "visual")
+      .filter((a) => a !== copyPromptRow && a.type !== "visual")
       .map(signedToAction);
 
     const visualByName = new Map<string, SignedArtifact[]>();
@@ -155,7 +151,6 @@ function signedToAction(a: SignedArtifact): ArtifactAction {
     name: a.name,
     contentType: a.contentType,
     downloadHref: a.href,
-    traceViewerUrl: a.traceViewerUrl,
   };
 }
 
@@ -186,47 +181,16 @@ type RawArtifactRow = {
 
 /**
  * Mint a download token per row and project it to a `SignedArtifact`. The raw
- * `r2Key` is consumed HERE (to sign the token, and — when the direct-R2 path is
- * on — to mint the presigned trace URL) and dropped from the returned shape. The
- * in-page `href` therefore never embeds the key; the only place it surfaces is a
- * trace's direct-R2 `traceViewerUrl` (a scoped presigned capability — see the
- * `SignedArtifact` docstring).
+ * `r2Key` is consumed HERE (to sign the token) and dropped from the returned
+ * shape — it never surfaces in the in-page `href`.
  */
 async function signArtifactRows(
   rows: readonly RawArtifactRow[],
-  origin: string,
 ): Promise<SignedArtifact[]> {
-  // When the direct-R2 path is configured (ADR 0003), the trace viewer gets a
-  // presigned R2 GET URL embedded DIRECTLY (not the worker download href). The
-  // viewer fetches cross-origin from trace.playwright.dev; embedding the final
-  // R2 URL avoids making it follow a cross-origin 302 (which would need CORS on
-  // both the redirect and the object). The in-page `href` stays the worker
-  // download route either way — same-origin, so its redirect-mint is clean.
-  const directCfg = r2DirectConfig(env);
   return Promise.all(
     rows.map(async (a) => {
-      const token = await signArtifactToken({
-        r2Key: a.r2Key,
-        contentType: a.contentType,
-      });
-      let traceViewerUrl: string | undefined;
-      if (a.type === "trace") {
-        traceViewerUrl = directCfg
-          ? traceViewerUrlFor(
-              await signGetUrl(directCfg, a.r2Key, {
-                responseContentType: safeContentType(a.contentType),
-                // Force attachment like the 302 + worker-proxy paths (ADR 0003
-                // point 4). Inert for the viewer's cross-origin fetch, but keeps
-                // the origin-safety invariant if the bare URL is opened directly.
-                responseContentDisposition: artifactContentDisposition(a.r2Key),
-                // Bound the bare SigV4 capability to the artifact-token lifetime
-                // (this URL is embedded in SSR HTML, unmediated) — explicit, not
-                // the signer's default, and matched to the co-minted `token`.
-                expiresIn: ARTIFACT_TOKEN_TTL_SECONDS,
-              }),
-            )
-          : signedTraceViewerUrl(origin, a.id, token);
-      }
+      const { token } = await signArtifactDownloadToken(a);
+      const href = signedDownloadHref(a.id, token);
       return {
         id: a.id,
         type: a.type,
@@ -235,8 +199,7 @@ async function signArtifactRows(
         attempt: a.attempt,
         role: a.role,
         snapshotName: a.snapshotName,
-        href: signedDownloadHref(a.id, token),
-        traceViewerUrl,
+        href,
       } satisfies SignedArtifact;
     }),
   );
@@ -254,7 +217,6 @@ async function signArtifactRows(
 export async function loadAttemptArtifactGroups(
   scope: TenantScope,
   testResultId: string,
-  origin: string,
 ): Promise<Map<number, AttemptArtifactGroup>> {
   const rows = await db
     .select(ARTIFACT_PRESENTATION_COLUMNS)
@@ -262,6 +224,6 @@ export async function loadAttemptArtifactGroups(
     .where(childByTestResultWhere(artifacts, scope, testResultId))
     .orderBy(asc(artifacts.attempt));
 
-  const signed = await signArtifactRows(rows, origin);
+  const signed = await signArtifactRows(rows);
   return buildAttemptArtifactGroups(signed);
 }

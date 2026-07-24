@@ -28,6 +28,14 @@ const REPORT_PATH = resolve(E2E_DIR, "playwright-report.json");
 
 const PORT = 5188;
 
+// Pinned VCS context for the seeded run. The reporter's `detectCI()` reads
+// GITHUB_* env, which is absent locally and UNPREDICTABLE inside real GitHub
+// Actions (whatever ref/sha CI happens to be on). Overriding it here makes the
+// seeded runs' branch/commit deterministic everywhere, so the suite can assert
+// the branch/commit filter paths against known values.
+const SEEDED_BRANCH = "e2e-seeded-branch";
+const SEEDED_COMMIT_SHA = "e2e5eedc0ffee000000000000000000000000000"; // 40 hex
+
 let fixture: DashboardFixture | undefined;
 
 export async function setup(project: TestProject): Promise<void> {
@@ -47,6 +55,20 @@ export async function setup(project: TestProject): Promise<void> {
         ...process.env,
         WRIGHTFUL_URL: fixture.url,
         WRIGHTFUL_TOKEN: fixture.apiKey,
+        // Deterministic CI/VCS context (see SEEDED_* above). Set AFTER the
+        // process.env spread so real GitHub Actions values can't leak in.
+        // Empty GITHUB_HEAD_REF / GITHUB_EVENT_PATH defeat the PR-event
+        // branches of the reporter's github-actions detection, so branch and
+        // sha come from GITHUB_REF_NAME / GITHUB_SHA exactly.
+        GITHUB_ACTIONS: "true",
+        GITHUB_EVENT_PATH: "",
+        GITHUB_HEAD_REF: "",
+        GITHUB_REF: `refs/heads/${SEEDED_BRANCH}`,
+        GITHUB_REF_NAME: SEEDED_BRANCH,
+        GITHUB_SHA: SEEDED_COMMIT_SHA,
+        GITHUB_REPOSITORY: "wrightful/e2e-seed",
+        GITHUB_RUN_ID: "e2e-run-1",
+        GITHUB_ACTOR: "e2e-bot",
       },
     });
   } catch {
@@ -67,10 +89,12 @@ export async function setup(project: TestProject): Promise<void> {
   // secret, not the raw session secret, so they can't diverge once a dedicated
   // ARTIFACT_TOKEN_SECRET is provisioned.
   project.provide("artifactTokenSecret", fixture.artifactTokenSecret);
+  project.provide("seededBranch", SEEDED_BRANCH);
+  project.provide("seededCommitSha", SEEDED_COMMIT_SHA);
 }
 
-export function teardown(): void {
-  fixture?.teardown();
+export async function teardown(): Promise<void> {
+  await fixture?.teardown();
   fixture = undefined;
 }
 
@@ -84,5 +108,7 @@ declare module "vite-plus/test" {
     teamSlug: string;
     projectSlug: string;
     artifactTokenSecret: string;
+    seededBranch: string;
+    seededCommitSha: string;
   }
 }

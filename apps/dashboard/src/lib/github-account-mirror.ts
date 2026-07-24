@@ -1,4 +1,5 @@
 import { logger } from "void/log";
+import { githubFetch } from "@/lib/github-http";
 
 /**
  * The write side of the `userGithubAccounts` mirror.
@@ -22,7 +23,8 @@ import { logger } from "void/log";
  * loadable then. {@link captureGithubLogin} therefore keeps the
  * dynamic-`import("void/db")` / `import("@schema")` trick inside the function
  * body — the bindings are only touched when the hook actually fires at
- * request time. (`void/log`'s `logger` is a config-time-safe import.)
+ * request time. (`void/log`'s `logger` and the env-free `github-http.ts` core
+ * are config-time-safe imports.)
  */
 
 /** The subset of a Better Auth `account` row this mirror reads. */
@@ -44,25 +46,18 @@ export async function captureGithubLogin(
   accessToken: string | null | undefined,
 ): Promise<void> {
   if (!accessToken) return;
-  // 10s timeout so a hung GitHub call can't stall the sign-in hook this runs in.
-  // (Kept inline rather than routed through `github-app.ts`'s `githubFetch`
-  // because this module is loaded at `void prepare` config time via `auth.ts`
-  // and must not transitively import the `void/env` the App-auth seam now reads
-  // — see the module note above.)
-  const res = await fetch("https://api.github.com/user", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/vnd.github+json",
-      "User-Agent": "wrightful-dashboard",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    signal: AbortSignal.timeout(10_000),
-  });
+  // Standard GitHub envelope + 10s timeout via the env-free `github-http.ts`
+  // core, so a hung GitHub call can't stall the sign-in hook this runs in.
+  // (`github-http` deliberately has no `void/env` in its import graph, so this
+  // module stays loadable at `void prepare` config time — see the module note
+  // above; the env-reading App-auth seam lives in `github-app.ts`.)
+  const res = await githubFetch("/user", {}, accessToken);
   if (!res.ok) return;
   const body = (await res.json()) as { login?: unknown };
   if (typeof body.login !== "string" || body.login === "") return;
   const login = body.login.toLowerCase();
-  const now = Date.now();
+  // Epoch-seconds, matching the `big()` timestamp convention (see db/schema.ts).
+  const nowSeconds = Math.floor(Date.now() / 1000);
   // Dynamic imports so `auth.ts` stays loadable at `void prepare` config time.
   const [{ db }, { userGithubAccounts }] = await Promise.all([
     import("void/db"),
@@ -70,10 +65,10 @@ export async function captureGithubLogin(
   ]);
   await db
     .insert(userGithubAccounts)
-    .values({ userId, githubLogin: login, updatedAt: now })
+    .values({ userId, githubLogin: login, updatedAt: nowSeconds })
     .onConflictDoUpdate({
       target: userGithubAccounts.userId,
-      set: { githubLogin: login, updatedAt: now },
+      set: { githubLogin: login, updatedAt: nowSeconds },
     });
 }
 

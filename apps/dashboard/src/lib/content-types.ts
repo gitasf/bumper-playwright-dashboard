@@ -13,7 +13,7 @@
  *   1. THIS allowlist — caps what content-type the download endpoint will ever
  *      emit (everything else falls back to `application/octet-stream`), and the
  *      download handler additionally forces `Content-Disposition: attachment`
- *      (see `buildArtifactHeaders` in `src/lib/artifacts.ts`).
+ *      (see `buildArtifactHeaders` in `src/lib/artifacts/store.ts`).
  *   2. The Content-Security-Policy in `apps/dashboard/void.json` — its
  *      `img-src 'self' data: blob:` deliberately does NOT permit a renderable
  *      type to *execute* (`object-src 'none'`, `frame-ancestors 'none'`).

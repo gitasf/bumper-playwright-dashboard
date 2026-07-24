@@ -12,7 +12,7 @@
  *   - recovery: `recoveredAt`, `downtime`, `failedChecks` summarizing the
  *     just-ended outage, plus `lastDurationMs` of the recovering run.
  */
-import { Link } from "@react-email/components";
+import { Link } from "react-email";
 import {
   ButtonRow,
   CodeBox,

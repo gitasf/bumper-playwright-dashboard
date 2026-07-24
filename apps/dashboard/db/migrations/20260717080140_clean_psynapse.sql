@@ -1,0 +1,2 @@
+CREATE INDEX "monitorExecutions_runId_idx" ON "monitorExecutions" USING btree ("runId") WHERE "monitorExecutions"."runId" is not null;--> statement-breakpoint
+CREATE INDEX "runShards_runId_idx" ON "runShards" USING btree ("runId");

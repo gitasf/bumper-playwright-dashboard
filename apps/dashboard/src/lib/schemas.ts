@@ -2,6 +2,7 @@ import { z } from "zod";
 // Relative (not `@/`) so the reporter's wire-contract test can import this
 // module cross-package without the dashboard's path alias.
 import { isSafeContentType } from "./content-types";
+import { isReplayTraceArtifact } from "./artifacts/trace";
 
 /**
  * Wire-protocol schemas for the streaming-ingest API (v3).
@@ -70,8 +71,9 @@ export const MAX = {
 const MAX_ATTEMPTS = 100;
 const MAX_TAGS = 200;
 const MAX_ANNOTATIONS = 200;
-const MAX_RESULTS_PER_BATCH = 5000;
-const MAX_PLANNED_TESTS = 100_000;
+// Mirrored by reporter limits and pinned by its contract tests.
+export const MAX_RESULTS_PER_BATCH = 5000;
+export const MAX_PLANNED_TESTS = 100_000;
 const MAX_ARTIFACTS_PER_REQUEST = 2000;
 
 /**
@@ -99,6 +101,12 @@ export const TestAttemptSchema = z.object({
   durationMs: z.number().int().min(0),
   errorMessage: truncatedText(MAX.MESSAGE),
   errorStack: truncatedText(MAX.STACK),
+  // Per-attempt captured stdout/stderr (the joined Playwright chunks). Free-form
+  // diagnostic text → TRUNCATE, not reject, like the error fields: a chatty
+  // console.log run must never 413/400 the whole batch. `.optional()` keeps
+  // pre-capture reporters (which omit the keys) parsing clean.
+  stdout: truncatedText(MAX.MESSAGE),
+  stderr: truncatedText(MAX.MESSAGE),
 });
 
 export type TestAttemptInput = z.infer<typeof TestAttemptSchema>;
@@ -129,7 +137,15 @@ const TestResultSchema = z.object({
     )
     .max(MAX_ANNOTATIONS)
     .default([]),
-  attempts: z.array(TestAttemptSchema).min(1).max(MAX_ATTEMPTS),
+  attempts: z
+    .array(TestAttemptSchema)
+    .min(1)
+    .max(MAX_ATTEMPTS)
+    .refine(
+      (attempts) =>
+        new Set(attempts.map((a) => a.attempt)).size === attempts.length,
+      { message: "attempt indices must be unique within a result" },
+    ),
 });
 
 export type TestResultInput = z.infer<typeof TestResultSchema>;
@@ -183,10 +199,15 @@ const BackdateSeconds = z.number().int().min(0).optional();
  * legacy "finalize on the single /complete" path). Mirror of the `shard` field
  * on `OpenRunPayload` / `CompleteRunPayload` in `@wrightful/reporter`'s types.
  */
-const ShardSchema = z.object({
-  index: z.number().int().min(1),
-  total: z.number().int().min(1),
-});
+const ShardSchema = z
+  .object({
+    index: z.number().int().min(1),
+    total: z.number().int().min(1),
+  })
+  .refine((s) => s.index <= s.total, {
+    message: "shard index must be <= total",
+    path: ["index"],
+  });
 
 export const OpenRunPayloadSchema = z.object({
   idempotencyKey: z.string().min(1).max(MAX.ID),
@@ -211,8 +232,22 @@ export const AppendResultsPayloadSchema = z.object({
 });
 export type AppendResultsPayload = z.infer<typeof AppendResultsPayloadSchema>;
 
+/**
+ * A run's terminal statuses (the `status` values `completeRun` accepts and
+ * that a finished run can settle into). Canonical list — derive, don't
+ * restate: `CompleteRunPayloadSchema.status` below builds its `z.enum` from
+ * this, and `@/lib/github-pr-comment` reuses it (as `TERMINAL_RUN_STATUSES`)
+ * to select the previous terminal run as a PR-comment diff baseline.
+ */
+export const TERMINAL_RUN_STATUSES = [
+  "passed",
+  "failed",
+  "timedout",
+  "interrupted",
+] as const;
+
 export const CompleteRunPayloadSchema = z.object({
-  status: z.enum(["passed", "failed", "timedout", "interrupted"]),
+  status: z.enum(TERMINAL_RUN_STATUSES),
   durationMs: z.number().int().min(0),
   shard: ShardSchema.optional(),
   completedAt: BackdateSeconds,
@@ -254,6 +289,17 @@ const ArtifactRequestSchema = z
         });
       }
     }
+  })
+  .transform((artifact) => {
+    // Protocol v3 reporters historically trusted the canonical filename when
+    // assigning `type: "trace"`. Rejecting one such legacy row would reject
+    // its entire otherwise-valid registration batch. Preserve v3 wire
+    // compatibility, but store malformed trace claims as ordinary artifacts;
+    // only the complete canonical policy earns Replay or the extended TTL.
+    if (artifact.type === "trace" && !isReplayTraceArtifact(artifact)) {
+      return { ...artifact, type: "other" as const };
+    }
+    return artifact;
   });
 
 export const RegisterArtifactsPayloadSchema = z.object({

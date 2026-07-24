@@ -1,6 +1,7 @@
 import { defineHandler, type InferProps } from "void";
 import { requireAuth } from "void/auth";
 import { listTeamMembers } from "@/lib/auth-users";
+import { defineFlashSlots } from "@/lib/flash";
 import { readField } from "@/lib/form";
 import {
   createGroup,
@@ -9,16 +10,15 @@ import {
   renameGroup,
   setGroupMembers,
 } from "@/lib/member-groups";
-import {
-  redirectWithParam,
-  requireMemberScope,
-  requireOwnerScope,
-} from "@/lib/settings-scope";
+import { requireOwnerScope, requireRoleScope } from "@/lib/settings-scope";
 
 export type Props = InferProps<typeof loader>;
 
 const hereFor = (team: { slug: string }) =>
   `/settings/teams/${team.slug}/groups`;
+
+/** This page's form-flash slots — shared by the actions below and the loader. */
+export const GROUPS_FLASH = defineFlashSlots(["groupsError"]);
 
 /** Checked member checkboxes (`name="member"`) → user ids. */
 function checkedMembers(form: FormData): string[] {
@@ -34,7 +34,9 @@ function checkedMembers(form: FormData): string[] {
  * recipients (and future features). Members can view; owners manage.
  */
 export const loader = defineHandler(async (c) => {
-  const { team } = await requireMemberScope(c);
+  // Bare membership gate, stated explicitly via "anyMember": every member —
+  // viewer included — may read the groups list.
+  const { team } = await requireRoleScope(c, "anyMember");
   const url = new URL(c.req.url);
   const [groups, members] = await Promise.all([
     listGroups(team.id),
@@ -46,7 +48,7 @@ export const loader = defineHandler(async (c) => {
     members,
     role: team.role,
     editGroupId: url.searchParams.get("editGroup"),
-    groupsError: url.searchParams.get("groupsError"),
+    ...GROUPS_FLASH.read(url),
   };
 });
 
@@ -58,7 +60,7 @@ export const actions = {
     const form = await c.req.formData();
     const name = readField(form, "name").trim();
     if (!name) {
-      return redirectWithParam(
+      return GROUPS_FLASH.fail(
         c,
         here,
         "groupsError",
@@ -69,7 +71,7 @@ export const actions = {
     try {
       await createGroup(team.id, name, checkedMembers(form), user.id, now);
     } catch {
-      return redirectWithParam(
+      return GROUPS_FLASH.fail(
         c,
         here,
         "groupsError",
@@ -87,7 +89,7 @@ export const actions = {
     const name = readField(form, "name").trim();
     if (!groupId) return c.redirect(here);
     if (!name) {
-      return redirectWithParam(
+      return GROUPS_FLASH.fail(
         c,
         here,
         "groupsError",
@@ -98,7 +100,7 @@ export const actions = {
     try {
       await renameGroup(team.id, groupId, name, now);
     } catch {
-      return redirectWithParam(
+      return GROUPS_FLASH.fail(
         c,
         here,
         "groupsError",

@@ -2,6 +2,7 @@ import { Pencil, Trash2, Users } from "lucide-react";
 import { Link } from "@/components/ui/link";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import {
   SettingsCard,
@@ -21,19 +22,12 @@ function MemberChecklist({
   selected: Set<string>;
 }) {
   if (members.length === 0) {
-    return (
-      <p className="text-fg-3 text-[length:var(--text-fs-13)]">
-        No members yet.
-      </p>
-    );
+    return <p className="text-fg-3 text-body">No members yet.</p>;
   }
   return (
     <div className="flex flex-col gap-1.5">
       {members.map((m) => (
-        <label
-          key={m.userId}
-          className="flex items-center gap-2 text-[length:var(--text-fs-13)]"
-        >
+        <label key={m.userId} className="flex items-center gap-2 text-body">
           <input
             type="checkbox"
             name="member"
@@ -89,9 +83,7 @@ export default function SettingsTeamGroupsPage({
             </div>
             <MemberChecklist members={members} selected={new Set()} />
             <div className="mt-4">
-              <Button size="sm" type="submit">
-                Create group
-              </Button>
+              <SubmitButton size="sm">Create group</SubmitButton>
             </div>
           </form>
         </SettingsCard>
@@ -99,7 +91,7 @@ export default function SettingsTeamGroupsPage({
 
       {groups.length === 0 ? (
         <SettingsCard title="Groups">
-          <p className="text-fg-3 text-[length:var(--text-fs-13)]">
+          <p className="text-fg-3 text-body">
             No groups yet.
             {isOwner ? " Create one above." : ""}
           </p>
@@ -110,6 +102,7 @@ export default function SettingsTeamGroupsPage({
           return (
             <SettingsCard
               key={group.id}
+              data-testid="group-card"
               title={
                 <span className="inline-flex items-center gap-2">
                   <Users className="size-4 text-fg-3" />
@@ -135,9 +128,7 @@ export default function SettingsTeamGroupsPage({
                     selected={new Set(group.memberIds)}
                   />
                   <div className="mt-4 flex items-center gap-2">
-                    <Button size="sm" type="submit">
-                      Save
-                    </Button>
+                    <SubmitButton size="sm">Save</SubmitButton>
                     <Button
                       render={<Link href={here} />}
                       size="sm"
@@ -149,7 +140,7 @@ export default function SettingsTeamGroupsPage({
                 </form>
               ) : (
                 <div className="flex flex-col gap-3">
-                  <p className="text-[length:var(--text-fs-13)]">
+                  <p className="text-body">
                     {group.memberIds.length === 0 ? (
                       <span className="text-fg-3">No members.</span>
                     ) : (

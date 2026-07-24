@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { auth } from "void/client";
 import { Link, useRouter } from "@void/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useHydrated } from "@/lib/hooks/use-hydrated";
 import { hrefWithNext } from "@/lib/safe-next-path";
 import type { Props } from "./signup.server";
 
@@ -28,9 +29,8 @@ export default function SignupPage({
   const [awaitingVerification, setAwaitingVerification] = useState(false);
   // Sign-up runs client-side (`auth.signUp`); disable submit until hydrated so
   // a pre-hydration native submit can't GET this page with the password in the
-  // query string. `useEffect` only runs after hydration. (Mirrors login.tsx.)
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => setHydrated(true), []);
+  // query string. (Mirrors login.tsx.)
+  const hydrated = useHydrated();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -79,14 +79,16 @@ export default function SignupPage({
     return (
       <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 p-6 text-center">
         <header className="space-y-2">
-          <h1 className="text-2xl font-semibold">Check your inbox</h1>
-          <p className="text-muted-foreground text-sm">
+          <h1 className="text-title font-semibold text-balance">
+            Check your inbox
+          </h1>
+          <p className="text-fg-3 text-sm">
             We sent a verification link to{" "}
-            <span className="text-foreground font-medium">{email}</span>. Click
-            it to finish setting up your account, then sign in.
+            <span className="text-fg-1 font-medium">{email}</span>. Click it to
+            finish setting up your account, then sign in.
           </p>
         </header>
-        <Link href="/login" className="text-sm underline">
+        <Link href="/login" className="text-sm underline underline-offset-2">
           Back to sign in
         </Link>
       </main>
@@ -96,12 +98,10 @@ export default function SignupPage({
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-8 p-6">
       <header className="space-y-2 text-center">
-        <h1 className="text-2xl font-semibold">
+        <h1 className="text-title font-semibold text-balance">
           Create your Wrightful account
         </h1>
-        <p className="text-muted-foreground text-sm">
-          Get started in a few seconds.
-        </p>
+        <p className="text-fg-3 text-sm">Get started in a few seconds.</p>
       </header>
 
       <form
@@ -156,14 +156,14 @@ export default function SignupPage({
 
       {githubEnabled && (
         <div className="space-y-2">
-          <div className="bg-border h-px" />
+          <div className="bg-line-1 h-px" />
           <Button
             type="button"
             disabled={busy || !hydrated}
             onClick={() => {
               void handleGithub();
             }}
-            className="bg-foreground text-background hover:bg-foreground/90 w-full"
+            className="bg-fg-1 text-bg-0 hover:bg-fg-1/90 w-full"
           >
             Continue with GitHub
           </Button>
@@ -172,7 +172,10 @@ export default function SignupPage({
 
       <p className="text-center text-sm">
         Already have an account?{" "}
-        <Link href={hrefWithNext("/login", next)} className="underline">
+        <Link
+          href={hrefWithNext("/login", next)}
+          className="underline underline-offset-2"
+        >
           Sign in
         </Link>
       </p>

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { BatchExecutor } from "@/lib/db-batch";
+import type { BatchExecutor } from "@/lib/db/batch";
 
 // Mechanism A (the verified email.workers.test.ts:18-25 pattern): back `void/env`
 // with a mutable config object created in `vi.hoisted` — so it's initialized
@@ -91,6 +91,17 @@ describe("tierLimits — billing ON (both POLAR_* set)", () => {
     // which tierLimits does not read).
     expect(proLimits.runs).not.toBe(Infinity);
     expect(Number.isFinite(proLimits.runs)).toBe(true);
+  });
+
+  it("fails CLOSED to the Free ceilings for an unrecognized/corrupt tier string", () => {
+    // Only 'pro' gets the high ceiling; anything else — including a value that
+    // isn't a real tier at all — must map to the safe (low) Free caps, never the
+    // high Pro caps.
+    expect(tierLimits("garbage")).toEqual({
+      runs: config.WRIGHTFUL_FREE_MONTHLY_RUNS,
+      testResults: config.WRIGHTFUL_FREE_MONTHLY_TEST_RESULTS,
+      artifactBytes: config.WRIGHTFUL_FREE_ARTIFACT_BYTES,
+    });
   });
 });
 

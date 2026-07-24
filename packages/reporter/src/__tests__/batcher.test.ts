@@ -32,6 +32,8 @@ function makeResult(key: string): TestResultPayload {
         durationMs: 10,
         errorMessage: null,
         errorStack: null,
+        stdout: null,
+        stderr: null,
       },
     ],
   };

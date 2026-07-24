@@ -7,13 +7,13 @@ import {
   encodeRankedCursor,
   MAX_RUN_RESULTS_LIMIT,
   normalizeTestStatus,
-} from "@/lib/run-results-page";
+} from "@/lib/runs/results-page";
 
 /**
  * `loadRunResultsPage` is the one canonical "page of a run's testResults as
  * RunProgressTest[]" seam, consumed by the GET /results API (per-group row pages
  * + back-paginator), the v1 tests API, and the CSV export loop. The query pieces
- * hit Postgres (see `pg-integration.test.ts`), but the cursor codecs, limit
+ * hit Postgres (see `pg-integration/`), but the cursor codecs, limit
  * clamp, and status normalizer are pure — and they are exactly the contract the
  * callers must agree on. These tests pin that contract.
  */

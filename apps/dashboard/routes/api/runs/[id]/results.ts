@@ -30,5 +30,15 @@ export const POST = defineHandler.withValidator({
       409,
     );
   }
+  if (result.kind === "rowCapExceeded") {
+    return c.json(
+      {
+        error: `Run has reached its ${result.limit}-row test-result ceiling; no more results can be appended to this run.`,
+        limit: result.limit,
+        count: result.count,
+      },
+      413,
+    );
+  }
   return c.json({ results: result.mapping }, 200);
 });

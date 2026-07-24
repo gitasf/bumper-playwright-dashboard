@@ -64,10 +64,13 @@ test.describe("Logout", () => {
     const sessionCookie = stateCookies.find(
       (c) => /session/i.test(c.name) || /better-auth/i.test(c.name),
     );
-    expect(
-      !sessionCookie ||
-        sessionCookie.value === "" ||
-        sessionCookie.expires === 0,
-    ).toBe(true);
+    // Pass if the session cookie is absent, emptied, or expired. Structured
+    // (not one boolean) so a failure names the cookie instead of "false !== true".
+    if (sessionCookie) {
+      expect(
+        sessionCookie.value === "" || sessionCookie.expires === 0,
+        `session cookie "${sessionCookie.name}" still holds a live value after logout`,
+      ).toBe(true);
+    }
   });
 });

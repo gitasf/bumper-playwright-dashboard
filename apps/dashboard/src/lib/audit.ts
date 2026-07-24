@@ -43,6 +43,7 @@ export const AUDIT_ACTIONS = {
   KEY_REVOKE: "key.revoke",
   TEAM_RENAME: "team.rename",
   TEAM_DELETE: "team.delete",
+  GITHUB_INSTALLATION_DISCONNECT: "github_installation.disconnect",
   PROJECT_CREATE: "project.create",
   PROJECT_DELETE: "project.delete",
 } as const;
@@ -50,7 +51,13 @@ export const AUDIT_ACTIONS = {
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
 
 /** The target-type vocabulary, mirroring the resources actions touch. */
-export type AuditTargetType = "invite" | "member" | "key" | "team" | "project";
+export type AuditTargetType =
+  | "invite"
+  | "member"
+  | "key"
+  | "team"
+  | "project"
+  | "github_installation";
 
 export interface RecordAuditInput {
   /** The team the audited mutation belongs to. */

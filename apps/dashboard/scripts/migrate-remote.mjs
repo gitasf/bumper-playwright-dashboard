@@ -10,7 +10,9 @@
 // restores the original `.env.local` (if any) — so it never disturbs local dev.
 //
 // It ALSO applies the void-owned Better Auth tables (`user` / `session` /
-// `account` / `verification`) from the committed `db/better-auth.sql`. Those
+// `account` / `verification` + the MCP OAuth plugin's `oauthApplication` /
+// `oauthAccessToken` / `oauthConsent`) from the committed `db/better-auth.sql`.
+// Those
 // tables live in `.void/better-auth-schema.ts`, NOT in `db/migrations/`, and the
 // bare `void db migrate` CLI does NOT create them — only the dev server,
 // `void db reset`, and `void deploy` do. Without this step an own-account
@@ -68,7 +70,16 @@ function parseEnvDatabaseUrl(text) {
 // after the app migrations. Explicit DDL is deliberate: `drizzle-kit push` is
 // non-idempotent + unsafe in CD, and `better-auth migrate` only supports the
 // Kysely adapter (Void uses the drizzle adapter). See `db/better-auth.sql`.
-const AUTH_TABLES = ["user", "session", "account", "verification"];
+const AUTH_TABLES = [
+  "user",
+  "session",
+  "account",
+  "verification",
+  // Better Auth `mcp` OAuth plugin (see auth.ts).
+  "oauthApplication",
+  "oauthAccessToken",
+  "oauthConsent",
+];
 
 /** Fail the deploy if Void's generated auth schema lists a table our committed
  * `db/better-auth.sql` doesn't cover — the signal to regenerate it. No-op when

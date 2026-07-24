@@ -25,6 +25,11 @@ import type { TenantScope } from "@/lib/scope";
 
 let capturedWhere: unknown = null;
 let capturedConflict: unknown = null;
+let capturedValues: unknown = null;
+// Set by a test to simulate the `onConflictDoUpdate` UPDATE branch, where
+// Postgres returns the pre-existing row (real `id`/`createdAt`), not the fresh
+// `ulid()`+`now` built for the insert values. Default: echo the insert values.
+let returningResult: unknown[] | null = null;
 
 vi.mock("void/db", async () => {
   const stub = await import("./helpers/void-db-stub");
@@ -37,15 +42,24 @@ vi.mock("void/db", async () => {
   };
   node.orderBy = chain;
   node.limit = chain;
-  node.values = chain;
+  node.values = (v: unknown) => {
+    capturedValues = v;
+    return node;
+  };
   node.set = chain;
   node.onConflictDoUpdate = (cfg: unknown) => {
     capturedConflict = cfg;
     return node;
   };
-  // Thenable: an awaited query resolves to an empty row set.
-  (node as { then: unknown }).then = (onFulfilled?: (v: unknown) => unknown) =>
-    Promise.resolve(onFulfilled ? onFulfilled([]) : []);
+  node.returning = () => node;
+  // Thenable: echoes inserted `.values(...)` (like INSERT ... RETURNING),
+  // unless `returningResult` is set; plain reads (no `.values`) resolve to `[]`.
+  (node as { then: unknown }).then = (
+    onFulfilled?: (v: unknown) => unknown,
+  ) => {
+    const result = returningResult ?? (capturedValues ? [capturedValues] : []);
+    return Promise.resolve(onFulfilled ? onFulfilled(result) : result);
+  };
 
   const db = {
     select: chain,
@@ -88,6 +102,8 @@ const otherScope: TenantScope = {
 beforeEach(() => {
   capturedWhere = null;
   capturedConflict = null;
+  capturedValues = null;
+  returningResult = null;
 });
 
 describe("listQuarantine", () => {
@@ -168,11 +184,34 @@ describe("quarantineTest", () => {
       set: Record<string, unknown>;
     };
     expect(cfg.target.map((col) => col.name)).toEqual(["projectId", "testId"]);
-    // The update set refreshes mode/reason and re-stamps createdBy/createdAt
-    // (documented intended behavior — re-quarantining updates the row).
     expect(cfg.set.mode).toBe("skip");
     expect(cfg.set.reason).toBe("flaky");
-    expect(cfg.set.createdBy).toBe("user_1");
-    expect(cfg.set.createdAt).toBe(1700);
+    expect(cfg.set).not.toHaveProperty("createdBy");
+    expect(cfg.set).not.toHaveProperty("createdAt");
+  });
+
+  it("returns the actual PERSISTED row via .returning() on the UPDATE branch, not a fabricated one", async () => {
+    // Re-quarantining: `onConflictDoUpdate(...).returning()` returns the
+    // existing row's real `id`, not the fresh `ulid()` from the discarded insert.
+    const persistedRow = {
+      id: "existing_quarantine_id",
+      projectId: "proj_xyz",
+      testId: "t1",
+      reason: "flaky",
+      mode: "skip",
+      createdBy: "user_1",
+      createdAt: 1700,
+    };
+    returningResult = [persistedRow];
+
+    const row = await quarantineTest(
+      scope,
+      { testId: "t1", mode: "skip", reason: "flaky" },
+      "user_1",
+      1700,
+    );
+
+    expect(row).toEqual(persistedRow);
+    expect(row.id).toBe("existing_quarantine_id");
   });
 });

@@ -12,11 +12,15 @@ vi.mock("void/env", () => ({
 }));
 
 const {
+  ARTIFACT_TOKEN_TTL_SECONDS,
+  TRACE_TOKEN_TTL_SECONDS,
+  artifactDownloadTokenTtlSeconds,
+  signArtifactDownloadToken,
   signArtifactToken,
   verifyArtifactToken,
   signedDownloadHref,
-  signedTraceViewerUrl,
-} = await import("@/lib/artifact-tokens");
+  selfHostedTraceViewerUrl,
+} = await import("@/lib/artifacts/tokens");
 
 const payload = {
   r2Key: "t/team/p/proj/runs/r/tr/a.png",
@@ -65,11 +69,57 @@ describe("artifact download tokens", () => {
   });
 });
 
+describe("artifact download lifetime policy", () => {
+  const replayTrace = {
+    ...payload,
+    r2Key: "t/team/p/proj/runs/r/tr/trace.zip",
+    type: "trace",
+    name: "trace.zip",
+    contentType: "application/zip",
+  };
+
+  it("gives only replayable traces the extended lifetime", () => {
+    expect(artifactDownloadTokenTtlSeconds(replayTrace)).toBe(
+      TRACE_TOKEN_TTL_SECONDS,
+    );
+    expect(
+      artifactDownloadTokenTtlSeconds({
+        ...replayTrace,
+        type: "screenshot",
+        name: "actual.png",
+        contentType: "image/png",
+      }),
+    ).toBe(ARTIFACT_TOKEN_TTL_SECONDS);
+    expect(
+      artifactDownloadTokenTtlSeconds({
+        ...replayTrace,
+        contentType: "text/plain",
+      }),
+    ).toBe(ARTIFACT_TOKEN_TTL_SECONDS);
+  });
+
+  it("signs with, and reports, the policy-selected lifetime", async () => {
+    const nowSeconds = 1_800_000_000;
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(nowSeconds * 1000);
+    try {
+      const signed = await signArtifactDownloadToken(replayTrace);
+      expect(signed.expiresInSeconds).toBe(TRACE_TOKEN_TTL_SECONDS);
+      expect(await verifyArtifactToken(signed.token)).toEqual({
+        r2Key: replayTrace.r2Key,
+        contentType: replayTrace.contentType,
+        exp: nowSeconds + TRACE_TOKEN_TTL_SECONDS,
+      });
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+});
+
 /**
  * Guards the download-URL shape now owned by `signedDownloadHref` /
- * `signedTraceViewerUrl`. These are the single source of the
+ * `selfHostedTraceViewerUrl`. These are the single source of the
  * `/api/artifacts/:id/download?t=<token>` literal and the self-hosted
- * trace-viewer wrap — four call sites route through them, so a shape change
+ * trace-viewer wrap — the call sites route through them, so a shape change
  * here is caught once instead of drifting per caller.
  */
 describe("artifact download URL builders", () => {
@@ -79,27 +129,23 @@ describe("artifact download URL builders", () => {
     );
   });
 
-  it("wraps the absolute download URL in a self-hosted trace-viewer link", () => {
-    const href = signedTraceViewerUrl(
-      "https://wrightful.example",
-      "art_123",
-      "tok",
-    );
-    expect(href).toBe(
-      "/trace-viewer/index.html?trace=" +
-        encodeURIComponent(
-          "https://wrightful.example/api/artifacts/art_123/download?t=tok",
-        ),
+  it("wraps an absolute download URL in a same-origin self-hosted viewer link", () => {
+    const downloadUrl =
+      "https://wrightful.example/api/artifacts/art_123/download?t=tok";
+    expect(selfHostedTraceViewerUrl(downloadUrl)).toBe(
+      "https://wrightful.example/trace-viewer/index.html?trace=" +
+        encodeURIComponent(downloadUrl),
     );
   });
 
-  it("embeds the same download href the standalone builder produces", () => {
-    const origin = "https://wrightful.example";
-    const token = "abc";
-    const viewer = signedTraceViewerUrl(origin, "art_1", token);
-    expect(viewer).toContain(
-      encodeURIComponent(`${origin}${signedDownloadHref("art_1", token)}`),
+  it("keeps the viewer link on the download URL's own origin (never a third party)", () => {
+    const viewer = selfHostedTraceViewerUrl(
+      "https://wrightful.example/api/artifacts/art_1/download?t=abc",
     );
+    expect(viewer.startsWith("https://wrightful.example/trace-viewer/")).toBe(
+      true,
+    );
+    expect(viewer).not.toContain("trace.playwright.dev");
   });
 });
 

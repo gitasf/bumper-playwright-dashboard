@@ -38,7 +38,10 @@ import {
   type QuarantineMap,
 } from "./quarantine.js";
 import {
+  joinStdio,
   MAX_MESSAGE,
+  MAX_PLANNED_TESTS,
+  MAX_RESULTS_PER_BATCH,
   MAX_STACK,
   MAX_TITLE,
   truncate,
@@ -211,7 +214,10 @@ export default class WrightfulReporter implements Reporter {
   private shard: ShardInfo | null = null;
   private batcher: Batcher<EnqueuedTest> | null = null;
   private accumulator = new TestAccumulator();
-  private artifactTasks: Promise<void>[] = [];
+  // Set (not array): a settled task removes itself in trackTask's `finally`,
+  // keeping this bounded by in-flight work rather than retaining one settled
+  // promise per finished test for the whole run.
+  private artifactTasks = new Set<Promise<void>>();
   // Tracked tasks still in flight — the count surfaced when the shutdown
   // budget expires and work has to be abandoned.
   private pendingTasks = 0;
@@ -290,6 +296,14 @@ export default class WrightfulReporter implements Reporter {
     const plannedTests = allTests.map((t) =>
       buildTestDescriptor(t, this.rootDir),
     );
+    const plannedTestsToSend = plannedTests.slice(0, MAX_PLANNED_TESTS);
+    if (plannedTestsToSend.length < plannedTests.length) {
+      warn(
+        `suite has ${plannedTests.length} tests, over the dashboard's planned-test cap of ${MAX_PLANNED_TESTS}; ` +
+          `sending the first ${MAX_PLANNED_TESTS} as queued placeholders. Every test's result still streams — ` +
+          `only the surplus pre-run placeholders are omitted.`,
+      );
+    }
 
     const ci = detectCI();
     this.ci = ci;
@@ -328,7 +342,7 @@ export default class WrightfulReporter implements Reporter {
         reporterVersion: REPORTER_VERSION,
         playwrightVersion: this.playwrightVersion,
         expectedTotalTests: plannedTests.length,
-        plannedTests,
+        plannedTests: plannedTestsToSend,
         origin: runOrigin,
         monitorId,
       },
@@ -364,7 +378,17 @@ export default class WrightfulReporter implements Reporter {
     // before /complete (the batcher only awaits it on a flush).
     this.openPromise = openPromise;
 
-    const batchSize = this.options.batchSize ?? DEFAULT_BATCH_SIZE;
+    const requestedBatchSize = this.options.batchSize ?? DEFAULT_BATCH_SIZE;
+    if (requestedBatchSize > MAX_RESULTS_PER_BATCH) {
+      warn(
+        `batchSize ${requestedBatchSize} exceeds the dashboard's per-batch cap of ${MAX_RESULTS_PER_BATCH}; ` +
+          `clamping to ${MAX_RESULTS_PER_BATCH} (larger batches are rejected wholesale).`,
+      );
+    }
+    const batchSize = Math.max(
+      1,
+      Math.min(requestedBatchSize, MAX_RESULTS_PER_BATCH),
+    );
     const flushIntervalMs =
       this.options.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
 
@@ -495,25 +519,25 @@ export default class WrightfulReporter implements Reporter {
 
   /**
    * Track a background task on `artifactTasks` with a last-resort rejection
-   * guard. A bare rejected promise on the array would surface as an
-   * unhandledRejection (killing the user's suite) and would make `onEnd`'s
-   * `Promise.all` reject before drain/complete — so tracked tasks must never
-   * reject. `pendingTasks` counts the in-flight tasks for the shutdown-budget
-   * warning.
+   * guard. A bare rejected promise would surface as an unhandledRejection
+   * (killing the user's suite) and make `onEnd`'s `Promise.all` reject before
+   * drain/complete — so tracked tasks must never reject. `pendingTasks` counts
+   * in-flight tasks for the shutdown-budget warning; the task removes itself
+   * from the set once settled.
    */
   private trackTask(task: Promise<void>): void {
     this.pendingTasks++;
-    this.artifactTasks.push(
-      task
-        .catch((err: unknown) => {
-          warn(
-            `internal task failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        })
-        .finally(() => {
-          this.pendingTasks--;
-        }),
-    );
+    const tracked: Promise<void> = task
+      .catch((err: unknown) => {
+        warn(
+          `internal task failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      })
+      .finally(() => {
+        this.pendingTasks--;
+        this.artifactTasks.delete(tracked);
+      });
+    this.artifactTasks.add(tracked);
   }
 
   private async enqueueDone(entry: PendingTest): Promise<void> {
@@ -940,6 +964,11 @@ export function buildPayload(
       // whole batch before the server (which also truncates) can parse it.
       errorMessage: truncateNullable(r.errors?.[0]?.message, MAX_MESSAGE),
       errorStack: truncateNullable(r.errors?.[0]?.stack, MAX_STACK),
+      // Playwright exposes this attempt's stdout/stderr as Array<string|Buffer>
+      // at onTestEnd; join + decode + truncate so `console.log` CI debugging
+      // reaches the dashboard/MCP. `null` when nothing was written.
+      stdout: joinStdio(r.stdout, MAX_MESSAGE),
+      stderr: joinStdio(r.stderr, MAX_MESSAGE),
     }));
 
   return {

@@ -8,8 +8,8 @@ import { InsightsTabs } from "@/components/analytics/insights-tabs";
 import { AnalyticsKpiCard } from "@/components/analytics/kpi-card";
 import { DeferredSection } from "@/components/defer-error-boundary";
 import { PageHeader } from "@/components/page-header";
-import { RunHistoryBranchFilter } from "@/components/run-history-branch-filter";
-import { ALL_BRANCHES } from "@/components/run-history-branch-filter.shared";
+import { RunHistoryBranchFilter } from "@/components/run/history-branch-filter";
+import { ALL_BRANCHES } from "@/components/run/history-branch-filter.shared";
 import { ChartSkeleton, KpiCardSkeleton } from "@/components/skeletons";
 import { Card, CardPanel } from "@/components/ui/card";
 import { alignBuckets } from "@/lib/analytics/bucketing";
@@ -107,11 +107,11 @@ export default function InsightsPage({
 
         <Card className="overflow-hidden rounded-[9px] border-line-1">
           <div className="border-b border-line-1 px-[18px] py-3">
-            <h2 className="text-[13px] font-semibold tracking-tight">
+            <h2 className="text-body font-semibold tracking-tight">
               {segmentNoun.charAt(0).toUpperCase()}
               {segmentNoun.slice(1)} outcomes
             </h2>
-            <p className="mt-0.5 text-[11.5px] text-fg-3">
+            <p className="mt-0.5 text-caption text-fg-3">
               One bar per {segmentNoun}. Stacked passed → flaky → failed →
               skipped.
             </p>
@@ -130,7 +130,7 @@ export default function InsightsPage({
             </DeferredSection>
             {/* Legend is static (no data) — kept eager so it reserves its space
              * in both states and paints immediately. */}
-            <div className="mt-3.5 flex items-center gap-3.5 text-[11.5px] text-fg-3">
+            <div className="mt-3.5 flex items-center gap-3.5 text-caption text-fg-3">
               <LegendSwatch color={statusToken("passed")} label="Passed" />
               <LegendSwatch color={statusToken("flaky")} label="Flaky" />
               <LegendSwatch color={statusToken("failed")} label="Failed" />
@@ -256,15 +256,15 @@ function OutcomesChart({
       ],
       tooltip: (
         <>
-          <div className="mb-2 border-b border-border/50 pb-1 font-mono text-[10px] text-muted-foreground">
+          <div className="mb-2 border-b border-line-1/50 pb-1 font-mono text-micro text-fg-3">
             {s.label}
           </div>
-          <div className="space-y-1 font-mono text-[11px]">
+          <div className="space-y-1 font-mono text-micro">
             <TooltipRow label="Passed" value={passed} color={passedColor} />
             <TooltipRow label="Failed" value={failed} color={failedColor} />
             <TooltipRow label="Flaky" value={flaky} color={flakyColor} />
             <TooltipRow label="Skipped" value={skipped} color={skippedColor} />
-            <div className="mt-1 flex justify-between border-t border-border/50 pt-1 text-muted-foreground">
+            <div className="mt-1 flex justify-between border-t border-line-1/50 pt-1 text-fg-3">
               <span>Runs</span>
               <span>{runs.toLocaleString()}</span>
             </div>
@@ -308,9 +308,9 @@ function TooltipRow({
           className="inline-block h-2 w-2 rounded-sm"
           style={{ background: color }}
         />
-        <span className="text-foreground">{label}</span>
+        <span className="text-fg-1">{label}</span>
       </span>
-      <span className="text-foreground">{value.toLocaleString()}</span>
+      <span className="text-fg-1">{value.toLocaleString()}</span>
     </div>
   );
 }

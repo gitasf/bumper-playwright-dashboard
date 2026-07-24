@@ -5,7 +5,7 @@
  * pills). The single home for that check, so all three link builders below
  * stay in agreement and seeded runs keep their deep links.
  */
-function isGithubProvider(ciProvider: string | null): boolean {
+export function isGithubProvider(ciProvider: string | null): boolean {
   return ciProvider === "github" || ciProvider === "github-actions";
 }
 

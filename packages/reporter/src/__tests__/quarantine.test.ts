@@ -37,6 +37,8 @@ function makePayload(
         durationMs: 50,
         errorMessage: "boom",
         errorStack: "stack",
+        stdout: null,
+        stderr: null,
       },
     ],
     ...overrides,

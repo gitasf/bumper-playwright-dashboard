@@ -1,6 +1,6 @@
 import { defineHandler, type InferProps } from "void";
 import { getSession, requireAuth } from "void/auth";
-import { getPendingInvitesForUser, getUserTeams } from "@/lib/authz";
+import { getPendingInvitesForUser } from "@/lib/authz";
 import { acceptDirectedInvite, declineDirectedInvite } from "@/lib/invites";
 
 export type Props = InferProps<typeof loader>;
@@ -23,13 +23,11 @@ export const loader = defineHandler(async (c) => {
   const session = getSession();
   if (!session) return c.redirect("/login");
 
-  const [pendingInvites, teams] = await Promise.all([
-    getPendingInvitesForUser(session.user.id),
-    getUserTeams(session.user.id),
-  ]);
+  const shared = c.get("shared");
+  const teams = shared.userTeams;
+  const pendingInvites = await getPendingInvitesForUser(session.user.id);
 
   if (pendingInvites.length === 0) {
-    const shared = c.get("shared");
     const team = shared.selectedTeam;
     const project = shared.selectedProject;
     if (team && project) {

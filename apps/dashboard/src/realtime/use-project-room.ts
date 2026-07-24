@@ -1,6 +1,6 @@
 "use client";
 
-import type { RunOriginFilter } from "@/lib/runs-filters";
+import type { RunOriginFilter } from "@/lib/runs/filters";
 import type { RunListRowData } from "@/realtime/events";
 import { applyProjectFeedEvent } from "@/realtime/project-feed";
 import { useFeedRoom } from "@/realtime/use-feed-room";

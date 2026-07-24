@@ -1,5 +1,5 @@
 import { defineHandler } from "void";
-import { resolveRunDiff, type RunDiff } from "@/lib/run-diff";
+import { resolveRunDiff, type RunDiff } from "@/lib/runs/diff";
 import { resolveTenantApiScope } from "@/lib/tenant-api-scope";
 
 export type RunDiffResponse = {

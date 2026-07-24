@@ -13,21 +13,19 @@ export default function ProjectPickerPage({ team }: Props) {
       <div className="mb-2">
         <Link
           href="/"
-          className="text-muted-foreground text-sm hover:underline"
+          className="text-fg-3 text-sm underline-offset-4 hover:underline"
         >
           &larr; Teams
         </Link>
       </div>
-      <h1 className="mb-1 font-semibold text-2xl">{team.name}</h1>
-      <p className="mb-6 text-muted-foreground">
-        Pick a project to view its test runs.
-      </p>
-      <div className="text-muted-foreground">
+      <h1 className="mb-1 font-semibold text-title">{team.name}</h1>
+      <p className="mb-6 text-fg-3">Pick a project to view its test runs.</p>
+      <div className="text-fg-3">
         <p className="mb-2">No projects yet.</p>
         {team.role === "owner" && (
           <Link
             href={`/settings/teams/${team.slug}/projects/new`}
-            className="text-foreground underline-offset-4 hover:underline"
+            className="text-fg-1 underline-offset-4 hover:underline"
           >
             Create the first project &rarr;
           </Link>
@@ -36,7 +34,7 @@ export default function ProjectPickerPage({ team }: Props) {
       <div className="mt-8">
         <Link
           href={`/settings/teams/${team.slug}`}
-          className="text-muted-foreground text-sm underline-offset-4 hover:text-foreground hover:underline"
+          className="text-fg-3 text-sm underline-offset-4 hover:text-fg-1 hover:underline"
         >
           Manage team &rarr;
         </Link>

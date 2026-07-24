@@ -1,11 +1,15 @@
 import { defineAuth, type VoidAuthConfigContext } from "void/auth";
+import { mcp } from "better-auth/plugins";
 import { checkout, polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
 import { ulid } from "ulid";
 import type { MirrorableAccount } from "@/lib/github-account-mirror";
 
-// Derive hook signatures from void/auth's defaults shape so we don't have
-// to add a direct dependency on `better-auth` (it's transitive via `void`).
+// NB: `better-auth` is now ALSO a direct dependency (pinned to the same 1.6.x
+// void resolves) purely for the `mcp` plugin import above — the OAuth provider
+// behind the /api/mcp endpoint. The hook-signature derivation below predates
+// that and still deliberately types against void/auth's defaults shape, so the
+// two copies can never disagree about what void actually instantiates.
 // Better Auth's `create.after` and `update.after` share the same
 // `(account, context) => Promise<void>` shape — using `create` covers both.
 type AccountAfter = NonNullable<
@@ -188,110 +192,184 @@ function buildPolarPlugin() {
   });
 }
 
-export default defineAuth(({ defaults }) => ({
-  ...defaults,
-  // Polar billing plugin, registered ONLY when billing is configured. Preserve
-  // any void-default plugins (spread first) so we add rather than clobber.
-  plugins: [
-    ...(defaults.plugins ?? []),
-    ...(polarConfigured ? [buildPolarPlugin()] : []),
-  ],
-  // Session cookie cache: sign the resolved session into a short-lived cookie so
-  // `getSession()` is served in-memory instead of querying Postgres on EVERY
-  // authenticated request/navigation (a serialized DB phase per nav otherwise).
-  // `maxAge` bounds both the read-avoidance window and the cross-device
-  // revocation lag — another device keeps a cached session until its cookie ages
-  // out. 5 min keeps revocation lag low for a CI dashboard while cutting the
-  // per-nav session read to ~one per active user per window. This was enabled pre-migration
-  // (worklog 2026-04-30-better-auth-cookie-cache) but lost when auth moved from
-  // the old rwsdk `better-auth.ts` to `void/auth`'s `defineAuth`; re-added here.
-  session: {
-    ...defaults.session,
-    cookieCache: {
-      ...defaults.session?.cookieCache,
-      enabled: true,
-      maxAge: 300,
-    },
-  },
-  advanced: {
-    ...defaults.advanced,
-    database: { ...defaults.advanced?.database, generateId: () => ulid() },
-  },
-  // Self-service account deletion, made SAFE by the two hooks: `beforeDelete`
-  // blocks a user who is the sole owner of any team (a cascade would strand it),
-  // and `afterDelete` sweeps the user's logical-FK rows that void/auth's own
-  // cascade doesn't reach. Enabled so the hooks actually fire — a dormant hook
-  // would leave the orphan gap open. Guard logic lives in `@/lib/user-teardown`.
-  user: {
-    ...defaults.user,
-    deleteUser: {
-      ...defaults.user?.deleteUser,
-      enabled: true,
-      beforeDelete: (user: { id: string }) => assertUserDeletable(user.id),
-      afterDelete: (user: { id: string }) => cleanupUserAfterDelete(user.id),
-    },
-  },
-  emailAndPassword: {
-    ...defaults.emailAndPassword,
-    enabled: true,
-    // On only when a sender is configured (see `emailConfigured`); unset
-    // EMAIL_FROM keeps today's no-verification behavior.
-    requireEmailVerification: emailConfigured,
-    disableSignUp: !openSignupAllowed,
-    // 30 minutes — must match the "expires in 30 minutes" copy in the reset
-    // email (`src/emails/reset-password.tsx`). Better Auth's default is 1 hour.
-    resetPasswordTokenExpiresIn: 60 * 30,
-    sendResetPassword: ({ user, url }) =>
-      sendPasswordResetEmail({ email: user.email, name: user.name, url }),
-  },
-  emailVerification: {
-    ...defaults.emailVerification,
-    // Send the verification email on signup, and sign the user in once they
-    // verify. Only auto-send when a sender is configured.
-    sendOnSignUp: emailConfigured,
-    autoSignInAfterVerification: true,
-    // 24 hours — must match the "expires in 24 hours" copy in the verification
-    // email (`src/emails/verify-email.tsx`). Better Auth's default is 1 hour.
-    expiresIn: 60 * 60 * 24,
-    sendVerificationEmail: ({ user, url }) =>
-      sendVerificationEmail({ email: user.email, name: user.name, url }),
-  },
-  socialProviders: {
-    ...defaults.socialProviders,
-    ...(githubClientId && githubClientSecret
+export default defineAuth(({ defaults, env }) => {
+  // Pin Better Auth's origin to the configured https public URL so cookie
+  // security and the OAuth `redirect_uri` don't hinge on the per-request
+  // protocol the worker happens to see.
+  //
+  // Void derives Better Auth's `baseURL` from `new URL(request.url).origin`,
+  // recomputed on EVERY request. Behind our Cloudflare custom domain the worker
+  // can resolve a leg (notably the GitHub OAuth callback) as `http://` even
+  // though the browser is on https. Better Auth then keys the state cookie's
+  // `__Secure-` prefix off that http origin (better-auth cookies/index.ts:
+  // `baseURLString.startsWith("https://")`), so the http callback looks for a
+  // bare `better-auth.state` cookie while the https sign-in leg set
+  // `__Secure-better-auth.state` — the cookie "isn't found" and the callback
+  // 302s to `/api/auth/error?error=state_mismatch`. Forcing `useSecureCookies`
+  // (checked BEFORE the per-request protocol) and a fixed https `baseURL` makes
+  // the sign-in and callback legs agree on both the cookie name and the
+  // redirect_uri. Guarded on an https public URL so http:// localhost dev is
+  // untouched. `env` is the request-time binding set (`Record<string,
+  // unknown>`), so guard the read.
+  const publicUrl =
+    typeof env.WRIGHTFUL_PUBLIC_URL === "string"
+      ? env.WRIGHTFUL_PUBLIC_URL.replace(/\/+$/, "")
+      : undefined;
+  const publicIsHttps =
+    publicUrl !== undefined && publicUrl.startsWith("https://");
+  const defaultTrustedOrigins = Array.isArray(defaults.trustedOrigins)
+    ? defaults.trustedOrigins
+    : [];
+  return {
+    ...defaults,
+    // Deterministic https origin (prod) — see the note above. No-op in http dev.
+    ...(publicIsHttps && publicUrl
       ? {
-          github: {
-            clientId: githubClientId,
-            clientSecret: githubClientSecret,
-            // Only `user:email` (required for the email claim). The previous
-            // `read:org` scope existed for GitHub-org auto-join team
-            // suggestions, which were replaced by directed invites
-            // (docs/worklog/2026-05-05-directed-invites-replace-org-link.md) —
-            // nothing reads org membership anymore, so requesting it just
-            // inflates the OAuth consent screen.
-            scope: ["user:email"],
-          },
+          baseURL: publicUrl,
+          trustedOrigins: [...defaultTrustedOrigins, publicUrl],
         }
       : {}),
-  },
-  databaseHooks: {
-    ...defaults.databaseHooks,
-    account: {
-      ...defaults.databaseHooks?.account,
-      create: {
-        ...defaults.databaseHooks?.account?.create,
-        after: (account: AccountRow, context: AccountContext) =>
-          mirrorGithubAccount(account, () =>
-            defaults.databaseHooks?.account?.create?.after?.(account, context),
-          ),
-      },
-      update: {
-        ...defaults.databaseHooks?.account?.update,
-        after: (account: AccountRow, context: AccountContext) =>
-          mirrorGithubAccount(account, () =>
-            defaults.databaseHooks?.account?.update?.after?.(account, context),
-          ),
+    // Polar billing plugin, registered ONLY when billing is configured. Preserve
+    // any void-default plugins (spread first) so we add rather than clobber.
+    //
+    // The `mcp` plugin turns this Better Auth instance into the OAuth 2.1
+    // authorization server for the /api/mcp endpoint (dynamic client
+    // registration + authorization-code + PKCE; tables `oauthApplication` /
+    // `oauthAccessToken` / `oauthConsent`, bootstrapped by void/auth like the
+    // core four). `loginPage: "/login"` — an unauthenticated /mcp/authorize sets
+    // the `oidc_login_prompt` cookie and redirects there; the plugin's after-hook
+    // resumes authorization when the login response sets a session cookie, so
+    // the existing login page needs no changes. `requirePKCE` because every MCP
+    // client is a public client (no secret) — the code exchange must be bound to
+    // the initiator. CONSENT IS FORCED separately: the plugin auto-issues codes
+    // unless `prompt=consent`, so `middleware/02.api-auth.ts` rewrites every
+    // /mcp/authorize request to carry it and `consentPage` renders our approval
+    // screen (pages/oauth/consent.tsx). Do not remove that middleware leg —
+    // without it any dynamically-registered client could silently mint tokens
+    // for a logged-in user's browser.
+    plugins: [
+      ...(defaults.plugins ?? []),
+      mcp({
+        loginPage: "/login",
+        oidcConfig: {
+          // `loginPage` is repeated here only to satisfy OIDCOptions' required
+          // field — the plugin overrides it with the top-level value anyway.
+          loginPage: "/login",
+          requirePKCE: true,
+          consentPage: "/oauth/consent",
+        },
+      }),
+      ...(polarConfigured ? [buildPolarPlugin()] : []),
+    ],
+    // Session cookie cache: sign the resolved session into a short-lived cookie so
+    // `getSession()` is served in-memory instead of querying Postgres on EVERY
+    // authenticated request/navigation (a serialized DB phase per nav otherwise).
+    // `maxAge` bounds both the read-avoidance window and the cross-device
+    // revocation lag — another device keeps a cached session until its cookie ages
+    // out. 5 min keeps revocation lag low for a CI dashboard while cutting the
+    // per-nav session read to ~one per active user per window. This was enabled pre-migration
+    // (worklog 2026-04-30-better-auth-cookie-cache) but lost when auth moved from
+    // the old rwsdk `better-auth.ts` to `void/auth`'s `defineAuth`; re-added here.
+    session: {
+      ...defaults.session,
+      cookieCache: {
+        ...defaults.session?.cookieCache,
+        enabled: true,
+        maxAge: 300,
       },
     },
-  },
-}));
+    advanced: {
+      ...defaults.advanced,
+      // Force the `__Secure-` cookie prefix + Secure attribute in prod regardless
+      // of the per-request protocol the worker resolves (see the baseURL note
+      // above). This is the lever that actually fixes `error=state_mismatch`:
+      // it's evaluated before the per-request `baseURL` protocol, so both the
+      // sign-in and OAuth-callback legs name the state cookie identically.
+      ...(publicIsHttps ? { useSecureCookies: true } : {}),
+      database: { ...defaults.advanced?.database, generateId: () => ulid() },
+    },
+    // Self-service account deletion, made SAFE by the two hooks: `beforeDelete`
+    // blocks a user who is the sole owner of any team (a cascade would strand it),
+    // and `afterDelete` sweeps the user's logical-FK rows that void/auth's own
+    // cascade doesn't reach. Enabled so the hooks actually fire — a dormant hook
+    // would leave the orphan gap open. Guard logic lives in `@/lib/user-teardown`.
+    user: {
+      ...defaults.user,
+      deleteUser: {
+        ...defaults.user?.deleteUser,
+        enabled: true,
+        beforeDelete: (user: { id: string }) => assertUserDeletable(user.id),
+        afterDelete: (user: { id: string }) => cleanupUserAfterDelete(user.id),
+      },
+    },
+    emailAndPassword: {
+      ...defaults.emailAndPassword,
+      enabled: true,
+      // On only when a sender is configured (see `emailConfigured`); unset
+      // EMAIL_FROM keeps today's no-verification behavior.
+      requireEmailVerification: emailConfigured,
+      disableSignUp: !openSignupAllowed,
+      // 30 minutes — must match the "expires in 30 minutes" copy in the reset
+      // email (`src/emails/reset-password.tsx`). Better Auth's default is 1 hour.
+      resetPasswordTokenExpiresIn: 60 * 30,
+      sendResetPassword: ({ user, url }) =>
+        sendPasswordResetEmail({ email: user.email, name: user.name, url }),
+    },
+    emailVerification: {
+      ...defaults.emailVerification,
+      // Send the verification email on signup, and sign the user in once they
+      // verify. Only auto-send when a sender is configured.
+      sendOnSignUp: emailConfigured,
+      autoSignInAfterVerification: true,
+      // 24 hours — must match the "expires in 24 hours" copy in the verification
+      // email (`src/emails/verify-email.tsx`). Better Auth's default is 1 hour.
+      expiresIn: 60 * 60 * 24,
+      sendVerificationEmail: ({ user, url }) =>
+        sendVerificationEmail({ email: user.email, name: user.name, url }),
+    },
+    socialProviders: {
+      ...defaults.socialProviders,
+      ...(githubClientId && githubClientSecret
+        ? {
+            github: {
+              clientId: githubClientId,
+              clientSecret: githubClientSecret,
+              // Only `user:email` (required for the email claim). The previous
+              // `read:org` scope existed for GitHub-org auto-join team
+              // suggestions, which were replaced by directed invites
+              // (docs/worklog/2026-05-05-directed-invites-replace-org-link.md) —
+              // nothing reads org membership anymore, so requesting it just
+              // inflates the OAuth consent screen.
+              scope: ["user:email"],
+            },
+          }
+        : {}),
+    },
+    databaseHooks: {
+      ...defaults.databaseHooks,
+      account: {
+        ...defaults.databaseHooks?.account,
+        create: {
+          ...defaults.databaseHooks?.account?.create,
+          after: (account: AccountRow, context: AccountContext) =>
+            mirrorGithubAccount(account, () =>
+              defaults.databaseHooks?.account?.create?.after?.(
+                account,
+                context,
+              ),
+            ),
+        },
+        update: {
+          ...defaults.databaseHooks?.account?.update,
+          after: (account: AccountRow, context: AccountContext) =>
+            mirrorGithubAccount(account, () =>
+              defaults.databaseHooks?.account?.update?.after?.(
+                account,
+                context,
+              ),
+            ),
+        },
+      },
+    },
+  };
+});

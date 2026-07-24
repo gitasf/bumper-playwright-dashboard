@@ -64,6 +64,13 @@ function makeBuilder(kind: string): BuilderNode {
     const rows = awaitResults.shift() ?? [];
     return Promise.resolve(onFulfilled ? onFulfilled(rows) : rows);
   };
+  // Guarded usage bumps apply by default in this builder mock.
+  node.returning = () => ({
+    then: (onFulfilled?: (value: unknown) => unknown) => {
+      const rows = [{ applied: "usage-1" }];
+      return Promise.resolve(onFulfilled ? onFulfilled(rows) : rows);
+    },
+  });
   return node;
 }
 
@@ -117,7 +124,7 @@ const {
   planArtifactRegistration,
   registerArtifacts,
   storeArtifactUpload,
-} = await import("@/lib/artifacts");
+} = await import("@/lib/artifacts/store");
 
 const scope: TenantScope = {
   teamId: "team-1" as AuthorizedTeamId,
