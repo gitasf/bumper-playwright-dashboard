@@ -5,11 +5,12 @@ import { useCallback } from "react";
 import { fetch } from "void/client";
 import { Link } from "@void/react";
 import { ChartColumnTooltip } from "@/components/analytics/chart-tooltip";
+import { CommitSubject } from "@/components/run/commit-subject";
 import { StatusPill } from "@/components/status-pill";
 import { cn } from "@/lib/cn";
 import type { RunSummaryResponse } from "@/lib/api-response-types";
 import type { TestResultSummaryResponse } from "@/lib/api-response-types";
-import { firstLine } from "@/lib/text";
+import { commitTitle } from "@/lib/text";
 import { statusCssVar } from "@/lib/status";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
 
@@ -269,7 +270,6 @@ function TestResultSummarySkeleton() {
 
 function RunSummaryBody({ summary }: { summary: RunSummaryResponse }) {
   const shortId = summary.id.slice(-7);
-  const title = firstLine(summary.commitMessage) ?? `Run #${shortId}`;
   const completed = summary.completedAt ?? summary.createdAt;
 
   return (
@@ -294,7 +294,12 @@ function RunSummaryBody({ summary }: { summary: RunSummaryResponse }) {
         </div>
       </div>
       <TitleAndMeta
-        title={title}
+        title={
+          <CommitSubject
+            fallback={`Run #${shortId}`}
+            message={summary.commitMessage}
+          />
+        }
         actor={summary.actor}
         durationMs={summary.durationMs}
         timestamp={completed}
@@ -310,7 +315,9 @@ function TestResultSummaryBody({
   summary: TestResultSummaryResponse;
 }) {
   const runShortId = summary.runId.slice(-7);
-  const commitTitle = firstLine(summary.commitMessage);
+  // A value, not a `CommitSubject`: this footer is already metadata weight, and
+  // the subject's presence gates whether it renders at all.
+  const commitSubject = commitTitle(summary.commitMessage);
 
   return (
     <>
@@ -336,11 +343,11 @@ function TestResultSummaryBody({
           {formatRelativeTime(summary.createdAt)})
         </div>
       </div>
-      {(summary.commitSha || commitTitle) && (
+      {(summary.commitSha || commitSubject) && (
         <div className="flex flex-col gap-1 border-t border-line-1 pt-2">
-          {commitTitle && (
+          {commitSubject && (
             <div className="line-clamp-1 font-mono text-micro text-fg-3">
-              {commitTitle}
+              {commitSubject.text}
             </div>
           )}
           <div className="flex items-center gap-1.5 font-mono text-micro text-fg-3">
@@ -376,7 +383,7 @@ function TitleAndMeta({
   durationMs,
   timestamp,
 }: {
-  title: string;
+  title: React.ReactNode;
   actor: string | null;
   durationMs: number;
   timestamp: number;

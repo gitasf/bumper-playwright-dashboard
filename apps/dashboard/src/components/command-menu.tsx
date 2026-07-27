@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/command";
 import { useDebouncedValue } from "@/lib/hooks/use-debounced-value";
 import { link } from "@/lib/links";
+import { commitTitle } from "@/lib/text";
 
 interface Team {
   slug: string;
@@ -241,16 +242,21 @@ export function CommandMenu({
       return [
         {
           value: "Recent runs",
-          items: data.runs.map<CommandEntry>((r) => ({
-            id: `run:${r.id}`,
-            value: r.commitMessage ?? r.branch ?? r.id,
-            label: r.commitMessage ?? r.branch ?? `Run ${r.id.slice(-7)}`,
-            hint: [r.branch, r.commitSha?.slice(0, 7)]
-              .filter(Boolean)
-              .join(" · "),
-            icon: Clock,
-            action: () => go(`${base}/runs/${r.id}`),
-          })),
+          items: data.runs.map<CommandEntry>((r) => {
+            // Subject only — a palette row is one line, and matching should run
+            // over what it displays.
+            const subject = commitTitle(r.commitMessage)?.text;
+            return {
+              id: `run:${r.id}`,
+              value: subject ?? r.branch ?? r.id,
+              label: subject ?? r.branch ?? `Run ${r.id.slice(-7)}`,
+              hint: [r.branch, r.commitSha?.slice(0, 7)]
+                .filter(Boolean)
+                .join(" · "),
+              icon: Clock,
+              action: () => go(`${base}/runs/${r.id}`),
+            };
+          }),
         },
       ];
     }

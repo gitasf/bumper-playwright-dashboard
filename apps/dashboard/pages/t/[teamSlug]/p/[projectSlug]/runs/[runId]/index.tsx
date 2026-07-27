@@ -23,6 +23,7 @@ import {
   EnvPill,
   PrPill,
 } from "@/components/run/meta-pills";
+import { CommitSubject } from "@/components/run/commit-subject";
 import { RunProgress } from "@/components/run/progress";
 import { RunSummaryLive } from "@/components/run/summary-live";
 import { TabBar, TabBarTab } from "@/components/ui/tabs";
@@ -134,15 +135,12 @@ export default function RunDetailPage({
                 { label: "Runs", href: base, cacheFor: PREFETCH_REALTIME },
               ]}
             />
-            <h1
-              className="flex min-w-0 flex-1 items-center gap-2 text-heading font-semibold tracking-[-0.2px]"
-              title={run.commitMessage ?? run.id}
-            >
-              <span className="min-w-0 truncate">
-                {run.commitMessage ?? (
-                  <span className="italic text-fg-3">No message</span>
-                )}
-              </span>
+            <h1 className="flex min-w-0 flex-1 items-center gap-2 text-heading font-semibold tracking-[-0.2px]">
+              <CommitSubject
+                className="min-w-0 truncate"
+                fallback={<span className="italic text-fg-3">No message</span>}
+                message={run.commitMessage}
+              />
               <RunStatusGlyphLive
                 initialSummary={initialSummary}
                 runId={runId}

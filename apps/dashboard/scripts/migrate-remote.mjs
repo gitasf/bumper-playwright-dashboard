@@ -28,42 +28,11 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { parseEnvDatabaseUrl, stripSystemRootCert } from "./lib/pg-url.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const at = (rel) => `${root}/${rel}`;
 const run = (cmd) => execSync(cmd, { cwd: root, stdio: "inherit" });
-
-/**
- * Strip the libpq `sslrootcert=system` sentinel from a Postgres URL. It means
- * "use the OS trust store" to libpq, and managed providers (PlanetScale, Neon, …)
- * hand out connection strings containing it. But node-postgres
- * (`pg-connection-string`) treats `sslrootcert` as a FILE PATH and does
- * `fs.readFileSync("system")` → `ENOENT: open 'system'`, which crashes
- * `void db migrate` at connection-string parse. Removing only the `system`
- * sentinel leaves any `sslmode` (e.g. verify-full) intact, so node verifies
- * against its built-in CA bundle — which covers those providers' public certs —
- * keeping TLS verification rather than weakening it. A real
- * `sslrootcert=/path/to/ca.pem` is left untouched.
- */
-function stripSystemRootCert(raw) {
-  const qIndex = raw.indexOf("?");
-  if (qIndex === -1) return raw;
-  const base = raw.slice(0, qIndex);
-  const params = raw
-    .slice(qIndex + 1)
-    .split("&")
-    .filter((p) => p !== "sslrootcert=system");
-  return params.length ? `${base}?${params.join("&")}` : base;
-}
-
-/** Read DATABASE_URL out of a `.env.local` file's text (the fallback when no
- * `$DATABASE_URL` is set in the environment). Strips one pair of quotes. */
-function parseEnvDatabaseUrl(text) {
-  if (!text) return undefined;
-  const m = text.match(/^\s*DATABASE_URL\s*=\s*(.+?)\s*$/m);
-  if (!m) return undefined;
-  return m[1].replace(/^["']|["']$/g, "");
-}
 
 // ── Better Auth tables (own-account stopgap) ────────────────────────────────
 // Apply the committed, idempotent `db/better-auth.sql` (CREATE … IF NOT EXISTS)
