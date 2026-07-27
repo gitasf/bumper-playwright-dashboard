@@ -67,76 +67,34 @@ rank 3 by design. GitLab and CircleCI have no PR-title fallback at all. Those
 runs are an ongoing stream, not a fixed set, so display-time normalization is the
 only thing that covers them.
 
-**Existing rows** (`scripts/backfill-run-titles.mjs`). Recovers the real PR title
-from the GitHub API for rows written before the capture fix.
+## Existing rows
 
-## Why the backfill is a script, not a migration
+Deliberately not repaired. A backfill (fetching each PR's real title from the
+GitHub API and rewriting `commitMessage`) was written and then dropped: it needs
+direct access to the production Postgres origin behind Hyperdrive, which nobody
+on the team currently holds — `db:migrate:remote` has never been run — and it
+would have overwritten the stored message irreversibly to fix a fixed snapshot.
+Render-time normalization already makes those rows readable, so the repair buys
+only the difference between an abbreviated `Merge cc43127 into 848b9f3` and the
+PR title.
 
-Resolving a title needs a network call per PR. Committed migrations run on every
-environment, carry no secrets, and re-running against a fresh database is a
-pointless no-op. A pure-SQL migration _could_ have abbreviated the shas in place
-(`regexp_replace`), but that destroys the original message and only fixes a
-snapshot — it does nothing for the push-event runs above.
-
-The script is dry-run by default, groups runs by `(repo, prNumber)` so each PR is
-fetched once, and re-asserts the generated-message predicate inside the `UPDATE`
-so a concurrent write can't be clobbered by a title resolved for the row's older
-state. That guard is what makes it idempotent and safe to re-run after a partial
-failure. Rows with no `repo`/`prNumber` are counted and reported separately so
-the summary never implies full coverage.
-
-**It is marked for deletion once it has run successfully.** It is committed so
-the change to production data is reviewable here rather than living only in
-someone's shell history; that reason expires on completion.
-
-The connection-string helpers it needs now live in `scripts/lib/pg-url.mjs`
-alongside the existing `lib/spinner.mjs` / `lib/dev-server.mjs` / `lib/probe-status.mjs`,
-shared with `migrate-remote.mjs`. Both are pure functions and `scripts/lib/` was
-already the established home, so the extraction was mechanical — cheaper than a
-second copy, and it leaves nothing behind when the backfill is deleted.
-
-`--repo` with a missing or `--`-prefixed value now exits non-zero instead of
-silently widening to every repo. The flag exists to narrow the blast radius, so
-failing is the only safe direction for a typo.
+Worth revisiting only if that difference starts mattering, and then via the
+Worker's own Hyperdrive binding (a temporary admin route) rather than a laptop
+script, since that needs no credentials nobody has.
 
 ## Duplicated rule
 
-`GENERATED_MERGE_MESSAGE` exists three times by design: `packages/reporter/src/ci.ts`
-(capture), `apps/dashboard/src/lib/text.ts` (render), and as a POSIX twin in the
-backfill script (SQL). The reporter is a published standalone package, so neither
-side can import the other, and the SQL copy has to be a Postgres regex.
+`GENERATED_MERGE_MESSAGE` exists twice by design: `packages/reporter/src/ci.ts`
+(capture) and `apps/dashboard/src/lib/text.ts` (render). The reporter is a
+published standalone package, so neither side can import the other.
 
-The three were **not** in fact equivalent on first writing, and the gap is worth
-recording. The dashboard copy trims before matching — `truncatedText`
-(`src/lib/schemas.ts`) truncates without trimming, and the reporter's
-`CI_COMMIT_MESSAGE` path passes the env var through as-is, so stored messages can
-carry surrounding whitespace. The SQL copy did not trim. A padded generated merge
-therefore rendered de-emphasized in the UI while being invisible to the backfill's
-`WHERE` clause _and_ to its "no repo/PR recorded" count — the very count that
-exists so the summary never implies full coverage. Every predicate in the script
-now matches `btrim("commitMessage")`.
-
-Nothing mechanical bound the copies, which is how that drifted. `commit-title.test.ts`
-now reads the backfill script off disk and asserts its `GENERATED_MERGE_SQL`
-literal is character-identical to this side's `RegExp.source` (minus the capture
-parens), so editing either pattern fails the dashboard suite until both agree. The
-case `skipIf`s itself when the script is absent, so it retires with the throwaway
-rather than outliving it.
+The two are not quite identical, which is worth recording: the dashboard copy
+trims before matching. `truncatedText` (`src/lib/schemas.ts`) truncates without
+trimming and the reporter's `CI_COMMIT_MESSAGE` path passes the env var through
+as-is, so stored messages can carry surrounding whitespace, whereas the reporter
+matches `readGitCommitMessage` output that is already trimmed-or-null.
 
 ## Verification
 
-- `apps/dashboard/src/__tests__/commit-title.test.ts` — 9 cases, including the
-  SQL-twin drift guard (verified to fail when the script's pattern is edited)
+- `apps/dashboard/src/__tests__/commit-title.test.ts` — 8 cases
 - Reporter suite 308 passing; `pnpm check` exits 0
-- Postgres `~*` predicate confirmed to match the JS regex on all six message shapes
-- Backfill exercised end-to-end against a scratch database with 8 fixtures and
-  **real** GitHub API calls: PR grouping (2 runs → 1 fetch), real titles resolved,
-  dry run provably read-only, body/branch-merge/authored rows excluded, 404 PR
-  counted without a write, and a second `--apply` updating 0 rows
-- **Not yet run against production.**
-- **The scratch-database run predates the `btrim` fix and the parameter reordering
-  in the `UPDATE`.** Those three queries have not been re-exercised against a real
-  Postgres — re-run the scratch fixtures (adding a whitespace-padded row, which
-  the old predicate missed) before the production `--apply`.
-- The `--repo` filter's narrowing branch is still untested (all fixtures shared one
-  repo); its new missing-value guard is argument parsing only.

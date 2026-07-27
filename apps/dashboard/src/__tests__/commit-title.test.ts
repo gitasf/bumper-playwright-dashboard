@@ -1,7 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { GENERATED_MERGE_MESSAGE, commitTitle } from "@/lib/text";
+import { commitTitle } from "@/lib/text";
 
 // GitHub's "Update branch" button pushes this onto the PR head, so the reporter
 // captured it as the run's commit message. `packages/reporter/src/ci.ts` now
@@ -68,26 +66,4 @@ describe("commitTitle", () => {
     expect(commitTitle("")).toBeNull();
     expect(commitTitle("   \n  ")).toBeNull();
   });
-});
-
-// The backfill's copy of the rule is a POSIX string in SQL, so it can't execute
-// here — pin its text against this side's `source` instead, and editing either
-// pattern fails until both agree.
-describe("the backfill script's SQL twin", () => {
-  // Resolved from cwd (the package root under `vitest`), not `import.meta.url` —
-  // vitest's transform doesn't hand this module a `file:` URL.
-  const scriptPath = resolve("scripts/backfill-run-titles.mjs");
-
-  // The script is marked for deletion once it has run, so this case retires with
-  // it rather than outliving it as a failure.
-  it.skipIf(!existsSync(scriptPath))(
-    "matches this module's pattern character for character",
-    () => {
-      // The SQL copy has no capture groups (it only tests, never abbreviates).
-      const expected = GENERATED_MERGE_MESSAGE.source.replaceAll(/[()]/g, "");
-      expect(readFileSync(scriptPath, "utf8")).toContain(
-        `const GENERATED_MERGE_SQL = "${expected}";`,
-      );
-    },
-  );
 });

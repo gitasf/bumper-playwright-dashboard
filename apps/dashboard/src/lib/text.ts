@@ -9,10 +9,9 @@
  *
  * A deliberate second copy of the rule in `packages/reporter/src/ci.ts`, which
  * applies it at capture time — the reporter is a published standalone package, so
- * neither side can import the other. `scripts/backfill-run-titles.mjs` holds a
- * third, POSIX copy for SQL, pinned to this one by `commit-title.test.ts`.
+ * neither side can import the other.
  */
-export const GENERATED_MERGE_MESSAGE =
+const GENERATED_MERGE_MESSAGE =
   /^Merge ([0-9a-f]{7,64}) into ([0-9a-f]{7,64})$/i;
 
 export interface CommitTitle {
@@ -35,7 +34,7 @@ export function commitTitle(message: string | null): CommitTitle | null {
   if (!message) return null;
   // Trimmed before matching, unlike in the reporter: stored messages can carry
   // surrounding whitespace, since `truncatedText` (schemas.ts) truncates without
-  // trimming. The SQL twin `btrim`s for the same reason.
+  // trimming.
   const trimmed = message.trim();
   const merge = GENERATED_MERGE_MESSAGE.exec(trimmed);
   if (merge) {
