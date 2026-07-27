@@ -80,6 +80,23 @@ function readGitCommitMessage(ref?: string): string | null {
   }
 }
 
+// GitHub writes `Merge <sha> into <sha>` for two commits a PR run can land on:
+// the ephemeral `refs/pull/N/merge` commit, and the real merge the "Update
+// branch" button pushes onto the PR head. The second one IS the head commit, so
+// even reading the head sha's message — the best source for a hand-written
+// commit — can yield this. Two bare object ids and nothing else: no human writes
+// that, and it says strictly less than the branch / PR / sha the dashboard
+// already shows beside it, so it loses to the PR title in detectCIRaw.
+//
+// Unanchored by `/m` and applied to the whole message, so `$` also rejects
+// anything with a body: a merge someone wrote a real message for keeps it. The
+// object-name class mirrors GIT_OBJECT_NAME above.
+const GENERATED_MERGE_MESSAGE = /^Merge [0-9a-f]{7,64} into [0-9a-f]{7,64}$/i;
+
+function isGeneratedMergeMessage(message: string | null): boolean {
+  return message !== null && GENERATED_MERGE_MESSAGE.test(message.trim());
+}
+
 // `prNumber` is `z.number().int().min(0)` on the wire — NaN, negatives, and
 // non-integers all *reject* (NaN because `z.number()` rejects it), 400-ing the
 // open call. Funnel every PR-number source (parseInt results, payload JSON)
@@ -177,15 +194,18 @@ function detectCIRaw(): CIInfo | null {
     // ephemeral merge commit ("Merge <head> into <base>"), not the commit the
     // PR author wrote. Prefer the head sha from the event payload, and resolve
     // the message in descending order of fidelity:
-    //   1. the head commit's real message — only present locally with a deep
-    //      enough checkout (default shallow PR checkout fetches just the merge
-    //      commit; deepen it via actions/checkout `fetch-depth: 0` to get this);
+    //   1. the head commit's message, when a human wrote it — only present
+    //      locally with a deep enough checkout (default shallow PR checkout
+    //      fetches just the merge commit; deepen it via actions/checkout
+    //      `fetch-depth: 0` to get this);
     //   2. the PR title from the event payload — always available, human-readable;
-    //   3. the bare `git log` (the merge commit) as a last resort.
+    //   3. a head commit message GitHub generated — beats nothing, but a PR title
+    //      beats it (see `isGeneratedMergeMessage`);
+    //   4. the bare `git log` (the merge commit) as a last resort.
+    const head = pr.headSha ? readGitCommitMessage(pr.headSha) : null;
+    const authored = isGeneratedMergeMessage(head) ? null : head;
     const commitMessage =
-      (pr.headSha ? readGitCommitMessage(pr.headSha) : null) ??
-      pr.title ??
-      readGitCommitMessage();
+      authored ?? pr.title ?? head ?? readGitCommitMessage();
     return {
       ciProvider: "github-actions",
       ciBuildId: process.env.GITHUB_RUN_ID ?? null,

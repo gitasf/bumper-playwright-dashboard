@@ -139,10 +139,16 @@ head SHA, title, and number from the event payload (`GITHUB_EVENT_PATH`) and:
 
 - reports the **head commit's SHA** (not the merge commit's), and
 - resolves the **commit message** in descending order of fidelity:
-  1. the head commit's real message, read with `git log` — only available when
-     that commit object is present locally;
+  1. the head commit's message where you wrote it, read with `git log` — only
+     available when that commit object is present locally;
   2. the **PR title** (always available from the event payload);
-  3. the merge commit's message (last resort).
+  3. the head commit's message where GitHub generated it. That means a bare
+     `Merge <sha> into <sha>`, which is what the **"Update branch"** button
+     pushes onto a PR head. Two object IDs say less than the branch, PR, and
+     SHA shown beside them, so a PR title outranks this — but with no PR title
+     it still beats nothing. A merge commit with a real subject or a
+     hand-written body counts as yours and stays at (1);
+  4. the merge commit's message (last resort).
 
 This needs **no workflow changes** — you'll get the right SHA and a readable
 title out of the box. The default `actions/checkout` only fetches the merge
