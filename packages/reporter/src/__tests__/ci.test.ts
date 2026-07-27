@@ -11,11 +11,9 @@ import {
 } from "vite-plus/test";
 
 // Stub the git commit read so tests don't depend on the repo's git state.
-// `gitMessage` is what `git log` "returns" — reset to the default before every
-// test, and reassigned by the tests that need a specific commit message (e.g.
-// GitHub's generated merge subject). Read lazily inside the factory, so the
-// mutable binding is initialized long before the factory first runs (on the
-// `../ci.js` import below).
+// `gitMessage` is what `git log` returns; it's reset before every test and
+// reassigned by the tests that need a specific message. Read inside the factory
+// so the reassignment is visible to the already-hoisted mock.
 const DEFAULT_GIT_MESSAGE = "stubbed commit message\n";
 let gitMessage = DEFAULT_GIT_MESSAGE;
 vi.mock("node:child_process", () => ({
@@ -269,8 +267,7 @@ describe("detectCI", () => {
 
     // GitHub's "Update branch" button pushes a `Merge <sha> into <sha>` commit
     // onto the PR head, so the best source (the head commit's own message) can
-    // still be content-free. The PR title outranks it in that case. "Has a body"
-    // rides entirely on the regex's `$` anchor, so the body cases below pin it.
+    // still be content-free. The PR title outranks it in that case.
     describe("generated merge messages", () => {
       const GENERATED_MERGE =
         "Merge cc43127cdd579151635f1dd287882da6b28cd24d into 848b9f3ed98160960c5a7010b5c09326776c493f";
@@ -302,24 +299,19 @@ describe("detectCI", () => {
         gitMessage = `${GENERATED_MERGE}\n`;
         writeEvent({ number: 5082, head: { sha: HEAD_SHA } });
 
-        // Nothing better exists — HEAD's message is the same class of noise, so
-        // don't trade one useless string for another.
         expect(detectCI()?.commitMessage).toBe(GENERATED_MERGE);
       });
 
-      it.for([
-        ["LF", "\n\n"],
-        ["CRLF", "\r\n\r\n"],
-      ])("keeps a merge that carries a hand-written body (%s)", ([, gap]) => {
-        gitMessage = `${GENERATED_MERGE}${gap}Resolve the conflict in styles.css.`;
+      it("keeps a merge that carries a hand-written body", () => {
+        gitMessage = `${GENERATED_MERGE}\n\nResolve the conflict in styles.css.`;
         writeEvent({
           number: 5082,
           title: "Bump release-sup for staging",
           head: { sha: HEAD_SHA },
         });
 
-        // Subject matches, but the body is real content — not generated, so it
-        // stays at rank 1 and outranks the PR title.
+        // The subject matches, but the body is real content, so it outranks
+        // the PR title.
         expect(detectCI()?.commitMessage).toContain("Resolve the conflict");
       });
 

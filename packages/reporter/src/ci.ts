@@ -80,22 +80,14 @@ function readGitCommitMessage(ref?: string): string | null {
   }
 }
 
-// GitHub writes `Merge <sha> into <sha>` for two commits a PR run can land on:
-// the ephemeral `refs/pull/N/merge` commit, and the real merge the "Update
-// branch" button pushes onto the PR head. The second one IS the head commit, so
-// even reading the head sha's message — the best source for a hand-written
-// commit — can yield this. Two bare object ids and nothing else: no human writes
-// that, and it says strictly less than the branch / PR / sha the dashboard
-// already shows beside it, so it loses to the PR title in detectCIRaw.
-//
-// Unanchored by `/m` and applied to the whole message, so `$` also rejects
-// anything with a body: a merge someone wrote a real message for keeps it. The
-// object-name class mirrors GIT_OBJECT_NAME above.
+// GitHub writes `Merge <sha> into <sha>` for the merge its "Update branch"
+// button pushes onto the PR head, so even the head sha's own message — the best
+// source for a hand-written commit — can be two bare object ids and nothing
+// else. That says strictly less than the branch / PR / sha shown beside it, so
+// it loses to the PR title in detectCIRaw. No `/m` flag and matched against the
+// whole message, so `$` also rejects anything with a body: a merge someone did
+// write a message for keeps it.
 const GENERATED_MERGE_MESSAGE = /^Merge [0-9a-f]{7,64} into [0-9a-f]{7,64}$/i;
-
-function isGeneratedMergeMessage(message: string | null): boolean {
-  return message !== null && GENERATED_MERGE_MESSAGE.test(message.trim());
-}
 
 // `prNumber` is `z.number().int().min(0)` on the wire — NaN, negatives, and
 // non-integers all *reject* (NaN because `z.number()` rejects it), 400-ing the
@@ -199,11 +191,11 @@ function detectCIRaw(): CIInfo | null {
     //      fetches just the merge commit; deepen it via actions/checkout
     //      `fetch-depth: 0` to get this);
     //   2. the PR title from the event payload — always available, human-readable;
-    //   3. a head commit message GitHub generated — beats nothing, but a PR title
-    //      beats it (see `isGeneratedMergeMessage`);
+    //   3. a head commit message GitHub generated (see GENERATED_MERGE_MESSAGE)
+    //      — beats nothing, but a PR title beats it;
     //   4. the bare `git log` (the merge commit) as a last resort.
     const head = pr.headSha ? readGitCommitMessage(pr.headSha) : null;
-    const authored = isGeneratedMergeMessage(head) ? null : head;
+    const authored = head && !GENERATED_MERGE_MESSAGE.test(head) ? head : null;
     const commitMessage =
       authored ?? pr.title ?? head ?? readGitCommitMessage();
     return {
