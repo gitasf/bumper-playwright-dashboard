@@ -80,6 +80,15 @@ function readGitCommitMessage(ref?: string): string | null {
   }
 }
 
+// GitHub writes `Merge <sha> into <sha>` for the merge its "Update branch"
+// button pushes onto the PR head, so even the head sha's own message — the best
+// source for a hand-written commit — can be two bare object ids and nothing
+// else. That says strictly less than the branch / PR / sha shown beside it, so
+// it loses to the PR title in detectCIRaw. No `/m` flag and matched against the
+// whole message, so `$` also rejects anything with a body: a merge someone did
+// write a message for keeps it.
+const GENERATED_MERGE_MESSAGE = /^Merge [0-9a-f]{7,64} into [0-9a-f]{7,64}$/i;
+
 // `prNumber` is `z.number().int().min(0)` on the wire — NaN, negatives, and
 // non-integers all *reject* (NaN because `z.number()` rejects it), 400-ing the
 // open call. Funnel every PR-number source (parseInt results, payload JSON)
@@ -177,15 +186,18 @@ function detectCIRaw(): CIInfo | null {
     // ephemeral merge commit ("Merge <head> into <base>"), not the commit the
     // PR author wrote. Prefer the head sha from the event payload, and resolve
     // the message in descending order of fidelity:
-    //   1. the head commit's real message — only present locally with a deep
-    //      enough checkout (default shallow PR checkout fetches just the merge
-    //      commit; deepen it via actions/checkout `fetch-depth: 0` to get this);
+    //   1. the head commit's message, when a human wrote it — only present
+    //      locally with a deep enough checkout (default shallow PR checkout
+    //      fetches just the merge commit; deepen it via actions/checkout
+    //      `fetch-depth: 0` to get this);
     //   2. the PR title from the event payload — always available, human-readable;
-    //   3. the bare `git log` (the merge commit) as a last resort.
+    //   3. a head commit message GitHub generated (see GENERATED_MERGE_MESSAGE)
+    //      — beats nothing, but a PR title beats it;
+    //   4. the bare `git log` (the merge commit) as a last resort.
+    const head = pr.headSha ? readGitCommitMessage(pr.headSha) : null;
+    const authored = head && !GENERATED_MERGE_MESSAGE.test(head) ? head : null;
     const commitMessage =
-      (pr.headSha ? readGitCommitMessage(pr.headSha) : null) ??
-      pr.title ??
-      readGitCommitMessage();
+      authored ?? pr.title ?? head ?? readGitCommitMessage();
     return {
       ciProvider: "github-actions",
       ciBuildId: process.env.GITHUB_RUN_ID ?? null,

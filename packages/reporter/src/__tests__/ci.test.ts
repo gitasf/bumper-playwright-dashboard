@@ -11,8 +11,13 @@ import {
 } from "vite-plus/test";
 
 // Stub the git commit read so tests don't depend on the repo's git state.
+// `gitMessage` is what `git log` returns; it's reset before every test and
+// reassigned by the tests that need a specific message. Read inside the factory
+// so the reassignment is visible to the already-hoisted mock.
+const DEFAULT_GIT_MESSAGE = "stubbed commit message\n";
+let gitMessage = DEFAULT_GIT_MESSAGE;
 vi.mock("node:child_process", () => ({
-  execFileSync: vi.fn(() => "stubbed commit message\n"),
+  execFileSync: vi.fn(() => gitMessage),
 }));
 
 // Re-import after the mock so the module picks it up.
@@ -60,6 +65,7 @@ describe("detectCI", () => {
   let originalEnv: Record<string, string | undefined>;
 
   beforeEach(() => {
+    gitMessage = DEFAULT_GIT_MESSAGE;
     originalEnv = {};
     for (const k of CI_KEYS) {
       originalEnv[k] = process.env[k];
@@ -257,6 +263,70 @@ describe("detectCI", () => {
 
       // Whitespace-only title is normalized to null, so it falls through to git.
       expect(detectCI()?.commitMessage).toBe("stubbed commit message");
+    });
+
+    // GitHub's "Update branch" button pushes a `Merge <sha> into <sha>` commit
+    // onto the PR head, so the best source (the head commit's own message) can
+    // still be content-free. The PR title outranks it in that case.
+    describe("generated merge messages", () => {
+      const GENERATED_MERGE =
+        "Merge cc43127cdd579151635f1dd287882da6b28cd24d into 848b9f3ed98160960c5a7010b5c09326776c493f";
+      const HEAD_SHA = "1abf539abc4567890abc123def4567890abc12345";
+
+      function writeEvent(pull_request: {
+        number: number;
+        title?: string;
+        head?: { sha: string };
+      }): void {
+        const eventPath = join(eventDir, "event.json");
+        writeFileSync(eventPath, JSON.stringify({ pull_request }));
+        process.env.GITHUB_ACTIONS = "true";
+        process.env.GITHUB_EVENT_PATH = eventPath;
+      }
+
+      it("prefers the PR title when the head commit is a generated merge", () => {
+        gitMessage = `${GENERATED_MERGE}\n`;
+        writeEvent({
+          number: 5082,
+          title: "Bump release-sup for staging",
+          head: { sha: HEAD_SHA },
+        });
+
+        expect(detectCI()?.commitMessage).toBe("Bump release-sup for staging");
+      });
+
+      it("keeps the generated merge message when there is no PR title", () => {
+        gitMessage = `${GENERATED_MERGE}\n`;
+        writeEvent({ number: 5082, head: { sha: HEAD_SHA } });
+
+        expect(detectCI()?.commitMessage).toBe(GENERATED_MERGE);
+      });
+
+      it("keeps a merge that carries a hand-written body", () => {
+        gitMessage = `${GENERATED_MERGE}\n\nResolve the conflict in styles.css.`;
+        writeEvent({
+          number: 5082,
+          title: "Bump release-sup for staging",
+          head: { sha: HEAD_SHA },
+        });
+
+        // The subject matches, but the body is real content, so it outranks
+        // the PR title.
+        expect(detectCI()?.commitMessage).toContain("Resolve the conflict");
+      });
+
+      it("keeps a human merge subject that names branches, not shas", () => {
+        gitMessage = "Merge branch 'main' into fix/status-redirect\n";
+        writeEvent({
+          number: 5096,
+          title: "Fix the status redirect",
+          head: { sha: HEAD_SHA },
+        });
+
+        expect(detectCI()?.commitMessage).toBe(
+          "Merge branch 'main' into fix/status-redirect",
+        );
+      });
     });
 
     it("rejects a negative or non-integer PR number from the payload", () => {
