@@ -11,6 +11,7 @@ import {
   RunHistoryChart,
   RunHistoryChartSkeleton,
 } from "@/components/run/history-chart";
+import { CommitSubject } from "@/components/run/commit-subject";
 import { KpiCardSkeleton } from "@/components/skeletons";
 import { StatusBadge } from "@/components/status-badge";
 import { StatusGlyph } from "@/components/status-glyph";
@@ -26,7 +27,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { firstLine } from "@/lib/text";
 import { buildTestHistoryView } from "@/lib/test-history-view";
 import { formatDuration, formatRelativeTime } from "@/lib/time-format";
 import type { Props } from "./index.server";
@@ -394,7 +394,6 @@ function HistoryRegion({
             {history.map((h) => {
               const href = `${base}/runs/${h.runId}/tests/${h.testResultId}`;
               const shortId = h.runId.slice(-7);
-              const message = firstLine(h.commitMessage);
               return (
                 <TableRow key={h.testResultId}>
                   <TableCell className="w-10 px-4 py-3 align-middle">
@@ -410,18 +409,13 @@ function HistoryRegion({
                       <span className="shrink-0 font-mono text-caption text-fg-3">
                         #{shortId}
                       </span>
-                      {message ? (
-                        <span
-                          className="truncate text-body text-fg-1"
-                          title={message}
-                        >
-                          {message}
-                        </span>
-                      ) : (
-                        <span className="text-body text-fg-3">
-                          {h.actor ?? "—"}
-                        </span>
-                      )}
+                      <CommitSubject
+                        className="truncate text-body text-fg-1"
+                        fallback={
+                          <span className="text-fg-3">{h.actor ?? "—"}</span>
+                        }
+                        message={h.commitMessage}
+                      />
                       {h.retryCount > 0 && (
                         <span className="shrink-0 font-mono text-micro text-fg-3">
                           {h.retryCount} retr

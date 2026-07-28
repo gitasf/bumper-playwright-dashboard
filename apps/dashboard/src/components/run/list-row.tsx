@@ -12,13 +12,15 @@ import {
   EnvPill,
   PrPill,
 } from "@/components/run/meta-pills";
+import { CommitSubject } from "@/components/run/commit-subject";
 import { RunTestsPopover } from "@/components/run/tests-popover";
 import { StatusGlyph } from "@/components/status-glyph";
 import { TableCell, TableRow } from "@/components/ui/table";
-import type { RunListRowData } from "@/realtime/events";
 import { branchUrl, commitUrl, prUrl } from "@/lib/pr-url";
 import { runOutcomeTotals } from "@/lib/runs/outcome";
+import { commitTitle } from "@/lib/text";
 import { formatRelativeTime } from "@/lib/time-format";
+import type { RunListRowData } from "@/realtime/events";
 
 interface RunListRowProps {
   /**
@@ -75,8 +77,11 @@ export const RunListRow = memo(function RunListRow({
          * Run detail already seeds live via the realtime room, so it buys nothing
          * worth the 20x loader fan-out. */}
         <RowLink cacheFor={PREFETCH_REALTIME} href={href} prefetch={false}>
+          {/* The subject, not the raw message — a screen reader shouldn't have to
+           * read out two 40-character object names. */}
           <span className="sr-only">
-            View run {run.commitMessage ?? run.id.slice(0, 8)}
+            View run{" "}
+            {commitTitle(run.commitMessage)?.text ?? run.id.slice(0, 8)}
           </span>
           <StatusGlyph size={14} status={run.status} />
         </RowLink>
@@ -88,18 +93,17 @@ export const RunListRow = memo(function RunListRow({
             <span className="shrink-0 font-mono text-caption tabular-nums text-fg-3">
               #{runNum}
             </span>
-            <span
+            <CommitSubject
               className="min-w-0 flex-1 truncate text-body-lg text-fg-1"
-              title={run.commitMessage ?? undefined}
-            >
-              {run.commitMessage ? (
-                run.commitMessage
-              ) : run.actor ? (
-                `@${run.actor}`
-              ) : (
-                <span className="italic text-fg-3">No message</span>
-              )}
-            </span>
+              fallback={
+                run.actor ? (
+                  `@${run.actor}`
+                ) : (
+                  <span className="italic text-fg-3">No message</span>
+                )
+              }
+              message={run.commitMessage}
+            />
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-caption text-fg-3">
             {run.branch ? (
