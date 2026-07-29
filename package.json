@@ -16,7 +16,7 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm --filter @wrightful/reporter build && changeset publish",
-    "deploy": "pnpm --filter @wrightful/dashboard run deploy",
+    "deploy:void": "pnpm --filter @wrightful/dashboard run deploy",
     "prepare": "vp config"
   },
   "devDependencies": {

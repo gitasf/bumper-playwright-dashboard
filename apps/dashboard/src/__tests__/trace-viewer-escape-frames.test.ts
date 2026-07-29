@@ -122,4 +122,29 @@ describe("bindEscapeAcrossFrames", () => {
     expect(() => bind(onEscape, crossOrigin)).not.toThrow();
     expect(onEscape).not.toHaveBeenCalled();
   });
+
+  it("still binds when the snapshot clobbers the DOM members it scans with", async () => {
+    // Snapshots are attacker-craftable and `Document` has
+    // [LegacyOverrideBuiltIns], so `<img name="querySelectorAll">` /
+    // `<img name="documentElement">` shadow the real members (measured in
+    // Chromium; happy-dom has no named-property getter, so shadow them by hand
+    // — on the FRAME's document, never the test's own).
+    // This binding runs FIRST in the snapshot iframe's `onLoad`, so a throw here
+    // would also skip the back-buffer promotion and the visibility fixup that
+    // follow it — one hostile trace could wedge the whole pane.
+    const frame = mountFrame(document);
+    await flush();
+    const win = frame.contentWindow!;
+    const decoy = win.document.createElement("img");
+    Object.defineProperties(win.document, {
+      querySelectorAll: { configurable: true, value: decoy },
+      documentElement: { configurable: true, value: decoy },
+    });
+
+    const onEscape = vi.fn();
+    expect(() => bind(onEscape, win)).not.toThrow();
+
+    pressEscape(win);
+    expect(onEscape).toHaveBeenCalledTimes(1);
+  });
 });

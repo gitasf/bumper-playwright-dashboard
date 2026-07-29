@@ -43,26 +43,28 @@ const TRACE_VIEWER_HEADERS: Readonly<Record<string, string>> = {
   "Content-Security-Policy": TRACE_VIEWER_CONTENT_SECURITY_POLICY,
 };
 
+/**
+ * Only worker-served responses reach this middleware; static assets under
+ * `/trace-viewer/` are served straight from disk with the `public/_headers` +
+ * `void.json` rules. Gating a static path from here would silently do nothing —
+ * Playwright's scripted shells are instead pruned at build time by
+ * `scripts/vendor-trace-viewer.mjs`.
+ */
 export default defineMiddleware(async (c, next) => {
+  const pageOrigin = new URL(c.req.url).origin;
+
   try {
     await next();
   } catch (err) {
     if (err instanceof Response) {
-      replaceResponse(
-        c,
-        withDefensiveHeaders(err, c.req.path, new URL(c.req.url).origin),
-      );
+      replaceResponse(c, withDefensiveHeaders(err, c.req.path, pageOrigin));
       return;
     }
     throw err;
   }
 
   if (!c.res) return;
-  const secured = withDefensiveHeaders(
-    c.res,
-    c.req.path,
-    new URL(c.req.url).origin,
-  );
+  const secured = withDefensiveHeaders(c.res, c.req.path, pageOrigin);
   if (secured !== c.res) replaceResponse(c, secured);
 });
 

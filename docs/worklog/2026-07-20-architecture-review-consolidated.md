@@ -133,6 +133,13 @@ vendored Playwright SW sanitizer as a single point of failure for stored XSS.
   attacker-craftable snapshot HTML a scripting CSP under the session origin,
   configured or not. Cost of the default: snapshot fidelity scripts
   (scroll/canvas/point marker) don't run; static DOM still renders.
+  **Corrected 2026-07-29** — two claims in this bullet did not hold as written.
+  The static DOM did _not_ render (Playwright hides every snapshot behind a
+  guard stylesheet that only its blocked bootstrap lifts, so the pane was
+  blank), and the strict CSP never reaches the snapshot document at all (the
+  service worker synthesises that response locally, so the missing
+  `allow-scripts` flag is the sole enforcing control). See
+  [`2026-07-29-scriptless-snapshot-visibility.md`](2026-07-29-scriptless-snapshot-visibility.md).
 - **Configurable cookieless origin**: `VITE_WRIGHTFUL_TRACE_VIEWER_ORIGIN`
   (declared in `env.ts`, read through `void/env`, normalized to an http(s)
   origin — malformed/same-origin/unavailable fail closed to same-origin mode).

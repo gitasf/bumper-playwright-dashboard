@@ -19,5 +19,5 @@ export function ansiToHtml(text: string): string {
 const ANSI_SGR_RE = /?\[[\d;]*m/g;
 
 export function stripAnsi(text: string): string {
-  return text.replace(ANSI_SGR_RE, "");
+  return text.replace(ANSI_SGR_RE, () => "");
 }
