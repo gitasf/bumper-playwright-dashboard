@@ -3,7 +3,7 @@ import {
   artifactContentDisposition,
   buildArtifactResponse,
   readArtifact,
-} from "@/lib/artifacts/store";
+} from "@/lib/artifacts/read";
 import { signGetUrl } from "@/lib/artifacts/presign";
 import type { R2DirectConfig } from "@/lib/config";
 import { safeContentType } from "@/lib/content-types";

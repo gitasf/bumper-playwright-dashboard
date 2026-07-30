@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
-import { computeAggregateDelta } from "@/lib/ingest";
+import { computeAggregateDelta } from "@/lib/ingest/write-and-publish";
 
 const noPrev = new Map<string, string>();
 

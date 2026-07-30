@@ -1,6 +1,6 @@
 import { ulid } from "ulid";
 import { and, asc, db, desc, eq, inArray, lt, or, sql } from "void/db";
-import { monitorExecutions, monitors } from "@schema";
+import { monitorExecutions, monitors, projects } from "@schema";
 import type { Monitor, MonitorExecution } from "@schema";
 import { runBatch } from "@/lib/db/batch";
 import { runRows } from "@/lib/runs/db";
@@ -15,10 +15,11 @@ import type {
   CreateMonitorInput,
   UpdateMonitorInput,
 } from "@/lib/monitors/monitor-schemas";
-import type { ExecutionResult, MonitorType } from "@/lib/monitors/types";
+import type { ExecutionResult } from "@/lib/monitors/types";
+import { lockTeamForChildMutation } from "@/lib/team-lock";
 
 /**
- * The D1 data layer for synthetic monitoring — the deep module the page actions
+ * The Postgres data layer for synthetic monitoring — the deep module the page actions
  * (user-facing) and the queue consumer (system-internal) both speak to. Every
  * write carries `projectId` (and `teamId` where the table has it) for the same
  * logical tenant isolation the `runs` pipeline uses; there is no DO boundary, so
@@ -80,19 +81,35 @@ function monitorByIdWhere(scope: TenantScope, monitorId: string) {
 // ─── User-facing (branded TenantScope) ──────────────────────────────────────
 
 /**
+ * A per-project/type monitor quota was reached while holding the project's
+ * transaction lock.
+ */
+export class MonitorLimitExceededError extends Error {
+  constructor(readonly limit: number) {
+    super("monitor limit exceeded");
+    this.name = "MonitorLimitExceededError";
+  }
+}
+
+/**
  * Create a monitor and arm its schedule. `nextRunAt` is set to `now +
  * intervalSeconds` when `enabled`, else `null` — a paused monitor keeps its row
  * but is invisible to the sweep's `enabled = 1 AND nextRunAt <= now` SELECT.
  * `lastEnqueuedAt`/`lastRunAt`/`lastStatus` are null until the first execution.
- * The `(projectId, name)` unique index rejects a duplicate name with a D1
+ * The `(projectId, name)` unique index rejects a duplicate name with a Postgres
  * constraint error the caller maps to a form error.
+ *
+ * Returns null when concurrent team teardown already removed the parent — the
+ * same "gone" signal the other scoped repo functions return, distinct from the
+ * limit/duplicate errors that mean "try again differently".
  */
 export async function createMonitor(
   scope: TenantScope,
   input: CreateMonitorInput,
   createdBy: string,
   now: number,
-): Promise<Monitor> {
+  opts: { limit?: number } = {},
+): Promise<Monitor | null> {
   const id = ulid();
   const row = {
     id,
@@ -122,8 +139,48 @@ export async function createMonitor(
     createdAt: now,
     updatedAt: now,
   };
-  await db.insert(monitors).values(row);
-  return row as Monitor;
+  const created = await db.transaction(async (tx) => {
+    // Team teardown takes the parent update lock before cascading projects and
+    // monitors. Take the compatible child-writer lock before the project quota
+    // lock so neither side can hold one row while waiting on the other.
+    //
+    // A lost lock is not an operational failure: teardown won, so the project
+    // this monitor would belong to is gone too. Report it as the repo's
+    // "already gone" null rather than raising, so the caller 404s instead of
+    // inviting a retry that can never succeed.
+    if (!(await lockTeamForChildMutation(tx, scope.teamId))) return false;
+    if (opts.limit !== undefined && Number.isFinite(opts.limit)) {
+      // Every type-specific create locks the same project row before counting.
+      // Concurrent differently-named inserts therefore serialize instead of
+      // both observing count = limit - 1.
+      const owner = await tx
+        .select({ id: projects.id })
+        .from(projects)
+        .where(
+          and(
+            eq(projects.id, scope.projectId),
+            eq(projects.teamId, scope.teamId),
+          ),
+        )
+        .for("update");
+      if (owner.length === 0) throw new Error("project not found");
+      const counts = await tx
+        .select({ count: numericSql(sql`count(*)`) })
+        .from(monitors)
+        .where(
+          and(
+            eq(monitors.projectId, scope.projectId),
+            eq(monitors.type, input.type),
+          ),
+        );
+      if ((counts[0]?.count ?? 0) >= opts.limit) {
+        throw new MonitorLimitExceededError(opts.limit);
+      }
+    }
+    await tx.insert(monitors).values(row);
+    return true;
+  });
+  return created ? (row as Monitor) : null;
 }
 
 /** All monitors in the project, newest first (matches the list page order). */
@@ -272,26 +329,22 @@ export async function setMonitorAlertsEnabled(
 }
 
 /**
- * Count of monitors in the project — for per-project cap enforcement. With a
- * `type`, counts only that kind: browser, http, and tcp have SEPARATE caps
+ * Count of every monitor in the project, for the list header.
+ *
+ * This is NOT the cap check. The per-type caps
  * (`WRIGHTFUL_MONITOR_MAX_PER_PROJECT` / `WRIGHTFUL_HTTP_MONITOR_MAX_PER_PROJECT`
- * / `WRIGHTFUL_TCP_MONITOR_MAX_PER_PROJECT`) because a container run, a plain
- * `fetch()`, and a raw socket `connect()` have very different costs, so a project
- * can hold many cheap uptime checks without eating its browser budget. Without a
- * `type` (the list header) it counts all monitors in the project.
+ * / `WRIGHTFUL_TCP_MONITOR_MAX_PER_PROJECT` — separate because a container run, a
+ * plain `fetch()`, and a raw socket `connect()` have very different costs) are
+ * enforced inside `createMonitor`'s transaction, which locks the owning project
+ * row before counting rows of that one type. A count read here could not do
+ * that: it would be a check-then-write race where two concurrent creates both
+ * observe headroom.
  */
-export async function countMonitors(
-  scope: TenantScope,
-  type?: MonitorType,
-): Promise<number> {
+export async function countMonitors(scope: TenantScope): Promise<number> {
   const rows = await db
     .select({ count: numericSql(sql`count(*)`) })
     .from(monitors)
-    .where(
-      type
-        ? and(eq(monitors.projectId, scope.projectId), eq(monitors.type, type))
-        : childProjectScopeWhere(monitors.projectId, scope),
-    );
+    .where(childProjectScopeWhere(monitors.projectId, scope));
   return rows[0]?.count ?? 0;
 }
 
@@ -500,7 +553,7 @@ export async function claimExecution(
 
 /**
  * Record an execution's terminal outcome AND bump the parent monitor's
- * `lastStatus` / `lastRunAt`, in one atomic D1 batch (both writes land or
+ * `lastStatus` / `lastRunAt`, in one Postgres transaction (both writes land or
  * neither does). The execution row takes the result's `state`, `runId`,
  * `durationMs`, `errorMessage`, and `completedAt = now`; the monitor's
  * denormalized "last result" columns mirror it so the list page can render the

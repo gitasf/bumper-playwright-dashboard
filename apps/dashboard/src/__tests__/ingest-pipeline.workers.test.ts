@@ -190,7 +190,9 @@ vi.mock("@/realtime/publish", () => ({
 // read, no GitHub call), keeping these ingest-pipeline assertions unchanged.
 vi.mock("void/env", () => ({ env: {} }));
 
-const { openRun, appendRunResults, completeRun } = await import("@/lib/ingest");
+const { completeRun } = await import("@/lib/ingest/finalization");
+const { openRun } = await import("@/lib/ingest/lifecycle");
+const { appendRunResults } = await import("@/lib/ingest/results");
 
 const scope: TenantScope = {
   teamId: "team-1" as AuthorizedTeamId,
@@ -307,7 +309,10 @@ describe("openRun", () => {
     // branch and return immediately — they do NOT prefill their planned tests
     // (a prefilled 'queued' row would carry a prev-status that suppresses the
     // +totalTests delta when that shard's real result streams in; see ingest.ts).
-    awaitResults = [[{ id: "run-existing" }]];
+    awaitResults = [
+      [{ id: "run-existing", status: "running" }],
+      [{ id: "run-existing" }],
+    ];
     const payload: OpenRunPayload = {
       idempotencyKey: "key-shared",
       run: {
@@ -320,11 +325,8 @@ describe("openRun", () => {
     expect(out).toEqual({ runId: "run-existing", duplicate: true });
     // No fresh run insert, no prefill, and no broadcast on the duplicate path —
     // the winning shard already created the run and sent the snapshot. The one
-    // transaction is the re-arm/shard-state-reset pair (an UPDATE guarding the
-    // stale re-run state plus the conditional runShards DELETE) — critically,
-    // zero INSERTs (the guarded no-prefill invariant).
-    expect(transactionSpy).toHaveBeenCalledTimes(1);
-    expect(txStatements.map((s) => s.__kind)).toEqual(["update", "delete"]);
+    // The only write refreshes liveness; there is no prefill/reset transaction.
+    expect(transactionSpy).not.toHaveBeenCalled();
     expect(broadcastRunSpy).not.toHaveBeenCalled();
   });
 
@@ -332,7 +334,10 @@ describe("openRun", () => {
     // Even with enough planned tests to span multiple chunks, the duplicate
     // branch must not prefill — letting shards 2..N's results arrive as fresh
     // rows keeps totalTests climbing; completeRun's recompute reconciles finals.
-    awaitResults = [[{ id: "run-existing" }]];
+    awaitResults = [
+      [{ id: "run-existing", status: "running" }],
+      [{ id: "run-existing" }],
+    ];
     const plannedTests = Array.from({ length: 60 }, (_, i) => ({
       testId: `t${i}`,
       title: `case ${i}`,
@@ -346,10 +351,7 @@ describe("openRun", () => {
     const out = await openRun(scope, payload, NOW);
 
     expect(out).toEqual({ runId: "run-existing", duplicate: true });
-    expect(transactionSpy).toHaveBeenCalledTimes(1);
-    // Even with multiple prefill chunks' worth of planned tests, the duplicate
-    // transaction is ONLY the re-arm/reset pair — no INSERT statements.
-    expect(txStatements.map((s) => s.__kind)).toEqual(["update", "delete"]);
+    expect(transactionSpy).not.toHaveBeenCalled();
     expect(broadcastRunSpy).not.toHaveBeenCalled();
   });
 
@@ -363,7 +365,8 @@ describe("openRun", () => {
     // verification in the worklog and pg-integration/ingest.test.ts, not this
     // mock. The opener's own map seed is pinned in
     // build-run-insert-values.workers.test.ts.
-    awaitResults = [[{ id: "run-existing" }]];
+    awaitResults = [[{ id: "run-existing", status: "running" }]];
+    txStatementResult = [{ id: "run-existing" }];
     const payload: OpenRunPayload = {
       idempotencyKey: "key-shared",
       run: {
@@ -377,9 +380,67 @@ describe("openRun", () => {
 
     expect(out).toEqual({ runId: "run-existing", duplicate: true });
     expect(transactionSpy).toHaveBeenCalledTimes(1);
-    expect(txStatements.map((s) => s.__kind)).toEqual(["delete", "update"]);
+    expect(txStatements.map((s) => s.__kind)).toEqual(["update"]);
     expect(broadcastRunSpy).not.toHaveBeenCalled();
     expect(broadcastProjectSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports a terminal duplicate when completion wins after the initial running probe", async () => {
+    // The first SELECT sees running, but the guarded refresh returns no row
+    // because /complete committed before the UPDATE acquired its row lock.
+    awaitResults = [[{ id: "run-raced", status: "running" }], []];
+    const payload = {
+      idempotencyKey: "raced-key",
+      run: { plannedTests: [] },
+    } as OpenRunPayload;
+
+    const out = await openRun(scope, payload, NOW);
+
+    expect(out).toEqual({
+      runId: "run-raced",
+      duplicate: true,
+      terminalDuplicate: true,
+    });
+    expect(transactionSpy).not.toHaveBeenCalled();
+    expect(broadcastRunSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports a terminal duplicate when a lost insert's winner completes before recovery", async () => {
+    awaitResults = [[], [{ id: "run-winner", status: "running" }], []];
+    transactionSpy.mockImplementationOnce(() => {
+      throw Object.assign(new Error("duplicate key"), { code: "23505" });
+    });
+    const payload = {
+      idempotencyKey: "raced-winner-key",
+      run: { plannedTests: [] },
+    } as OpenRunPayload;
+
+    const out = await openRun(scope, payload, NOW);
+
+    expect(out).toEqual({
+      runId: "run-winner",
+      duplicate: true,
+      terminalDuplicate: true,
+    });
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
+    expect(broadcastRunSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses to reopen a terminal idempotency key as a new execution", async () => {
+    awaitResults = [[{ id: "run-complete", status: "failed" }]];
+    const payload = {
+      idempotencyKey: "completed-key",
+      run: { plannedTests: [] },
+    } as OpenRunPayload;
+
+    const out = await openRun(scope, payload, NOW);
+
+    expect(out).toEqual({
+      runId: "run-complete",
+      duplicate: true,
+      terminalDuplicate: true,
+    });
+    expect(transactionSpy).not.toHaveBeenCalled();
   });
 
   it("recovers a synthetic run whose monitor was deleted mid-open: nulls monitorId and retries once", async () => {

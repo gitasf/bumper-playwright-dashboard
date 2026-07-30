@@ -58,7 +58,7 @@ describe("postWithWriteMutex", () => {
     expect(state).toEqual({ id: 41, runId: "persisted", claimedAt: null });
   });
 
-  it("skips without claiming when an equal-or-newer runId is already persisted", async () => {
+  it("skips without claiming when a newer runId is already persisted", async () => {
     const state: MutexState = { id: 41, runId: "run-z", claimedAt: null };
     const post = vi.fn();
 
@@ -66,6 +66,34 @@ describe("postWithWriteMutex", () => {
 
     expect(post).not.toHaveBeenCalled();
     expect(state.claimedAt).toBeNull();
+  });
+
+  it("reposts when the same runId is recompleted with a newer aggregate", async () => {
+    const state: MutexState = { id: 41, runId: "run-b", claimedAt: null };
+    const post = vi.fn(async (existingId: number | null) =>
+      Promise.resolve(existingId),
+    );
+
+    await postWithWriteMutex("t", "run-b", mutexIO(state), post, OPTS);
+
+    expect(post).toHaveBeenCalledWith(41);
+    expect(state.claimedAt).toBeNull();
+  });
+
+  it("skips when the same run lands after this caller's initial read", async () => {
+    const state: MutexState = { id: null, runId: null, claimedAt: null };
+    const io = mutexIO(state);
+    vi.spyOn(io, "claim").mockImplementationOnce(() => {
+      state.id = 41;
+      state.runId = "run-b";
+      return Promise.resolve(null);
+    });
+    const post = vi.fn();
+
+    await postWithWriteMutex("t", "run-b", io, post, OPTS);
+
+    expect(post).not.toHaveBeenCalled();
+    expect(state.runId).toBe("run-b");
   });
 
   it("gives up after the attempt budget when the mutex stays held", async () => {

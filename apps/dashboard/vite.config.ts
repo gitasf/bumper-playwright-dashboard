@@ -102,5 +102,19 @@ export default defineConfig({
     // (real-DB-over-Hyperdrive lane) run in workerd, not here — exclude both so
     // they don't run in Node (where `cloudflare:test` isn't even resolvable).
     exclude: [...configDefaults.exclude, "**/*.workers*.test.{ts,tsx}"],
+    // Every file under `src/__tests__/pg-integration/` drop+recreates the tables
+    // it needs. Under `PG_TEST_URL` they all share ONE real database, so running
+    // files concurrently lets one file's `resetTables` drop a table another file
+    // is mid-assertion on — nondeterministic, failing DIFFERENT tests each run.
+    // Without the variable each file gets its own in-process pglite instance and
+    // is trivially isolated, so parallelism is unsafe in exactly the case this
+    // condition tests for.
+    //
+    // Deriving this from the environment rather than trusting the caller to pass
+    // `--no-file-parallelism` makes a plain `pnpm test` with a database
+    // configured correct by default; the CI job still passes the flag, which is
+    // now redundant belt-and-braces rather than the only thing holding the
+    // invariant up.
+    fileParallelism: !process.env.PG_TEST_URL,
   },
 });

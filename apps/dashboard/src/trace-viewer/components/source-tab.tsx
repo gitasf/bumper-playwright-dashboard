@@ -15,6 +15,14 @@ import type {
 import type { StackFrame } from "../vendor/protocol-types";
 import { TabNotice } from "./detail-shared";
 
+export const SOURCE_PREVIEW_LIMITS = {
+  fetchBytes: 1_000_000,
+  highlightChars: 200_000,
+  renderChars: 500_000,
+  renderLines: 5_000,
+} as const;
+const SOURCE_TRUNCATED = "… source preview truncated";
+
 /**
  * Read-only source view for the hover-aware active action's stack frame
  * (`activeAction`), with a stack frame picker
@@ -61,7 +69,7 @@ export function SourceTab({
       const blob = await bridge.fetchBlob(
         sha1Path(traceUrl, `src@${sha1}.txt`),
       );
-      const text = await blob.text();
+      const text = await readSourcePreviewBlob(blob);
       const cached = model.sources.get(file);
       if (cached) cached.content = text;
       return text;
@@ -130,6 +138,37 @@ export function SourceTab({
       ) : null}
     </div>
   );
+}
+
+/**
+ * Bound a source blob to what the preview is willing to render: `renderChars`
+ * of text, then `renderLines` of lines. `truncated` reports whether either cap
+ * dropped content, which drives the truncation notice under the last line.
+ */
+export function boundSourcePreview(content: string): {
+  lines: string[];
+  truncated: boolean;
+} {
+  const boundedContent = content.slice(0, SOURCE_PREVIEW_LIMITS.renderChars);
+  const boundedLines = boundedContent.split("\n");
+  const lines = boundedLines.slice(0, SOURCE_PREVIEW_LIMITS.renderLines);
+  return {
+    lines,
+    truncated:
+      boundedContent.length < content.length ||
+      lines.length < boundedLines.length,
+  };
+}
+
+/** Reject oversized source blobs before UTF-8 decoding allocates their text. */
+async function readSourcePreviewBlob(blob: Blob): Promise<string> {
+  if (
+    !Number.isFinite(blob.size) ||
+    blob.size > SOURCE_PREVIEW_LIMITS.fetchBytes
+  ) {
+    throw new Error("Source file is too large to preview.");
+  }
+  return blob.text();
 }
 
 /**
@@ -220,9 +259,12 @@ function SourceLines({
   file: string;
   targetLine: number | undefined;
 }): React.ReactElement {
-  const lines = content.split("\n");
+  const { lines, truncated } = boundSourcePreview(content);
   const tokenLines = useMemo(
-    () => tokenizeSource(content, file),
+    () =>
+      content.length <= SOURCE_PREVIEW_LIMITS.highlightChars
+        ? tokenizeSource(content, file)
+        : null,
     [content, file],
   );
   const errorsByLine = new Map<number, string>();
@@ -281,6 +323,11 @@ function SourceLines({
           </div>
         );
       })}
+      {truncated ? (
+        <div className="px-3 py-1 text-caption text-fg-4">
+          {SOURCE_TRUNCATED}
+        </div>
+      ) : null}
     </pre>
   );
 }

@@ -85,9 +85,9 @@ export async function setup(project: TestProject): Promise<void> {
   project.provide("sessionCookie", fixture.sessionCookie);
   project.provide("teamSlug", fixture.teamSlug);
   project.provide("projectSlug", fixture.projectSlug);
-  // The forger in e2e.test.ts signs with the dashboard's *resolved* artifact
-  // secret, not the raw session secret, so they can't diverge once a dedicated
-  // ARTIFACT_TOKEN_SECRET is provisioned.
+  // The forger in e2e-context.ts signs with the dashboard's *resolved*
+  // artifact secret, not the raw session secret, so they can't diverge once a
+  // dedicated ARTIFACT_TOKEN_SECRET is provisioned.
   project.provide("artifactTokenSecret", fixture.artifactTokenSecret);
   project.provide("seededBranch", SEEDED_BRANCH);
   project.provide("seededCommitSha", SEEDED_COMMIT_SHA);

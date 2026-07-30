@@ -86,7 +86,7 @@ describe("buildAuditRow (pure row shape)", () => {
   it("defaults projectId / targetType / targetId / metadata to null when omitted", () => {
     const row = buildAuditRow("u", {
       teamId: "team_1",
-      action: AUDIT_ACTIONS.TEAM_DELETE,
+      action: AUDIT_ACTIONS.TEAM_RENAME,
     });
     expect(row.projectId).toBeNull();
     expect(row.targetType).toBeNull();

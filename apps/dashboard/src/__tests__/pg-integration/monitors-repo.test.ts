@@ -42,12 +42,104 @@ vi.mock("@/realtime/publish", () => ({
 
 const { resetTables } = await import("./harness");
 const { makeTenantScope } = await import("@/lib/scope");
-const { listRecentExecutionsByMonitor } =
-  await import("@/lib/monitors/monitors-repo");
-const { monitorExecutions } = await import("../../../db/schema");
+const { eq } = await import("void/_db");
+const {
+  createMonitor,
+  listRecentExecutionsByMonitor,
+  MonitorLimitExceededError,
+} = await import("@/lib/monitors/monitors-repo");
+const { monitorExecutions, monitors, projects, teams } =
+  await import("../../../db/schema");
 
 beforeAll(async () => {
-  await resetTables(h.client, [monitorExecutions]);
+  await resetTables(h.client, [teams, projects, monitors, monitorExecutions]);
+  await h.db.insert(teams).values({
+    id: "t-cap",
+    slug: "cap",
+    name: "Cap",
+    tier: "free",
+    createdAt: 1_700_000_000,
+  });
+  await h.db.insert(projects).values({
+    id: "p-cap",
+    teamId: "t-cap",
+    slug: "cap",
+    name: "Cap",
+    createdAt: 1_700_000_000,
+  });
+});
+
+describe("createMonitor quota serialization", () => {
+  it("allows only one of two concurrent creates at a one-monitor cap", async () => {
+    const scope = makeTenantScope({
+      teamId: "t-cap",
+      projectId: "p-cap",
+      teamSlug: "cap",
+      projectSlug: "cap",
+    });
+    const input = (name: string) => ({
+      type: "browser" as const,
+      name,
+      source: "import { test } from '@playwright/test'; test('x', () => {});",
+      intervalSeconds: 300 as const,
+      enabled: true,
+    });
+
+    const results = await Promise.allSettled([
+      createMonitor(scope, input("one"), "u1", 1_700_000_000, { limit: 1 }),
+      createMonitor(scope, input("two"), "u2", 1_700_000_000, { limit: 1 }),
+    ]);
+    const rows = await h.db
+      .select({ id: monitors.id })
+      .from(monitors)
+      .where(eq(monitors.projectId, scope.projectId));
+
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(
+      rejected?.status === "rejected" ? rejected.reason : null,
+    ).toBeInstanceOf(MonitorLimitExceededError);
+    expect(rows).toHaveLength(1);
+  });
+});
+
+describe("createMonitor parent lock", () => {
+  it("reports a torn-down team as null rather than raising", async () => {
+    // No `teams` row = teardown already committed, which is exactly what the
+    // parent key-share lock observes. The caller needs this apart from the
+    // limit/duplicate errors: those invite a corrected retry, this one is
+    // permanent and must surface as a 404.
+    const gone = makeTenantScope({
+      teamId: "t-gone",
+      projectId: "p-gone",
+      teamSlug: "gone",
+      projectSlug: "gone",
+    });
+    await expect(
+      createMonitor(
+        gone,
+        {
+          type: "browser",
+          name: "orphan",
+          source:
+            "import { test } from '@playwright/test'; test('x', () => {});",
+          intervalSeconds: 300,
+          enabled: true,
+        },
+        "u1",
+        1_700_000_000,
+        { limit: 1 },
+      ),
+    ).resolves.toBeNull();
+    expect(
+      await h.db
+        .select({ id: monitors.id })
+        .from(monitors)
+        .where(eq(monitors.projectId, "p-gone")),
+    ).toEqual([]);
+  });
 });
 
 afterAll(async () => {

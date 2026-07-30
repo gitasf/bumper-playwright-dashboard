@@ -46,7 +46,8 @@ vi.mock("@/lib/audit", async () => {
 });
 
 const { resetTables } = await import("./harness");
-const { acceptDirectedInvite } = await import("@/lib/invites");
+const { acceptDirectedInvite, consumeTokenInvite } =
+  await import("@/lib/invites");
 const { memberships, teamInvites, teams } = await import("../../../db/schema");
 const { and, eq } = await import("void/_db");
 
@@ -159,6 +160,46 @@ describe("acceptDirectedInvite", () => {
     expect(await inviteExists("inv2")).toBe(false);
   });
 
+  it("already-member acceptance reports gone when teardown removes the team before the invite cleanup", async () => {
+    await seedTeam("t7", "eta");
+    await h.db.insert(memberships).values({
+      id: "m-eta",
+      userId: "u7",
+      teamId: "t7",
+      role: "member",
+      createdAt: NOW,
+    });
+    await seedInvite("inv7", "t7", "u7", FUTURE);
+
+    // Two transactions run: the membership insert (which hits the 23505 and is
+    // treated as an idempotent accept) and the cleanup that retires the now
+    // redundant invite. Drop the team between them — the cleanup's parent lock
+    // then finds nothing, meaning teardown won.
+    const realTx = h.db.transaction.bind(h.db);
+    let opened = 0;
+    vi.spyOn(h.db, "transaction").mockImplementation(((
+      cb: (tx: unknown) => Promise<unknown>,
+    ) => {
+      opened += 1;
+      if (opened === 1) return realTx(cb as never);
+      return h.db
+        .delete(teams)
+        .where(eq(teams.id, "t7"))
+        .then(() => realTx(cb as never));
+    }) as never);
+
+    const res = await acceptDirectedInvite(ctx, "u7", "inv7");
+
+    // NOT `{ok: true, teamSlug: "eta"}` — that slug now resolves to nothing, so
+    // the caller would redirect into a dead team it was told it had joined.
+    expect(res).toEqual({
+      ok: false,
+      status: 404,
+      error: "Invite not found or expired",
+    });
+    expect(opened).toBe(2);
+  });
+
   it("revoked between read and write: an invite deleted in the SELECT→write window grants NO membership (in-transaction re-check)", async () => {
     await seedTeam("t3", "gamma");
     await seedInvite("inv3", "t3", "u3", FUTURE);
@@ -224,5 +265,38 @@ describe("acceptDirectedInvite", () => {
       error: "Invite not addressed to this account",
     });
     expect(await membershipCount("u-noemail", "t6")).toBe(0);
+  });
+});
+
+describe("consumeTokenInvite", () => {
+  it("allows exactly one concurrent consumer of an open single-use link", async () => {
+    await seedTeam("t-open", "open");
+    await h.db.insert(teamInvites).values({
+      id: "inv-open",
+      teamId: "t-open",
+      tokenHash: "hash-open",
+      role: "member",
+      createdBy: "u-inviter",
+      createdAt: NOW,
+      expiresAt: FUTURE,
+      email: null,
+      githubLogin: null,
+    });
+
+    const settled = await Promise.allSettled([
+      consumeTokenInvite("u-open-a", "inv-open", NOW),
+      consumeTokenInvite("u-open-b", "inv-open", NOW),
+    ]);
+    const winners = settled.filter(
+      (result) => result.status === "fulfilled" && result.value !== null,
+    );
+    const memberRows = await h.db
+      .select({ userId: memberships.userId })
+      .from(memberships)
+      .where(eq(memberships.teamId, "t-open"));
+
+    expect(winners).toHaveLength(1);
+    expect(memberRows).toHaveLength(1);
+    expect(await inviteExists("inv-open")).toBe(false);
   });
 });

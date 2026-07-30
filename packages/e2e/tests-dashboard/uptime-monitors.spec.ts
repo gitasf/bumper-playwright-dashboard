@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { MONITOR_SCHEDULER_TEST_TIMEOUT_MS } from "./helpers/monitor-scheduler-lease";
 import { triggerScheduled } from "./helpers/void-trigger";
 import { expect, test } from "./fixtures";
 
@@ -39,7 +40,7 @@ const ONE_MINUTE = 60;
 // failed fetch records a terminal `fail`).
 const TARGET_URL = "https://example.com";
 
-test.setTimeout(90_000);
+test.setTimeout(MONITOR_SCHEDULER_TEST_TIMEOUT_MS);
 
 test.describe("HTTP uptime monitors", () => {
   test("create an uptime check, schedule one cycle, record an inline result", async ({

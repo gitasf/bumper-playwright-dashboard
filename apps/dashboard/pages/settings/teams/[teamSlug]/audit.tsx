@@ -36,7 +36,6 @@ const ACTION_LABELS: Record<string, string> = {
   "key.mint": "Created an API key",
   "key.revoke": "Revoked an API key",
   "team.rename": "Renamed the team",
-  "team.delete": "Deleted the team",
   "project.create": "Created a project",
   "project.delete": "Deleted a project",
 };

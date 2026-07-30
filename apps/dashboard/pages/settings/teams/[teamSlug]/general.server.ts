@@ -3,13 +3,7 @@ import { defineHandler, type InferProps } from "void";
 import { and, db, eq, ne, sql } from "void/db";
 import { env } from "void/env";
 import { logger } from "void/log";
-import {
-  githubInstallations,
-  memberships,
-  projects,
-  teamInvites,
-  teams as teamsTable,
-} from "@schema";
+import { githubInstallations, projects, teams as teamsTable } from "@schema";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { githubAppEnabled } from "@/lib/config";
 import {
@@ -17,8 +11,8 @@ import {
   fetchInstallationRepositories,
 } from "@/lib/github-app";
 import { numericSql } from "@/lib/db/sql-ops";
-import { runBatch } from "@/lib/db/batch";
-import { scheduleProjectArtifactCleanup } from "@/lib/project-teardown";
+import { scheduleTeamArtifactCleanup } from "@/lib/project-artifact-cleanup";
+import { teardownTeamRows } from "@/lib/project-teardown";
 import { logMutationFailure, mutationErrorMessage } from "@/lib/action-errors";
 import { defineFlashSlots } from "@/lib/flash";
 import { readField } from "@/lib/form";
@@ -390,38 +384,15 @@ export const actions = {
       );
     }
 
-    const teamProjects = await db
-      .select({ id: projects.id })
-      .from(projects)
-      .where(eq(projects.teamId, team.id));
-    const projectIds = teamProjects.map((r) => r.id);
-
-    // Record the audit row SYNCHRONOUSLY *before* the delete batch (roadmap
-    // 3.2). The audit log is team-scoped, so `auditLog.teamId` cascades and this
-    // row dies with the team — an accepted, documented choice (no one can read a
-    // dead team's log). Recording it here, awaited, still captures the actor +
-    // confirmation context before the cascade and keeps workerd from dropping a
-    // post-response write.
-    await recordAudit(c, {
-      teamId: team.id,
-      action: AUDIT_ACTIONS.TEAM_DELETE,
-      targetType: "team",
-      targetId: team.slug,
-      metadata: { teamName: team.name, projectCount: projectIds.length },
-    });
-
-    // One atomic batch — all-or-nothing, so a mid-teardown failure can't leave a
-    // half-deleted team (the guarantee `db-batch.ts` documents). Deleting the
-    // project rows cascades every project-scoped child (apiKeys, runs,
-    // testResults, …) via their `onDelete: "cascade"` FKs, so the old explicit
-    // `db.delete(apiKeys)` is redundant and dropped.
+    // The R2 cleanup outbox rows have no team/project FK so they survive this
+    // transaction. Lock the team parent before taking the project snapshot:
+    // project inserts acquire a key-share lock through their FK, so once this
+    // lock lands no project can appear between the snapshot and teardown.
+    // Enqueuing that locked snapshot in the same transaction means a committed
+    // delete cannot lose the only durable pointer to any project prefix.
+    let deletedProjectIds: string[];
     try {
-      await runBatch((tx) => [
-        tx.delete(projects).where(eq(projects.teamId, team.id)),
-        tx.delete(memberships).where(eq(memberships.teamId, team.id)),
-        tx.delete(teamInvites).where(eq(teamInvites.teamId, team.id)),
-        tx.delete(teamsTable).where(eq(teamsTable.id, team.id)),
-      ]);
+      deletedProjectIds = await teardownTeamRows(team.id);
     } catch (err) {
       logMutationFailure("delete team failed", err, { teamId: team.id });
       return GENERAL_FLASH.fail(
@@ -432,12 +403,10 @@ export const actions = {
       );
     }
 
-    // Best-effort R2 byte cleanup per project, AFTER the atomic row deletion
-    // succeeded — the shared `scheduleProjectArtifactCleanup` (also used by the
-    // single-project delete) so the sweep pattern lives in one place.
-    for (const projectId of projectIds) {
-      scheduleProjectArtifactCleanup(c, team.id, projectId);
-    }
+    // Start one bounded pass eagerly after commit. Fan-out across a large
+    // team's projects can exceed the Worker R2 subrequest budget; every
+    // untouched outbox job remains immediately due for the cron.
+    scheduleTeamArtifactCleanup(c, deletedProjectIds);
 
     return c.redirect("/settings/profile");
   }),

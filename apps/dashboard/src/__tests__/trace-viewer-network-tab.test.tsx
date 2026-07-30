@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NetworkTab } from "@/trace-viewer/components/network-tab";
+import { BridgeBodyPreview } from "@/trace-viewer/components/body-preview";
 import {
   makeBridge,
   makeContext,
@@ -38,6 +39,50 @@ afterEach(() => {
 });
 
 describe("NetworkTab", () => {
+  it("keeps an image body in its loading state while its fetch is pending", () => {
+    const bridge = makeBridge();
+    bridge.fetchBlob = () => new Promise<Blob>(() => {});
+
+    render(
+      <BridgeBodyPreview
+        bridge={bridge}
+        mimeType="image/png"
+        sha1="pending.png"
+        size={42}
+      />,
+    );
+
+    expect(screen.getByText("Loading preview…")).toBeTruthy();
+    expect(screen.queryByText("Failed to load preview.")).toBeNull();
+  });
+
+  it("shows a terminal error when an image body cannot be fetched", async () => {
+    render(
+      <BridgeBodyPreview
+        bridge={makeBridge({})}
+        mimeType="image/png"
+        sha1="missing.png"
+        size={42}
+      />,
+    );
+
+    expect(await screen.findByText("Failed to load preview.")).toBeTruthy();
+  });
+
+  it("shows a terminal error when fetched image bytes fail to decode", async () => {
+    render(
+      <BridgeBodyPreview
+        bridge={makeBridge({ "sha1/image.png": "not actually an image" })}
+        mimeType="image/png"
+        sha1="image.png"
+        size={21}
+      />,
+    );
+
+    fireEvent.error(await screen.findByAltText("Response body preview"));
+    expect(screen.getByText("Failed to load preview.")).toBeTruthy();
+  });
+
   it("renders both HAR entries, flagging the 500 response as failing", () => {
     render(<NetworkTab {...makeTabProps()} />);
     expect(screen.getByText("items")).toBeTruthy();

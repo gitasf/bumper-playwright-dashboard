@@ -247,8 +247,9 @@ export interface ReporterOptions {
    * Requires GitHub Actions context (`GITHUB_ACTIONS=true`), a PR-triggered
    * workflow (`GITHUB_REF=refs/pull/N/merge` so `prNumber` is set), `repo`
    * detected, and a `GITHUB_TOKEN` (or `WRIGHTFUL_GITHUB_TOKEN`) in env.
-   * Defaults to false. Comment is upserted via a hidden marker so re-runs
-   * of the same workflow update the existing comment.
+   * Defaults to false. Comment is upserted via a workflow/job/project/matrix
+   * scoped hidden marker so reruns update the matching workflow leg without
+   * overwriting another leg's summary.
    */
   postPrComment?: boolean;
 }

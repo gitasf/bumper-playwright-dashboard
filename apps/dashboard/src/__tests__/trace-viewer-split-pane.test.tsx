@@ -36,6 +36,7 @@ function renderPane(over?: {
     <SplitPane
       direction={over?.direction ?? "horizontal"}
       initial={0.3}
+      separatorLabel="Resize fixture panes"
       min={over?.min}
       max={over?.max}
     >
@@ -46,7 +47,7 @@ function renderPane(over?: {
   const root = container.firstChild as HTMLElement;
   return {
     firstPane: root.children[0] as HTMLElement,
-    separator: getByRole("separator"),
+    separator: getByRole("separator", { name: "Resize fixture panes" }),
   };
 }
 
@@ -56,6 +57,22 @@ describe("SplitPane", () => {
     expect(firstPane.style.flexBasis).toBe("30%");
     // A divider between horizontal panes is itself a VERTICAL line.
     expect(separator.getAttribute("aria-orientation")).toBe("vertical");
+    expect(separator.getAttribute("aria-label")).toBe("Resize fixture panes");
+    expect(separator.tabIndex).toBe(0);
+    expect(separator.getAttribute("aria-valuenow")).toBe("30");
+  });
+
+  it("supports keyboard resizing and min/max jumps", () => {
+    const { firstPane, separator } = renderPane({ min: 0.2, max: 0.7 });
+
+    fireEvent.keyDown(separator, { key: "ArrowRight" });
+    expect(firstPane.style.flexBasis).toBe("32%");
+    expect(separator.getAttribute("aria-valuenow")).toBe("32");
+
+    fireEvent.keyDown(separator, { key: "End" });
+    expect(firstPane.style.flexBasis).toBe("70%");
+    fireEvent.keyDown(separator, { key: "Home" });
+    expect(firstPane.style.flexBasis).toBe("20%");
   });
 
   it("drags horizontally to the pointer's fraction of the container width", () => {

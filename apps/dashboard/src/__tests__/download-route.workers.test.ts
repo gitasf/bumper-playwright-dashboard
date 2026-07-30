@@ -33,7 +33,7 @@ const signGetUrl = vi.fn();
 vi.mock("@/lib/artifacts/presign", () => ({ signGetUrl }));
 
 const readArtifact = vi.fn();
-vi.mock("@/lib/artifacts/store", () => ({
+vi.mock("@/lib/artifacts/read", () => ({
   readArtifact,
   buildArtifactResponse: () => new Response("body", { status: 200 }),
   artifactContentDisposition: (key: string) =>

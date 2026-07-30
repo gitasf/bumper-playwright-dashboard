@@ -103,6 +103,9 @@ vi.mock("void/db", () => ({
   },
   and: (...args: unknown[]) => ({ __op: "and", args }),
   eq: (...args: unknown[]) => ({ __op: "eq", args }),
+  // The bucket recompute matches statuses with the canonical `inArray` rather
+  // than a hand-quoted `sql.raw` fragment.
+  inArray: (...args: unknown[]) => ({ __op: "inArray", args }),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...args: unknown[]) => ({
       __op: "sql",
@@ -127,7 +130,8 @@ vi.mock("@/realtime/publish", () => ({
   broadcastRunRoom: broadcastRunSpy,
 }));
 
-const { reconcileAndBroadcast } = await import("@/lib/ingest");
+const { reconcileAndBroadcast } =
+  await import("@/lib/ingest/write-and-publish");
 
 const SUMMARY = {
   totalTests: 7,
@@ -232,7 +236,7 @@ describe("reconcileAndBroadcast", () => {
   // the FIRST batch element; its affected-row count says whether the run was
   // still "running" when the sweep wrote. A non-`.returning()` flip resolves to a
   // Postgres result carrying `rowCount` (pglite `affectedRows`) — so the head
-  // element here is that shape, not a rows array, and `statementChangedRows`
+  // element here is that shape, not a rows array, and `changedRows`
   // reads it via `changedRows`.
   describe("requireStatusFlip (finalizeStaleRun no-op guard)", () => {
     it("suppresses the broadcast when the guarded flip matched 0 rows", async () => {

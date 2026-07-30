@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { formatBytes, formatPreviewText } from "../format";
 import { isImageMime, isTextMime } from "../mime";
 import { sha1Path } from "../model";
@@ -82,19 +82,27 @@ export function BridgeBodyPreview({
   const canPreviewText =
     !image && isTextMime(mimeType) && size <= TEXT_PREVIEW_MAX_BYTES;
 
-  const { url: imageUrl } = useObjectUrl(bridge, image ? path : null);
+  const { url: imageUrl, error: imageError } = useObjectUrl(
+    bridge,
+    image ? path : null,
+  );
   const { text, error } = useSha1PreviewText(
     bridge,
     canPreviewText ? sha1 : null,
     mimeType,
   );
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
 
   if (image) {
+    if (imageError || (imageUrl !== null && failedImageUrl === imageUrl)) {
+      return <div className={NOTE}>Failed to load preview.</div>;
+    }
     return imageUrl ? (
       <img
         src={imageUrl}
         alt="Response body preview"
         className="max-h-48 rounded border border-line-1 object-contain"
+        onError={() => setFailedImageUrl(imageUrl)}
       />
     ) : (
       <div className={NOTE}>Loading preview…</div>

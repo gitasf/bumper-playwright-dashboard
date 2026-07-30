@@ -4,7 +4,7 @@ import {
   mergeRunStatus,
   mergeRunStatusSql,
   worstShardStatus,
-} from "@/lib/ingest";
+} from "@/lib/ingest/finalization";
 
 /**
  * Guards the sharding fix in completeRun: shards share one idempotencyKey and

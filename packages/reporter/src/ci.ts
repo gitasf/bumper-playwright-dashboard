@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 
 // CI environment detection. Reads standard env vars on GitHub Actions,
@@ -10,11 +10,18 @@ export interface CIInfo {
   ciProvider: string | null;
   ciBuildId: string | null;
   /**
-   * Job-level discriminator within a build (GITHUB_JOB / CI_JOB_NAME). The
-   * build id alone is workflow/pipeline-scoped, so without this matrix and
-   * parallel jobs would share an idempotency key and merge into one run.
+   * Job-level discriminator within a build (GITHUB_JOB /
+   * CI_JOB_GROUP_NAME-or-CI_JOB_NAME). The build id alone is
+   * workflow/pipeline-scoped, so without this independent jobs would share an
+   * idempotency key and merge into one run.
    */
   ciJobName: string | null;
+  /**
+   * Provider execution attempt shared by every job/shard in one rerun. GitHub's
+   * GITHUB_RUN_ATTEMPT increments when a workflow is rerun, so a new execution
+   * never reuses and mutates the previous dashboard run.
+   */
+  ciRunAttempt: string | null;
   branch: string | null;
   commitSha: string | null;
   commitMessage: string | null;
@@ -202,6 +209,7 @@ function detectCIRaw(): CIInfo | null {
       ciProvider: "github-actions",
       ciBuildId: process.env.GITHUB_RUN_ID ?? null,
       ciJobName: process.env.GITHUB_JOB ?? null,
+      ciRunAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
       branch:
         process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || null,
       commitSha: pr.headSha ?? process.env.GITHUB_SHA ?? null,
@@ -216,7 +224,13 @@ function detectCIRaw(): CIInfo | null {
     return {
       ciProvider: "gitlab-ci",
       ciBuildId: process.env.CI_PIPELINE_ID ?? null,
-      ciJobName: process.env.CI_JOB_NAME ?? null,
+      // Parallel GitLab jobs expand CI_JOB_NAME per instance, which would give
+      // each native Playwright shard a different idempotency key.
+      // CI_JOB_GROUP_NAME is shared by the group while remaining equal to the
+      // ordinary job name outside parallel/grouped jobs.
+      ciJobName:
+        process.env.CI_JOB_GROUP_NAME || process.env.CI_JOB_NAME || null,
+      ciRunAttempt: null,
       branch:
         process.env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME ||
         process.env.CI_COMMIT_BRANCH ||
@@ -233,6 +247,7 @@ function detectCIRaw(): CIInfo | null {
       ciProvider: "circleci",
       ciBuildId: process.env.CIRCLE_WORKFLOW_ID ?? null,
       ciJobName: process.env.CIRCLE_JOB ?? null,
+      ciRunAttempt: null,
       branch: process.env.CIRCLE_BRANCH ?? null,
       commitSha: process.env.CIRCLE_SHA1 ?? null,
       commitMessage: readGitCommitMessage(),
@@ -250,6 +265,7 @@ function detectCIRaw(): CIInfo | null {
       ciProvider: "unknown",
       ciBuildId: null,
       ciJobName: null,
+      ciRunAttempt: null,
       branch: null,
       commitSha: null,
       commitMessage: readGitCommitMessage(),
@@ -262,14 +278,119 @@ function detectCIRaw(): CIInfo | null {
 }
 
 export interface IdempotencyDiscriminators {
-  /** CI job name (e.g. GITHUB_JOB / CI_JOB_NAME). */
+  /** CI job/group name (e.g. GITHUB_JOB / CI_JOB_GROUP_NAME). */
   jobName?: string | null;
+  /** Provider rerun attempt shared by every shard in the execution. */
+  runAttempt?: string | null;
+  /**
+   * Selected Playwright projects. GitHub's GITHUB_JOB is the matrix job id,
+   * not its expanded display name, so project matrices otherwise collapse
+   * into one run. Every native shard of one suite must receive the same set.
+   */
+  projectNames?: ReadonlyArray<string | null>;
+  /** Explicit discriminator for matrix axes Playwright cannot observe. */
+  matrixKey?: string | null;
+}
+
+export interface CIExecutionContext {
+  /** Whether Playwright is running one slice of a native sharded suite. */
+  nativeSharded: boolean;
+  /** An orchestrator-supplied key bypasses provider-derived identity. */
+  hasExplicitIdempotencyKey: boolean;
+}
+
+/**
+ * Provider-specific retry policy for one reporter process.
+ *
+ * Providers expose materially different retry identities. Keeping that
+ * translation here prevents the reporter lifecycle from growing a collection
+ * of provider conditionals that eventually disagree with key generation.
+ */
+export type CIExecutionPolicy =
+  | {
+      status: "ready";
+      runAttempt: string | null;
+      warning: string | null;
+    }
+  | {
+      status: "blocked";
+      reason: string;
+    };
+
+export function resolveCIExecutionPolicy(
+  ci: CIInfo | null,
+  context: CIExecutionContext,
+  env: NodeJS.ProcessEnv = process.env,
+): CIExecutionPolicy {
+  if (context.hasExplicitIdempotencyKey) {
+    return { status: "ready", runAttempt: null, warning: null };
+  }
+
+  switch (ci?.ciProvider) {
+    case "github-actions": {
+      const isRerun =
+        ci.ciRunAttempt !== null &&
+        ci.ciRunAttempt !== "" &&
+        ci.ciRunAttempt !== "1";
+      if (context.nativeSharded && isRerun) {
+        return {
+          status: "blocked",
+          reason:
+            "GitHub Actions cannot tell reporters whether a native-shard rerun includes every shard. " +
+            "Streaming this rerun would risk an incomplete dashboard run. Rerun the full workflow with " +
+            "WRIGHTFUL_IDEMPOTENCY_KEY set to one new value shared by every shard.",
+        };
+      }
+      return {
+        status: "ready",
+        runAttempt: ci.ciRunAttempt,
+        warning: null,
+      };
+    }
+    case "gitlab-ci":
+      if (context.nativeSharded) {
+        return {
+          status: "ready",
+          runAttempt: null,
+          warning:
+            "GitLab native-shard job retries cannot be identified as one complete retry set. " +
+            "Retry the full pipeline instead of an individual shard.",
+        };
+      }
+      // CI_JOB_ID changes when GitLab retries a job, but is stable for all
+      // transport retries performed inside that job.
+      return {
+        status: "ready",
+        runAttempt: env.CI_JOB_ID ?? null,
+        warning: null,
+      };
+    default:
+      return {
+        status: "ready",
+        runAttempt: ci?.ciRunAttempt ?? null,
+        warning: null,
+      };
+  }
 }
 
 // Mirror of the dashboard's `idempotencyKey` cap (MAX.ID in
 // apps/dashboard/src/lib/schemas.ts) — a longer key would 400 the open call.
 // Exported so `contract.test.ts` can pin it === the dashboard's MAX.ID.
 export const MAX_IDEMPOTENCY_KEY_LENGTH = 1024;
+
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function boundedDerivedKey(parts: string[]): string {
+  const raw = parts.join("-");
+  if (raw.length <= MAX_IDEMPOTENCY_KEY_LENGTH) return raw;
+  // Preserve a digest of every discriminator. Plain slicing can discard the
+  // suffix and make two long build ids with different jobs/matrix keys collide.
+  const digest = shortHash(raw);
+  const prefixLength = MAX_IDEMPOTENCY_KEY_LENGTH - digest.length - 1;
+  return `${raw.slice(0, prefixLength)}-${digest}`;
+}
 
 /**
  * Resolve the run's idempotency key. Precedence:
@@ -278,18 +399,16 @@ export const MAX_IDEMPOTENCY_KEY_LENGTH = 1024;
  *      addressable by `(projectId, idempotencyKey === execution.id)` and the
  *      executor can resolve `runId` back from the execution without a handshake.
  *      Used verbatim — never decorated with discriminators.
- *   2. The CI build id (deterministic across re-runs of the same CI job, which
- *      is what lets a re-run recover the same run row), suffixed with the job
- *      name when present. The build id alone is workflow/pipeline-scoped, so
- *      distinct jobs (different suites in one workflow, matrix legs) would
- *      otherwise silently merge into one dashboard run. The job name is stable
- *      across re-runs, so re-run determinism survives the suffix.
+ *   2. The CI build id, suffixed with job, provider run-attempt, selected
+ *      Playwright-project set, and any explicit matrix discriminator. A rerun
+ *      is a new dashboard execution; retries within one attempt stay
+ *      idempotent.
  *
- *      Playwright `--shard` is deliberately NOT a discriminator: shards run
- *      slices of ONE suite and must share an idempotency key so the dashboard
- *      merges them into a single run — openRun's duplicate path, the queue
- *      prefill, and completeRun's monotonic cross-shard status merge are all
- *      designed around shards sharing one key.
+ *      The shard number is deliberately NOT a discriminator: shards run slices
+ *      of ONE selected project set and must share an idempotency key so the
+ *      dashboard merges them into a single run. The project set remains a
+ *      discriminator so independent chromium and firefox shard matrices do
+ *      not merge.
  *   3. A random UUID for purely local runs.
  */
 export function generateIdempotencyKey(
@@ -301,5 +420,19 @@ export function generateIdempotencyKey(
   if (!ciBuildId) return randomUUID();
   const parts = [ciBuildId];
   if (discriminators.jobName) parts.push(discriminators.jobName);
-  return parts.join("-").slice(0, MAX_IDEMPOTENCY_KEY_LENGTH);
+  if (discriminators.runAttempt) {
+    parts.push(`attempt-${discriminators.runAttempt}`);
+  }
+  if (discriminators.projectNames?.length) {
+    const projects = [
+      ...new Set(discriminators.projectNames.map((p) => p ?? "")),
+    ]
+      .sort()
+      .join("\u0000");
+    parts.push(`projects-${shortHash(projects)}`);
+  }
+  if (discriminators.matrixKey) {
+    parts.push(`matrix-${shortHash(discriminators.matrixKey)}`);
+  }
+  return boundedDerivedKey(parts);
 }

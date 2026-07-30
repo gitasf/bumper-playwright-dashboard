@@ -35,8 +35,9 @@ vi.mock("@/realtime/publish", () => ({
   broadcastProjectRoom: () => Promise.resolve(),
 }));
 
-const { appendRunResults, openRun, RunRowCapExceededError } =
-  await import("@/lib/ingest");
+const { RunRowCapExceededError, openRun } =
+  await import("@/lib/ingest/lifecycle");
+const { appendRunResults } = await import("@/lib/ingest/results");
 const { makeTenantScope } = await import("@/lib/scope");
 const {
   runs,

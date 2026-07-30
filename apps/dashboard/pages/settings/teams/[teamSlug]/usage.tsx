@@ -10,7 +10,7 @@ import { cn } from "@/lib/cn";
 import type { Props, UsageRow, UsageRowTone } from "./usage.server";
 
 const TONE_BAR: Record<UsageRowTone, string> = {
-  ok: "bg-bg-3",
+  ok: "bg-info",
   warn: "bg-warning",
   over: "bg-fail",
 };

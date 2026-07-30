@@ -140,11 +140,13 @@ export interface WriteMutexOptions {
  * surface's ULID-monotonic guard hold at GitHub, not just in the DB: two
  * concurrent runs' PATCHes would otherwise race over the wire and the older
  * body could land last. The runId recorded alongside the id doubles as the
- * guard: a caller that observes a persisted `runId >= its own` returns,
- * because the resource already reflects this run or a newer one (which also
- * dedupes a retried finalize of the same run). If the mutex stays busy
- * through every attempt, give up with a warning — the next completed run
- * refreshes the comment.
+ * guard: a caller that observes a persisted `runId > its own` returns,
+ * because the resource already reflects a newer run. Equality refreshes only
+ * when that run was already present on this call's first read (a genuine later
+ * recompletion). If the same run lands while this caller is retrying, this is
+ * the loser of a concurrent write and it skips the duplicate. If the mutex
+ * stays busy through every attempt, give up with a warning — the next completed
+ * run refreshes the comment.
  */
 export async function postWithWriteMutex(
   surface: string,
@@ -153,18 +155,28 @@ export async function postWithWriteMutex(
   post: (existingId: number | null) => Promise<number | null>,
   { attempts = 4, retryDelayMs = 1500 }: WriteMutexOptions = {},
 ): Promise<void> {
+  let initialRunId: string | null | undefined;
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt > 0) {
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
     const seen = await io.read();
-    if (seen.runId !== null && seen.runId >= runId) return;
+    if (initialRunId === undefined) initialRunId = seen.runId;
+    if (
+      seen.runId !== null &&
+      (seen.runId > runId || (seen.runId === runId && initialRunId !== runId))
+    ) {
+      return;
+    }
     const claim = await io.claim(Math.floor(Date.now() / 1000));
     if (claim === null) continue;
     // Re-read under the mutex: another holder may have persisted (and
     // released) between the optimistic read above and our claim landing.
     const held = await io.read();
-    if (held.runId !== null && held.runId >= runId) {
+    if (
+      held.runId !== null &&
+      (held.runId > runId || (held.runId === runId && initialRunId !== runId))
+    ) {
       await releaseClaim(surface, runId, () => io.release(claim));
       return;
     }

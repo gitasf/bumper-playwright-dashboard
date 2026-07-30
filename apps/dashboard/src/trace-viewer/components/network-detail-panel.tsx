@@ -5,7 +5,7 @@ import type React from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/cn";
-import { formatBytes, formatTraceDuration, prettyPrintJson } from "../format";
+import { formatBytes, formatPreviewText, formatTraceDuration } from "../format";
 import { contentSha1, transferSize } from "../har-fields";
 import type { TraceBridge } from "../use-trace-model";
 import type { Timings } from "../vendor/har";
@@ -195,7 +195,7 @@ export function DetailPanel({
           {postData?.text ? (
             <Section title="Request body" className={NETWORK_SECTION_CLASSES}>
               <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-caption">
-                {prettyPrintJson(postData.text, postData.mimeType)}
+                {formatPreviewText(postData.text, postData.mimeType)}
               </pre>
             </Section>
           ) : null}

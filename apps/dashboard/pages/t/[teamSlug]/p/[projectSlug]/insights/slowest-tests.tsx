@@ -66,6 +66,7 @@ export default function SlowestTestsPage({
   totals,
   bucketMs,
   histogram,
+  kpis,
   slowest,
   pathname,
   ranges,
@@ -126,10 +127,10 @@ export default function SlowestTestsPage({
             value={totals.totalUniqueTests.toLocaleString()}
           />
           <DeferredSection resetKey={resetKey} skeleton={<KpiCardSkeleton />}>
-            <SlowestTestKpi slowest={slowest} />
+            <SlowestTestKpi kpis={kpis} />
           </DeferredSection>
           <DeferredSection resetKey={resetKey} skeleton={<KpiCardSkeleton />}>
-            <AverageP95Kpi slowest={slowest} />
+            <AverageP95Kpi kpis={kpis} />
           </DeferredSection>
         </div>
 
@@ -213,32 +214,24 @@ export default function SlowestTestsPage({
   );
 }
 
-function SlowestTestKpi({ slowest }: { slowest: Props["slowest"] }) {
-  const { bottlenecks } = use(slowest);
-  const topRow = bottlenecks[0];
+function SlowestTestKpi({ kpis }: { kpis: Props["kpis"] }) {
+  const { slowestTitle, slowestP95 } = use(kpis);
   return (
     <AnalyticsKpiCard
-      footnote={topRow?.title ?? "—"}
+      footnote={slowestTitle ?? "—"}
       label="Slowest test (p95)"
-      value={topRow?.p95 == null ? "—" : formatDuration(Math.round(topRow.p95))}
+      value={slowestP95 == null ? "—" : formatDuration(Math.round(slowestP95))}
     />
   );
 }
 
-function AverageP95Kpi({ slowest }: { slowest: Props["slowest"] }) {
-  const { bottlenecks } = use(slowest);
-  const p95Values = bottlenecks
-    .map((b) => b.p95)
-    .filter((v): v is number => v != null);
-  const avgP95 =
-    p95Values.length === 0
-      ? null
-      : p95Values.reduce((s, v) => s + v, 0) / p95Values.length;
+function AverageP95Kpi({ kpis }: { kpis: Props["kpis"] }) {
+  const { averageP95 } = use(kpis);
   return (
     <AnalyticsKpiCard
       footnote="Across the ranked window"
       label="Average p95"
-      value={avgP95 == null ? "—" : formatDuration(Math.round(avgP95))}
+      value={averageP95 == null ? "—" : formatDuration(Math.round(averageP95))}
     />
   );
 }

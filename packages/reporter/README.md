@@ -50,6 +50,54 @@ Every request carries `X-Wrightful-Version: 3`. The dashboard rejects older
 versions with `409 Conflict`, so reporter and dashboard must be upgraded
 together across protocol bumps.
 
+## Run identity, reruns, matrices, and shards
+
+The reporter derives one idempotency key for each logical CI execution. That
+lets transport retries and native Playwright shards converge without merging
+unrelated jobs:
+
+- The base identity is the provider's build id plus its job name.
+- On GitHub Actions, `GITHUB_RUN_ATTEMPT` is included automatically for
+  non-sharded runs. A native-shard rerun is fail-closed because GitHub does not
+  expose whether the user reran every shard or only one failed job: attempt 2+
+  does not stream unless `WRIGHTFUL_IDEMPOTENCY_KEY` is explicitly shared by
+  the complete shard set. This prevents a one-shard rerun from opening a
+  dashboard run that can never finalize.
+- On GitLab, non-sharded jobs include `CI_JOB_ID`, so retrying a job creates a
+  new dashboard run instead of hitting the previous terminal key. Native
+  shards deliberately keep the shared pipeline/job-group identity. GitLab does
+  not expose a retry generation shared by a complete shard set, so retry the
+  full pipeline rather than an individual sharded job.
+- The selected Playwright project-name set is included automatically, even for
+  native shards and empty/filtered suites. This keeps independent project
+  matrices separate even though `GITHUB_JOB` is the same unexpanded job id in
+  every leg, while shards of the same selected project set still share one key.
+- Set `WRIGHTFUL_MATRIX_KEY` to a stable serialization of any non-shard matrix
+  axes the reporter cannot observe, such as an operating system or Node
+  version. It must have the same value in every native shard that should merge.
+
+`WRIGHTFUL_IDEMPOTENCY_KEY` is the escape hatch for orchestrators such as
+synthetic monitors. It is used verbatim, without the automatic discriminators.
+Keep it constant across retries and shards of one in-progress execution, but
+use a new value for every new logical execution. Reusing a key after its run is
+terminal is rejected rather than reopening and overwriting the stored result.
+For a complete GitHub native-shard rerun, set it at the job level to a value
+that contains the run id, run attempt, and every non-shard matrix coordinate
+(but not the shard index), for example:
+
+```yaml
+env:
+  WRIGHTFUL_IDEMPOTENCY_KEY: >-
+    ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.project }}-${{ matrix.os }}
+```
+
+| environment variable        | handling                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GITHUB_RUN_ATTEMPT`        | Auto-detected rerun attempt. Native-shard attempts after the first require an explicit complete-set key.     |
+| `CI_JOB_ID`                 | Auto-detected GitLab retry identity for non-sharded jobs; intentionally excluded from native-shard identity. |
+| `WRIGHTFUL_MATRIX_KEY`      | Optional discriminator for non-shard matrix axes that auto-detection cannot distinguish.                     |
+| `WRIGHTFUL_IDEMPOTENCY_KEY` | Full explicit override; must be unique per execution and shared by every native shard in that execution.     |
+
 ## Fail-closed semantics
 
 The reporter never fails the Playwright suite. On error:
@@ -90,14 +138,26 @@ artifact uploads.
 
 ## GitHub PR comment
 
-With `postPrComment: true`, the reporter upserts a single sticky summary
-comment on the PR when the run completes. It requires GitHub Actions context
+With `postPrComment: true`, the reporter upserts one sticky summary comment per
+workflow leg on the PR when the run completes. It requires GitHub Actions context
 (`GITHUB_ACTIONS=true`), a PR-triggered workflow (so the PR number is set),
 a detected `repo`, and a `GITHUB_TOKEN` (or `WRIGHTFUL_GITHUB_TOKEN`) in env —
 grant the workflow `permissions: pull-requests: write`. The comment is keyed by
-a hidden HTML marker, so re-running the same workflow updates the existing
-comment in place rather than posting a new one. Cross-fork PRs get a read-only
-token (the POST 403s); that's logged and ignored — it never fails the suite.
+a workflow/job/project/matrix-scoped hidden HTML marker, so rerunning the same
+leg updates it in place without overwriting another leg's summary. Set
+`WRIGHTFUL_MATRIX_KEY` for matrix axes Playwright cannot observe. Cross-fork PRs
+get a read-only token (the POST 403s); that's logged and ignored — it never
+fails the suite.
+
+The project scope normally comes from the run URL. If a compatible older
+dashboard omits that URL, the reporter adds a one-way HMAC discriminator
+derived from the project-scoped Wrightful API key. The raw key and a reusable
+plain hash of it are never written to the public comment.
+
+The CI-token fallback is skipped for native Playwright shards because each
+shard has only a partial summary and racing shard comments can report a false
+aggregate. Configure the Wrightful GitHub App for a single comment posted from
+the dashboard after the merged sharded run reaches its terminal state.
 
 ## Quarantine
 
@@ -117,18 +177,21 @@ For each test, the reporter sends:
 - **Outcome**: status, duration, retry count, and per-attempt status, error
   message, and error stack.
 - **Tags and annotations** declared in your test code.
-- **Attachments** (when `artifacts` is `'failed'` or `'all'`): file bytes
-  streamed through the dashboard worker to R2 via the upload URL returned by
-  `/api/artifacts/register`. Attachment paths are resolved through
-  `realpath` and rejected if they escape the project root, to guard against
-  symlink exfiltration via a hostile `playwright.config.ts`. Inline body
-  attachments (those without a `path`) are **not** uploaded.
+- **Attachments** (when `artifacts` is `'failed'` or `'all'`): file bytes sent
+  through the upload URL returned by `/api/artifacts/register` — a dashboard
+  worker route by default, or an off-host presigned R2 URL when direct R2 is
+  configured. Attachment paths are resolved through `realpath` and rejected if
+  they escape the project root, to guard against symlink exfiltration via a
+  hostile `playwright.config.ts`. Inline body attachments (those without a
+  `path`) are **not** uploaded.
 
 For each run, the reporter also sends CI metadata auto-detected from
 environment variables (GitHub Actions, GitLab CI, CircleCI, or generic
 `CI=true`): provider, build ID, branch, commit SHA and message, PR number,
-repo slug, and triggering actor. When no CI env is present these fields are
-sent as `null`.
+repo slug, and triggering actor. The provider job name and GitHub run attempt
+participate in the derived idempotency key, as does the GitLab job id for a
+non-sharded run, but are not sent as run metadata. When no CI env is present
+these fields are sent as `null`.
 
 ### GitHub Actions `pull_request` builds
 

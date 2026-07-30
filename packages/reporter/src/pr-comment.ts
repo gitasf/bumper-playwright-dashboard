@@ -5,10 +5,12 @@
 // receive a read-only token — those POSTs return 403; the caller logs and
 // continues so a missing PR comment never fails the suite.
 //
-// Idempotent via a hidden HTML marker so re-runs of the same workflow
-// update the existing comment instead of stacking duplicates.
+// Idempotent via a scoped hidden HTML marker so re-runs of the same workflow
+// leg update the existing comment without overwriting another project/matrix
+// leg's independent summary.
 
-const MARKER = "<!-- wrightful:pr-comment -->";
+import { createHash, createHmac } from "node:crypto";
+
 const REQUEST_TIMEOUT_MS = 10_000;
 const GITHUB_API = "https://api.github.com";
 
@@ -30,6 +32,11 @@ export interface RunSummary {
   prNumber: number;
   environment: string | null;
   commitSha: string | null;
+  /**
+   * Stable workflow-leg identity. It excludes the CI run id/attempt so reruns
+   * update in place, but includes job, project, and explicit matrix identity.
+   */
+  commentScope: string;
 }
 
 export interface PostPrCommentResult {
@@ -81,30 +88,59 @@ function statusEmoji(status: RunSummary["status"]): string {
   }
 }
 
+export function buildCommentMarker(commentScope: string): string {
+  const scopeHash = createHash("sha256")
+    .update(commentScope)
+    .digest("hex")
+    .slice(0, 24);
+  return `<!-- wrightful:pr-comment:${scopeHash} -->`;
+}
+
 /**
- * Hand-kept copy of the dashboard's check-run `formatDuration`
- * (`apps/dashboard/src/lib/github-checks.ts`) — the reporter is a separately
- * published package and can't import the dashboard lib, but both render the
- * same summary table, so keep them in lockstep. Both round to whole seconds
- * before splitting into minutes/seconds so a remainder rounding up to 60
- * carries into the minutes place instead of rendering "1m 60s".
+ * Derive a public-safe, credential-scoped project discriminator.
+ *
+ * API keys are project-scoped, so this keeps comments for two projects on the
+ * same dashboard from sharing a marker when an older dashboard omits runUrl.
+ * HMAC uses the credential as the key rather than placing it (or a plain hash
+ * of it) in the comment scope; neither the raw token nor a reusable token hash
+ * leaves the reporter process.
+ */
+export function projectCommentScope(
+  token: string,
+  dashboardUrl: string,
+): string {
+  return createHmac("sha256", token)
+    .update(`wrightful-pr-comment-project:v1\0${dashboardUrl}`)
+    .digest("hex")
+    .slice(0, 24);
+}
+
+/**
+ * Hand-kept copy of the dashboard's GitHub-surface `formatDuration`
+ * (`apps/dashboard/src/lib/github-run-render.ts`) — the reporter is a
+ * separately published package and can't import the dashboard lib, but both
+ * render the same summary table, so keep them in lockstep.
  */
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
+  // Round to the displayed tenth BEFORE the sub-minute comparison, so 59.96s
+  // carries into the minutes path instead of rendering as "60.0s".
+  const seconds = Math.round(ms / 100) / 10;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const totalSeconds = Math.round(seconds);
+  // Round to whole seconds before splitting, so a leftover rounding up to 60
+  // carries into the minutes place instead of rendering as "1m 60s".
+  const totalSeconds = Math.round(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
-  const remSeconds = totalSeconds % 60;
-  return `${minutes}m ${remSeconds}s`;
+  return `${minutes}m ${totalSeconds - minutes * 60}s`;
 }
 
 export function buildCommentBody(summary: RunSummary): string {
+  const marker = buildCommentMarker(summary.commentScope);
   const runLink = summary.runUrl
     ? new URL(summary.runUrl, summary.dashboardUrl).toString()
     : summary.dashboardUrl;
   const lines: string[] = [
-    MARKER,
+    marker,
     `### ${statusEmoji(summary.status)} Wrightful — ${summary.status}`,
     "",
     `| Passed | Failed | Flaky | Skipped | Duration |`,
@@ -145,6 +181,18 @@ interface GhComment {
   body?: string;
 }
 
+function isGhComment(value: unknown): value is GhComment {
+  if (typeof value !== "object" || value === null || !("id" in value)) {
+    return false;
+  }
+  if (typeof value.id !== "number") return false;
+  return !("body" in value) || typeof value.body === "string";
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
 /**
  * Find the most recent comment containing our marker. Only checks the most
  * recent page (per_page=100, sorted descending) — if a PR has >100 comments
@@ -153,6 +201,7 @@ interface GhComment {
 async function findExistingComment(
   repo: string,
   prNumber: number,
+  marker: string,
   token: string,
 ): Promise<number | null> {
   const url =
@@ -160,9 +209,12 @@ async function findExistingComment(
     `?per_page=100&sort=created&direction=desc`;
   const response = await githubFetch(url, { method: "GET" }, token);
   if (!response.ok) return null;
-  const comments = (await response.json().catch(() => [])) as GhComment[];
-  for (const c of comments) {
-    if (c.body && c.body.includes(MARKER)) return c.id;
+  const comments: unknown = await response.json().catch(() => []);
+  if (!isUnknownArray(comments)) return null;
+  for (const comment of comments) {
+    if (isGhComment(comment) && comment.body?.split(/\r?\n/).includes(marker)) {
+      return comment.id;
+    }
   }
   return null;
 }
@@ -172,9 +224,11 @@ export async function postPrComment(
   token: string,
 ): Promise<PostPrCommentResult> {
   const body = buildCommentBody(summary);
+  const marker = buildCommentMarker(summary.commentScope);
   const existingId = await findExistingComment(
     summary.repo,
     summary.prNumber,
+    marker,
     token,
   );
 

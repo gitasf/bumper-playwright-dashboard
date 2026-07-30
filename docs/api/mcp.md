@@ -71,33 +71,37 @@ sessionless servers.
 
 ## Tools
 
-All tools are read-only and tenant-scoped: with an API key the project is
-fixed and no tool argument can reach outside it; with an OAuth token every
-scoped tool requires `team` + `project` slugs and re-checks your membership on
-each call.
+The server exposes eight project-scoped tools. All are read-only and
+tenant-scoped: with an API key the project is fixed and no tool argument can
+reach outside it; with an OAuth token every scoped tool requires `team` +
+`project` slugs and re-checks your membership on each call. OAuth adds a ninth
+tool, `list_projects`, for choosing that scope.
 
 | Extra tool (OAuth only) | What it does                                                |
 | ----------------------- | ----------------------------------------------------------- |
 | `list_projects`         | Every team + project your account can read — call it first. |
 
-| Tool               | What it does                                                                                                                                                                                                                                                           |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_runs`        | List runs, newest first. Filters: `pr` (PR number), `commit` (SHA prefix), `branch`, `status[]`, `environment`, `actor`, `from`/`to` dates, `origin` (`ci`/`synthetic`/`all`). Cursor-paginated.                                                                       |
-| `get_run`          | One run's full summary: status, pass/fail/flaky/skipped counts, duration, commit/PR/branch/actor, CI provider, dashboard URL.                                                                                                                                          |
-| `list_tests`       | A run's test results with truncated error messages. `status:"failed"` narrows to failures. Cursor-paginated.                                                                                                                                                           |
-| `list_flaky_tests` | The project's flakiest tests over a trailing window (default 14 days), ranked by flake rate (flaky / flaky + passed — same definition as the dashboard's flaky page). Each row links its latest flaky `testResultId`.                                                  |
-| `get_test_result`  | Full detail for one test: complete error message + stack, every retry attempt with its own error **plus captured `stdout`/`stderr`** (the test process's own `console.log` output), tags, annotations, and the artifact index (id/type/name/size/role).                |
-| `get_artifact`     | Fetch one artifact. Screenshots ≤ 2 MiB return inline as an image; text artifacts ≤ 128 KiB inline as text; everything else returns a signed download URL (1 h normally, 8 h for replayable traces). Replayable traces also get a same-origin, self-hosted viewer URL. |
+| Tool                   | What it does                                                                                                                                                                                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_runs`            | List runs, newest first. Filters: `pr` (PR number), `commit` (SHA prefix), `branch`, `status[]`, `environment`, `actor`, `from`/`to` dates, `origin` (`ci`/`synthetic`/`all`). Cursor-paginated.                                                                       |
+| `get_run`              | One run's full summary: status, pass/fail/flaky/skipped counts, duration, commit/PR/branch/actor, CI provider, dashboard URL.                                                                                                                                          |
+| `list_tests`           | A run's test results with truncated error messages. `status:"failed"` narrows to failures. Cursor-paginated.                                                                                                                                                           |
+| `list_flaky_tests`     | The project's flakiest tests over a trailing window (default 14 days), ranked by flake rate (flaky / flaky + passed — same definition as the dashboard's flaky page). Each row links its latest flaky `testResultId`.                                                  |
+| `diagnose_flaky_tests` | Diagnose the project's top flaky tests with sample/failure/retry counters, normalized error groups, representative results, same-run co-failures, and latest-run health.                                                                                               |
+| `get_test_history`     | Get the recent execution timeline for one stable test id, exact spec file, or title/file query, including run context, attempts, worker/shard indexes, and normalized error signatures.                                                                                |
+| `get_test_result`      | Full detail for one test: complete error message + stack, every retry attempt with its own error **plus captured `stdout`/`stderr`** (the test process's own `console.log` output), tags, annotations, and the artifact index (id/type/name/size/role).                |
+| `get_artifact`         | Fetch one artifact. Screenshots ≤ 2 MiB return inline as an image; text artifacts ≤ 128 KiB inline as text; everything else returns a signed download URL (1 h normally, 8 h for replayable traces). Replayable traces also get a same-origin, self-hosted viewer URL. |
 
 Typical agent flow: `list_runs {pr: 123, status: ["failed"]}` →
 `list_tests {run_id, status: "failed"}` → `get_test_result {test_result_id}` →
 `get_artifact {artifact_id}` for the failure screenshot or trace.
 
-Flake-hunting flow ("find and fix my flaky tests"): `list_flaky_tests` →
-`get_test_result {lastFlakyTestResultId}` — every retry attempt keeps its own
-error **and its own artifacts**, so the failing attempt's screenshot/trace is
-still there even though the retry passed. Compare the failing attempt against
-the passing one, fix the test in the repo, and watch the next runs.
+Flake-hunting flow ("find and fix my flaky tests"):
+`diagnose_flaky_tests` → `get_test_history` for a selected test →
+`get_test_result {test_result_id}`. Use `list_flaky_tests` when you only need a
+cheaper ranking. Every retry attempt keeps its own error **and its own
+artifacts**, so the failing attempt's screenshot/trace is still there even
+though the retry passed.
 
 ## Artifact bytes
 
@@ -107,7 +111,10 @@ uses (`/api/artifacts/:id/download?t=…`) — fetchable without an Authorizatio
 header, so an agent can hand it to `curl`, a browser, or
 `npx playwright show-trace <url>`. The response reports the chosen lifetime in
 `downloadUrlExpiresInSeconds`: one hour for ordinary artifacts and eight hours
-for replayable traces whose viewer may lazily request more ZIP ranges.
+for replayable traces whose viewer may lazily request more ZIP ranges. By
+default that endpoint streams bytes through the Worker; when the optional
+direct-R2 credentials are configured, it verifies the same token and redirects
+to a shorter-lived SigV4-presigned R2 URL.
 
 ## Relationship to the other API surfaces
 

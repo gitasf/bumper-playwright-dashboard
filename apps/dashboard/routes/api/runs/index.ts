@@ -34,11 +34,11 @@ export const POST = defineHandler.withValidator({
   const scope = await tenantScopeForApiKey(getApiKey(c));
   const nowSeconds = payload.createdAt ?? Math.floor(Date.now() / 1000);
 
-  // Quota gate (CI ingest only — the synthetic-monitor path calls openRun
-  // directly and is intentionally exempt, so monitoring never silently stops on
-  // a CI-run quota). Checked before the open: over the monthly allowance → 429.
-  // A duplicate re-open of an existing run is gated too; the narrow case of a
-  // late shard re-opening the run that sat exactly at the limit is acceptable.
+  // Quota lookup (CI ingest only — the synthetic-monitor path calls openRun
+  // directly and is intentionally exempt, so monitoring never silently stops).
+  // Do NOT reject a blocked snapshot here: openRun resolves idempotent retries
+  // and late shards before its atomic guarded bump. Only a genuinely new insert
+  // can throw RunQuotaOvershootError below.
   const quota = await checkQuota(scope.teamId, "runs", 1, nowSeconds);
   const quotaError = () =>
     c.json(
@@ -50,16 +50,18 @@ export const POST = defineHandler.withValidator({
       },
       429,
     );
-  if (quota.status === "blocked") {
-    return quotaError();
-  }
-
   let runId: string;
   let duplicate: boolean;
+  let terminalDuplicate: boolean | undefined;
   try {
-    ({ runId, duplicate } = await openRun(scope, payload, nowSeconds, {
-      runsQuotaLimit: quota.limit,
-    }));
+    ({ runId, duplicate, terminalDuplicate } = await openRun(
+      scope,
+      payload,
+      nowSeconds,
+      {
+        runsQuotaLimit: quota.limit,
+      },
+    ));
   } catch (err) {
     if (err instanceof RunQuotaOvershootError) return quotaError();
     // Same 413 contract as /results' rowCapExceeded — the reporter drops the
@@ -77,10 +79,21 @@ export const POST = defineHandler.withValidator({
     throw err;
   }
 
+  if (terminalDuplicate) {
+    return c.json(
+      {
+        error:
+          "This idempotency key already belongs to a completed execution. Use a unique key for each CI run attempt.",
+        runId,
+      },
+      409,
+    );
+  }
+
   if (quota.status === "softWarn") {
     c.header(
       "X-Wrightful-Quota-Warning",
-      `runs ${quota.used + 1}/${quota.limit}`,
+      `runs ${quota.used + (duplicate ? 0 : 1)}/${quota.limit}`,
     );
   }
 

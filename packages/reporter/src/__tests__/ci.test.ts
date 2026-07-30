@@ -21,7 +21,8 @@ vi.mock("node:child_process", () => ({
 }));
 
 // Re-import after the mock so the module picks it up.
-const { detectCI, generateIdempotencyKey } = await import("../ci.js");
+const { detectCI, generateIdempotencyKey, resolveCIExecutionPolicy } =
+  await import("../ci.js");
 
 // Env vars that any of the branches care about. Cleared before each test
 // and restored after so the detection logic sees a deterministic state.
@@ -31,6 +32,7 @@ const CI_KEYS = [
   "GITLAB_CI",
   "CIRCLECI",
   "GITHUB_RUN_ID",
+  "GITHUB_RUN_ATTEMPT",
   "GITHUB_JOB",
   "GITHUB_REF",
   "GITHUB_REF_NAME",
@@ -41,6 +43,8 @@ const CI_KEYS = [
   "GITHUB_TRIGGERING_ACTOR",
   "GITHUB_EVENT_PATH",
   "CI_PIPELINE_ID",
+  "CI_JOB_GROUP_NAME",
+  "CI_JOB_ID",
   "CI_JOB_NAME",
   "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME",
   "CI_COMMIT_BRANCH",
@@ -59,6 +63,7 @@ const CI_KEYS = [
   "CIRCLE_PROJECT_REPONAME",
   "CIRCLE_USERNAME",
   "WRIGHTFUL_IDEMPOTENCY_KEY",
+  "WRIGHTFUL_MATRIX_KEY",
 ];
 
 describe("detectCI", () => {
@@ -87,6 +92,7 @@ describe("detectCI", () => {
   it("detects GitHub Actions with full env", () => {
     process.env.GITHUB_ACTIONS = "true";
     process.env.GITHUB_RUN_ID = "42";
+    process.env.GITHUB_RUN_ATTEMPT = "3";
     process.env.GITHUB_JOB = "e2e";
     process.env.GITHUB_HEAD_REF = "feat/x";
     process.env.GITHUB_SHA = "abc123";
@@ -98,6 +104,7 @@ describe("detectCI", () => {
       ciProvider: "github-actions",
       ciBuildId: "42",
       ciJobName: "e2e",
+      ciRunAttempt: "3",
       branch: "feat/x",
       commitSha: "abc123",
       commitMessage: "stubbed commit message",
@@ -128,6 +135,7 @@ describe("detectCI", () => {
       ciProvider: "github-actions",
       ciBuildId: null,
       ciJobName: null,
+      ciRunAttempt: null,
       branch: null,
       commitSha: null,
       commitMessage: "stubbed commit message",
@@ -441,6 +449,7 @@ describe("detectCI", () => {
       ciProvider: "gitlab-ci",
       ciBuildId: "p1",
       ciJobName: null,
+      ciRunAttempt: null,
       branch: "feat/mr",
       commitSha: "deadbeef",
       commitMessage: "inline message",
@@ -454,6 +463,30 @@ describe("detectCI", () => {
     process.env.GITLAB_CI = "true";
     process.env.CI_JOB_NAME = "playwright 1/4";
     expect(detectCI()?.ciJobName).toBe("playwright 1/4");
+  });
+
+  it("uses the shared GitLab job group for parallel native shards", () => {
+    process.env.GITLAB_CI = "true";
+    process.env.CI_PIPELINE_ID = "pipeline-42";
+    process.env.CI_JOB_NAME = "playwright 1/4";
+    process.env.CI_JOB_GROUP_NAME = "playwright";
+    const first = detectCI();
+    expect(first?.ciJobName).toBe("playwright");
+
+    process.env.CI_JOB_NAME = "playwright 4/4";
+    const last = detectCI();
+    expect(last?.ciJobName).toBe("playwright");
+    expect(
+      generateIdempotencyKey(last?.ciBuildId, {
+        jobName: last?.ciJobName,
+        projectNames: ["chromium"],
+      }),
+    ).toBe(
+      generateIdempotencyKey(first?.ciBuildId, {
+        jobName: first?.ciJobName,
+        projectNames: ["chromium"],
+      }),
+    );
   });
 
   it("returns null prNumber for a non-numeric CI_MERGE_REQUEST_IID (no NaN on the wire)", () => {
@@ -507,6 +540,7 @@ describe("detectCI", () => {
       ciProvider: "unknown",
       ciBuildId: null,
       ciJobName: null,
+      ciRunAttempt: null,
       branch: null,
       commitSha: null,
       commitMessage: "stubbed commit message",
@@ -520,6 +554,80 @@ describe("detectCI", () => {
     process.env.CI = "true";
     process.env.GITHUB_ACTIONS = "true";
     expect(detectCI()?.ciProvider).toBe("github-actions");
+  });
+});
+
+describe("resolveCIExecutionPolicy", () => {
+  const keys = [
+    "GITHUB_ACTIONS",
+    "GITHUB_RUN_ATTEMPT",
+    "GITLAB_CI",
+    "CI_JOB_ID",
+  ] as const;
+  let originalEnv: Record<(typeof keys)[number], string | undefined>;
+
+  beforeEach(() => {
+    originalEnv = {
+      GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+      GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
+      GITLAB_CI: process.env.GITLAB_CI,
+      CI_JOB_ID: process.env.CI_JOB_ID,
+    };
+    for (const key of keys) delete process.env[key];
+  });
+
+  afterEach(() => {
+    for (const key of keys) {
+      const value = originalEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("blocks an ambiguous GitHub native-shard rerun", () => {
+    process.env.GITHUB_ACTIONS = "true";
+    process.env.GITHUB_RUN_ATTEMPT = "2";
+    expect(
+      resolveCIExecutionPolicy(detectCI(), {
+        nativeSharded: true,
+        hasExplicitIdempotencyKey: false,
+      }),
+    ).toMatchObject({ status: "blocked" });
+  });
+
+  it("allows a GitHub native-shard rerun with an explicit shared key", () => {
+    process.env.GITHUB_ACTIONS = "true";
+    process.env.GITHUB_RUN_ATTEMPT = "2";
+    expect(
+      resolveCIExecutionPolicy(detectCI(), {
+        nativeSharded: true,
+        hasExplicitIdempotencyKey: true,
+      }),
+    ).toEqual({ status: "ready", runAttempt: null, warning: null });
+  });
+
+  it("uses the GitLab job id to distinguish non-sharded retries", () => {
+    process.env.GITLAB_CI = "true";
+    process.env.CI_JOB_ID = "job-99";
+    expect(
+      resolveCIExecutionPolicy(detectCI(), {
+        nativeSharded: false,
+        hasExplicitIdempotencyKey: false,
+      }),
+    ).toEqual({ status: "ready", runAttempt: "job-99", warning: null });
+  });
+
+  it("keeps GitLab native shards together and exposes the retry limitation", () => {
+    process.env.GITLAB_CI = "true";
+    process.env.CI_JOB_ID = "one-shard-only";
+    const policy = resolveCIExecutionPolicy(detectCI(), {
+      nativeSharded: true,
+      hasExplicitIdempotencyKey: false,
+    });
+    expect(policy).toMatchObject({ status: "ready", runAttempt: null });
+    expect(policy.status === "ready" && policy.warning).toContain(
+      "Retry the full pipeline",
+    );
   });
 });
 
@@ -547,16 +655,43 @@ describe("generateIdempotencyKey", () => {
     expect(generateIdempotencyKey("42", { jobName: "e2e" })).toBe("42-e2e");
   });
 
-  it("carries no discriminator beyond build id + job name (shards of one suite must share the key)", () => {
-    // Playwright --shard is deliberately not part of the key: the dashboard
-    // merges shards sharing one idempotencyKey into a single run by design.
-    expect(generateIdempotencyKey("42", { jobName: "e2e" })).toBe("42-e2e");
-    expect(generateIdempotencyKey("42")).toBe("42");
+  it("distinguishes provider reruns without splitting native shards", () => {
+    expect(
+      generateIdempotencyKey("42", {
+        jobName: "e2e",
+        runAttempt: "2",
+      }),
+    ).toBe("42-e2e-attempt-2");
   });
 
-  it("is deterministic for the same build/job (re-runs recover the run)", () => {
-    const make = () => generateIdempotencyKey("42", { jobName: "e2e" });
+  it("is deterministic within the same build/job attempt", () => {
+    const make = () =>
+      generateIdempotencyKey("42", { jobName: "e2e", runAttempt: "2" });
     expect(make()).toBe(make());
+  });
+
+  it("separates non-sharded Playwright project matrices", () => {
+    const chromium = generateIdempotencyKey("42", {
+      jobName: "e2e",
+      projectNames: ["chromium"],
+    });
+    const firefox = generateIdempotencyKey("42", {
+      jobName: "e2e",
+      projectNames: ["firefox"],
+    });
+    expect(chromium).not.toBe(firefox);
+  });
+
+  it("accepts an explicit discriminator for non-Playwright matrix axes", () => {
+    const linux = generateIdempotencyKey("42", {
+      jobName: "e2e",
+      matrixKey: "linux-node-24",
+    });
+    const mac = generateIdempotencyKey("42", {
+      jobName: "e2e",
+      matrixKey: "mac-node-24",
+    });
+    expect(linux).not.toBe(mac);
   });
 
   it("uses an explicit WRIGHTFUL_IDEMPOTENCY_KEY verbatim, ignoring discriminators", () => {
@@ -571,6 +706,13 @@ describe("generateIdempotencyKey", () => {
   it("caps the derived key at the dashboard's 1024-char schema limit", () => {
     const key = generateIdempotencyKey("b".repeat(2000), { jobName: "j" });
     expect(key.length).toBeLessThanOrEqual(1024);
+  });
+
+  it("preserves discriminator uniqueness when a long build id must be capped", () => {
+    const build = "b".repeat(2000);
+    expect(generateIdempotencyKey(build, { matrixKey: "linux" })).not.toBe(
+      generateIdempotencyKey(build, { matrixKey: "mac" }),
+    );
   });
 
   it("falls back to a v4 UUID when ciBuildId is null", () => {

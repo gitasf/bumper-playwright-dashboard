@@ -1,8 +1,19 @@
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SourceTab } from "@/trace-viewer/components/source-tab";
+import {
+  boundSourcePreview,
+  SOURCE_PREVIEW_LIMITS,
+  SourceTab,
+} from "@/trace-viewer/components/source-tab";
 import {
   FIXTURE_TRACE_URL,
   makeAction,
@@ -61,6 +72,14 @@ function seededProps(): ReturnType<typeof makeTabProps> {
   model.sources.get(HELPERS_FILE)!.content = HELPERS_CONTENT;
   const selectedAction = model.actions.find((a) => a.callId === "call@2");
   return makeTabProps({ model, selectedAction });
+}
+
+function propsWithSpecContent(
+  content: string,
+): ReturnType<typeof makeTabProps> {
+  const props = seededProps();
+  props.model.sources.get(SPEC_FILE)!.content = content;
+  return props;
 }
 
 describe("SourceTab", () => {
@@ -181,5 +200,89 @@ describe("SourceTab", () => {
     );
     // The fetch result is cached back onto the shared model.
     expect(model.sources.get(SPEC_FILE)!.content).toBe(SPEC_CONTENT);
+  });
+
+  it("rejects an oversized source blob before decoding it as text", async () => {
+    const text = vi.fn(() => Promise.resolve("must not be decoded"));
+    const blob = {
+      size: 1_000_001,
+      text,
+    } as unknown as Blob;
+    const bridge = makeBridge();
+    bridge.fetchBlob = vi.fn(() => Promise.resolve(blob));
+    const model = makeModel();
+    const selectedAction = model.actions.find((a) => a.callId === "call@1");
+
+    render(<SourceTab {...makeTabProps({ bridge, model, selectedAction })} />);
+
+    expect(
+      await screen.findByText("Source file is too large to preview."),
+    ).toBeTruthy();
+    expect(bridge.fetchBlob).toHaveBeenCalledOnce();
+    expect(text).not.toHaveBeenCalled();
+  });
+
+  it("caps rendered source characters below the fetch limit", () => {
+    const content = "x".repeat(SOURCE_PREVIEW_LIMITS.renderChars + 1);
+    const { container } = render(
+      <SourceTab {...propsWithSpecContent(content)} />,
+    );
+
+    const code = container.querySelector(
+      '[data-line-number="1"] + span',
+    ) as HTMLElement;
+    expect(code.textContent).toHaveLength(SOURCE_PREVIEW_LIMITS.renderChars);
+    expect(screen.getByText("… source preview truncated")).toBeTruthy();
+  });
+
+  it("highlights only content within the syntax-highlighting cap", () => {
+    const snippet = 'const value = "checkout";';
+    const withinCap = snippet.padEnd(SOURCE_PREVIEW_LIMITS.highlightChars, " ");
+    const within = render(<SourceTab {...propsWithSpecContent(withinCap)} />);
+
+    expect(within.container.querySelector(".tok-keyword")?.textContent).toBe(
+      "const",
+    );
+    within.unmount();
+
+    const beyondCap = snippet.padEnd(
+      SOURCE_PREVIEW_LIMITS.highlightChars + 1,
+      " ",
+    );
+    const beyond = render(<SourceTab {...propsWithSpecContent(beyondCap)} />);
+    expect(beyond.container.querySelector('[class*="tok-"]')).toBeNull();
+    expect(
+      beyond.container.querySelector('[data-line-number="1"] + span')
+        ?.textContent,
+    ).toHaveLength(SOURCE_PREVIEW_LIMITS.highlightChars + 1);
+  });
+});
+
+/**
+ * The line cap is asserted against the pure bounding helper rather than a
+ * render: mounting `renderLines + 1` lines costs ~20k happy-dom nodes, which
+ * ran past the 5s test timeout under coverage in CI. The character-cap test
+ * above covers the same helper's wiring into the rendered `<pre>` — bounded
+ * text plus the truncation notice — at one line's worth of DOM.
+ */
+describe("boundSourcePreview", () => {
+  it("caps lines at renderLines and reports the truncation", () => {
+    const content = Array.from(
+      { length: SOURCE_PREVIEW_LIMITS.renderLines + 1 },
+      (_, index) => `line-${index + 1}`,
+    ).join("\n");
+
+    const { lines, truncated } = boundSourcePreview(content);
+
+    expect(lines).toHaveLength(SOURCE_PREVIEW_LIMITS.renderLines);
+    expect(lines.at(-1)).toBe(`line-${SOURCE_PREVIEW_LIMITS.renderLines}`);
+    expect(truncated).toBe(true);
+  });
+
+  it("leaves content within both caps untouched", () => {
+    const { lines, truncated } = boundSourcePreview(SPEC_CONTENT);
+
+    expect(lines).toEqual(SPEC_CONTENT.split("\n"));
+    expect(truncated).toBe(false);
   });
 });

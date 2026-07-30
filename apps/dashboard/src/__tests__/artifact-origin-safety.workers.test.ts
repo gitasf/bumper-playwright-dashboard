@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { ArtifactRead } from "@/lib/artifacts/store";
+import type { ArtifactRead } from "@/lib/artifacts/read";
 import { serveArtifactBytes } from "@/lib/artifacts/serve";
 import type { R2DirectConfig } from "@/lib/config";
 import { SAFE_CONTENT_TYPES, safeContentType } from "@/lib/content-types";
@@ -59,9 +59,11 @@ const FAKE_R2_CFG: R2DirectConfig = {
 };
 
 const fakeRead = (): ArtifactRead => ({
+  outcome: "body",
   body: new ReadableStream(),
   size: 10,
   httpEtag: '"e"',
+  lastModified: new Date("2026-07-23T00:00:00.000Z"),
   httpMetadata: new Headers(),
   rangeRequested: false,
 });

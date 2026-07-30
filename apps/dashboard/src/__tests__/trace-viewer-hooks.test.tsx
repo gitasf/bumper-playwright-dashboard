@@ -487,7 +487,7 @@ describe("useTraceModel — mount + protocol", () => {
     unmount();
   });
 
-  it("times out into an error state after 30s with no bridge response", () => {
+  it("times out starting the bridge after 30s with no response", () => {
     vi.useFakeTimers();
     // try/finally so a failing expect can't leak fake timers into later tests.
     try {
@@ -500,7 +500,7 @@ describe("useTraceModel — mount + protocol", () => {
       expect(result.current.state).toEqual({
         status: "error",
         error:
-          "Timed out loading the trace. The trace viewer's service worker may be blocked in this browser.",
+          "Timed out starting the trace viewer. Its service worker may be blocked in this browser.",
       });
       unmount();
     } finally {
@@ -508,7 +508,48 @@ describe("useTraceModel — mount + protocol", () => {
     }
   });
 
-  it("defers the 30s deadline on progress (a silence watchdog, not a total-time one), but still fires on true silence", async () => {
+  it("starts the trace-load deadline only after the service-worker bridge is ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const { result, unmount } = renderHook(() => useTraceModel(TRACE_URL));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const iframe = document.querySelector("iframe") as HTMLIFrameElement;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_000);
+      });
+      act(() => {
+        postMessageFrom(iframe, {
+          source: "wrightful-trace-bridge",
+          method: "ready",
+          params: {},
+        });
+      });
+
+      // The 30s startup deadline has passed, but the bridge's readiness ack
+      // started a separate 60s trace-load budget.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(35_000);
+      });
+      expect(result.current.state.status).toBe("loading");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_000);
+      });
+      expect(result.current.state).toEqual({
+        status: "error",
+        error:
+          "Timed out loading the trace after the trace viewer became ready.",
+      });
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers the 60s load deadline on progress, but still fires on true silence", async () => {
     vi.useFakeTimers();
     // try/finally so a failing expect can't leak fake timers into later tests.
     try {
@@ -521,9 +562,17 @@ describe("useTraceModel — mount + protocol", () => {
       });
       const iframe = document.querySelector("iframe") as HTMLIFrameElement;
 
-      // 25s of silence — under the 30s deadline, still loading.
+      act(() => {
+        postMessageFrom(iframe, {
+          source: "wrightful-trace-bridge",
+          method: "ready",
+          params: {},
+        });
+      });
+
+      // 50s of silence — under the 60s load deadline, still loading.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(25_000);
+        await vi.advanceTimersByTimeAsync(50_000);
       });
       expect(result.current.state.status).toBe("loading");
 
@@ -536,24 +585,24 @@ describe("useTraceModel — mount + protocol", () => {
         });
       });
 
-      // Another 25s (50s since mount, but only 25s since the last message) —
+      // Another 50s (100s since ready, but only 50s since the last message) —
       // a total-time watchdog would've fired by now; a silence one hasn't.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(25_000);
+        await vi.advanceTimersByTimeAsync(50_000);
       });
       expect(result.current.state).toEqual({
         status: "loading",
         progress: { done: 1, total: 10 },
       });
 
-      // 30s of true silence past the last progress message — now it fires.
+      // 60s of true silence past the last progress message — now it fires.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(60_000);
       });
       expect(result.current.state).toEqual({
         status: "error",
         error:
-          "Timed out loading the trace. The trace viewer's service worker may be blocked in this browser.",
+          "Timed out loading the trace after the trace viewer became ready.",
       });
       unmount();
     } finally {

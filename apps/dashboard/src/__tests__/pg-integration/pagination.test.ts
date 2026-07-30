@@ -62,6 +62,7 @@ describe("run-group skeleton (grouped read)", () => {
   // NULLS-LAST-consistent NULL fallback group) — see run-groups-page.ts.
   const SHARD_NUM_RUN = "run-grp-shard-num";
   const SHARD_NULL_TIER_RUN = "run-grp-shard-nulltier";
+  const PROJECT_EMPTY_RUN = "run-grp-project-empty";
   const T0 = 1_700_100_000;
 
   type SeedRow = {
@@ -69,6 +70,7 @@ describe("run-group skeleton (grouped read)", () => {
     file: string;
     status: string;
     shardIndex?: number | null;
+    projectName?: string | null;
   };
 
   async function seed(runId: string, rows: SeedRow[]) {
@@ -81,7 +83,7 @@ describe("run-group skeleton (grouped read)", () => {
         testId: r.testId,
         title: `test ${r.testId}`,
         file: r.file,
-        projectName: null,
+        projectName: r.projectName ?? null,
         status: r.status,
         durationMs: 0,
         retryCount: 0,
@@ -140,6 +142,28 @@ describe("run-group skeleton (grouped read)", () => {
       { testId: "u2", file: "u.spec.ts", status: "failed", shardIndex: 2 },
       { testId: "u3", file: "u.spec.ts", status: "failed", shardIndex: null },
       { testId: "u4", file: "u.spec.ts", status: "passed", shardIndex: 3 },
+    ]);
+    // Empty-string project names are Playwright's default and sort before named
+    // projects. They must not be decoded as the NULL fallback cursor.
+    await seed(PROJECT_EMPTY_RUN, [
+      {
+        testId: "pe0",
+        file: "project.spec.ts",
+        status: "failed",
+        projectName: "",
+      },
+      {
+        testId: "pea",
+        file: "project.spec.ts",
+        status: "failed",
+        projectName: "alpha",
+      },
+      {
+        testId: "peb",
+        file: "project.spec.ts",
+        status: "failed",
+        projectName: "beta",
+      },
     ]);
     // One file with failed/flaky rows INTERLEAVED by insert time (createdAt), so
     // a pure (createdAt, id) page order would split failed rows across pages.
@@ -479,6 +503,31 @@ describe("run-group skeleton (grouped read)", () => {
     // reappear.
     expect(page.groups.map((g) => g.key)).toEqual(["3"]);
     expect(page.nextCursor).toBeNull();
+  });
+
+  it("keeps named project groups after an empty-string project cursor", async () => {
+    const page1 = await loadRunGroupSkeleton(scope, PROJECT_EMPTY_RUN, {
+      groupBy: "project",
+      status: null,
+      search: null,
+      cursor: null,
+      limit: 1,
+      skipOwnershipCheck: true,
+    });
+    if (!page1) throw new Error("expected page 1");
+    expect(page1.groups.map((g) => g.key)).toEqual([""]);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = await loadRunGroupSkeleton(scope, PROJECT_EMPTY_RUN, {
+      groupBy: "project",
+      status: null,
+      search: null,
+      cursor: page1.nextCursor,
+      limit: 10,
+      skipOwnershipCheck: true,
+    });
+    if (!page2) throw new Error("expected page 2");
+    expect(page2.groups.map((g) => g.key)).toEqual(["alpha", "beta"]);
   });
 
   it("groups by project into the null-key fallback when projectName is null", async () => {

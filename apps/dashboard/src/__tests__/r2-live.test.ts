@@ -2,7 +2,7 @@
 // Node fetch (undici) — NOT happy-dom, whose browser SOP/CORS would block these
 // server-side cross-origin requests to R2 before they're even sent.
 import { describe, expect, it } from "vite-plus/test";
-import { artifactContentDisposition } from "@/lib/artifacts/store";
+import { artifactContentDisposition } from "@/lib/artifacts/read";
 import { signGetUrl, signPutUrl } from "@/lib/artifacts/presign";
 import type { R2DirectConfig } from "@/lib/config";
 

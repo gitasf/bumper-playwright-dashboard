@@ -48,12 +48,58 @@ export const WIRE_INVISIBLE_STATUSES: ReadonlySet<string> = new Set([
   "interrupted",
 ]);
 
-/** Reverse lookup: raw status → its display bucket, derived from {@link STATUS_BUCKETS}. */
-const STATUS_TO_GROUP: ReadonlyMap<string, StatusGroupKey> = new Map(
-  Object.entries(STATUS_BUCKETS).flatMap(([bucket, statuses]) =>
-    statuses.map((status) => [status, bucket as StatusGroupKey] as const),
+/**
+ * The wire-visible subset of {@link STATUS_BUCKETS}: what ingest's per-test
+ * aggregate buckets over, i.e. the superset minus {@link WIRE_INVISIBLE_STATUSES}.
+ * Derived rather than hand-listed so it cannot drift from the UI's membership.
+ *
+ * Lives here beside `STATUS_BUCKETS` — not in the ingest pipeline — because it
+ * is pure derived data with no server dependencies, and because the whole point
+ * of this module is that the taxonomy has ONE home. Ingest's SQL recompute and
+ * the run-page aggregate reads both import it from here.
+ */
+export const STATUS_BUCKET_MEMBERS = {
+  passed: STATUS_BUCKETS.passed.filter((s) => !WIRE_INVISIBLE_STATUSES.has(s)),
+  failed: STATUS_BUCKETS.failed.filter((s) => !WIRE_INVISIBLE_STATUSES.has(s)),
+  flaky: STATUS_BUCKETS.flaky.filter((s) => !WIRE_INVISIBLE_STATUSES.has(s)),
+  skipped: STATUS_BUCKETS.skipped.filter(
+    (s) => !WIRE_INVISIBLE_STATUSES.has(s),
   ),
-);
+} satisfies Record<StatusGroupKey, readonly string[]>;
+
+/**
+ * Invert a bucket→statuses table into a status→bucket lookup. Shared by both
+ * maps below so the inversion (and the one cast `Object.entries` forces) exists
+ * in exactly one place.
+ */
+function reverseIndex(
+  buckets: Record<StatusGroupKey, readonly string[]>,
+): ReadonlyMap<string, StatusGroupKey> {
+  return new Map(
+    Object.entries(buckets).flatMap(([bucket, statuses]) =>
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Object.entries erases literal key types
+      statuses.map((status) => [status, bucket as StatusGroupKey] as const),
+    ),
+  );
+}
+
+const STATUS_TO_BUCKET = reverseIndex(STATUS_BUCKET_MEMBERS);
+
+/**
+ * The bucket a WIRE status collapses into for ingest's per-test aggregate, or
+ * `null` for anything unbucketed (`queued`/`running`).
+ *
+ * Sibling of {@link statusGroupKey}, and the one-line difference between them is
+ * deliberately visible here rather than split across two modules: this one is
+ * built from the wire-visible subset, so `interrupted` returns `null`, while the
+ * UI's `statusGroupKey` maps it to `flaky`.
+ */
+export function statusBucket(status: string): StatusGroupKey | null {
+  return STATUS_TO_BUCKET.get(status) ?? null;
+}
+
+/** Reverse lookup: raw status → its display bucket, derived from {@link STATUS_BUCKETS}. */
+const STATUS_TO_GROUP = reverseIndex(STATUS_BUCKETS);
 
 /**
  * The display bucket a status collapses into for counts/filtering

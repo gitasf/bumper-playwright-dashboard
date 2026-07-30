@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildRunInsertValues } from "@/lib/ingest";
+import { buildRunInsertValues } from "@/lib/ingest/lifecycle";
 import { makeTenantScope } from "@/lib/scope";
 import type { OpenRunPayload } from "@/lib/schemas";
 

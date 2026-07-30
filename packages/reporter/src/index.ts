@@ -1,5 +1,4 @@
 import { realpath } from "node:fs/promises";
-import { relative as relativePath } from "node:path";
 import type {
   Reporter,
   FullConfig,
@@ -24,11 +23,17 @@ import {
 } from "./accumulator.js";
 import { ArtifactUploader } from "./artifact-uploader.js";
 import { Batcher } from "./batcher.js";
-import { detectCI, generateIdempotencyKey, type CIInfo } from "./ci.js";
+import {
+  detectCI,
+  generateIdempotencyKey,
+  resolveCIExecutionPolicy,
+  type CIInfo,
+} from "./ci.js";
 import { AuthError, StreamClient } from "./client.js";
 import { readCodeowners } from "./codeowners-file.js";
 import {
   postPrComment,
+  projectCommentScope,
   shouldPostPrComment,
   type RunSummary,
 } from "./pr-comment.js";
@@ -37,22 +42,12 @@ import {
   fetchQuarantine,
   type QuarantineMap,
 } from "./quarantine.js";
-import {
-  joinStdio,
-  MAX_MESSAGE,
-  MAX_PLANNED_TESTS,
-  MAX_RESULTS_PER_BATCH,
-  MAX_STACK,
-  MAX_TITLE,
-  truncate,
-  truncateNullable,
-} from "./limits.js";
-import { computeTestId } from "./test-id.js";
+import { MAX_PLANNED_TESTS, MAX_RESULTS_PER_BATCH } from "./limits.js";
+import { buildPayload, buildTestDescriptor } from "./test-payload.js";
 import type {
   ArtifactMode,
   ReporterOptions,
   ShardInfo,
-  TestAttemptPayload,
   TestResultPayload,
 } from "./types.js";
 
@@ -75,6 +70,31 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 600_000;
 // Slice of the budget reserved for the final `/complete` call so it still
 // fires even when uploads eat the rest.
 const COMPLETE_RESERVE_MS = 30_000;
+
+function cliProjectFilters(argv: readonly string[]): string[] {
+  const filters: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith("--project=")) {
+      filters.push(arg.slice("--project=".length));
+      continue;
+    }
+    if (arg !== "--project") continue;
+    while (i + 1 < argv.length && !argv[i + 1].startsWith("-")) {
+      filters.push(argv[++i]);
+    }
+  }
+  return filters;
+}
+
+function selectedProjectNames(config: FullConfig): string[] {
+  const cliFilters = cliProjectFilters(config.argv ?? []);
+  const names =
+    cliFilters.length > 0
+      ? cliFilters
+      : config.projects.map((project) => project.name);
+  return [...new Set(names)].sort();
+}
 
 function warn(message: string): void {
   // Reporter must never fail the suite. All user-facing messaging goes to
@@ -103,6 +123,7 @@ export { isTestDone, type PendingTest };
 // the reporter uses — with the same retry / Retry-After / timeout / version-
 // header behaviour — instead of hand-rolling a second, untested HTTP client.
 export { AuthError, StreamClient } from "./client.js";
+export { buildPayload, buildTestDescriptor } from "./test-payload.js";
 
 // Plain-data v3 payload builders. The reporter derives payloads from live
 // Playwright objects via `buildPayload` / `buildTestDescriptor`; the local
@@ -205,6 +226,7 @@ export default class WrightfulReporter implements Reporter {
   // `onBegin`, and the batcher only awaits it when it has a batch to flush.
   private openPromise: Promise<void> = Promise.resolve();
   private ci: CIInfo | null = null;
+  private projectNames: string[] = [];
   /**
    * Playwright shard coordinates (`config.shard`) for a sharded run, else null.
    * Captured at `onBegin`, sent on the open payload AND the final `/complete` so
@@ -264,6 +286,10 @@ export default class WrightfulReporter implements Reporter {
     this.playwrightVersion = config.version ?? "unknown";
     this.artifactMode = this.options.artifacts ?? DEFAULT_ARTIFACT_MODE;
     this.rootDir = config.rootDir ?? null;
+    // Read project identity from configuration/CLI rather than the tests in
+    // this shard. A shard or grep can contain no tests (or only one project's
+    // slice), but every shard still needs the complete selected project set.
+    this.projectNames = selectedProjectNames(config);
     // Playwright sets `config.shard` only under `--shard`; remap its
     // `{ current, total }` to the wire's `{ index, total }`. Null for a
     // non-sharded run, which keeps the open/complete payloads at their legacy
@@ -278,6 +304,18 @@ export default class WrightfulReporter implements Reporter {
       warn("WRIGHTFUL_URL or WRIGHTFUL_TOKEN not set — streaming disabled.");
       return;
     }
+
+    const ci = detectCI();
+    this.ci = ci;
+    const executionPolicy = resolveCIExecutionPolicy(ci, {
+      nativeSharded: this.shard !== null,
+      hasExplicitIdempotencyKey: Boolean(process.env.WRIGHTFUL_IDEMPOTENCY_KEY),
+    });
+    if (executionPolicy.status === "blocked") {
+      warn(`${executionPolicy.reason} Streaming disabled.`);
+      return;
+    }
+    if (executionPolicy.warning) warn(executionPolicy.warning);
 
     this.client = new StreamClient(baseUrl, token);
     this.uploader = new ArtifactUploader(
@@ -305,8 +343,6 @@ export default class WrightfulReporter implements Reporter {
       );
     }
 
-    const ci = detectCI();
-    this.ci = ci;
     // Synthetic-monitoring overrides. A scheduled monitor launches this suite
     // in a container with `WRIGHTFUL_RUN_ORIGIN=synthetic`, `WRIGHTFUL_MONITOR_ID`
     // = the monitor row's id, and `WRIGHTFUL_IDEMPOTENCY_KEY` = the pre-known
@@ -317,13 +353,16 @@ export default class WrightfulReporter implements Reporter {
     const runOrigin = resolveRunOrigin(process.env.WRIGHTFUL_RUN_ORIGIN);
     const monitorId = process.env.WRIGHTFUL_MONITOR_ID || null;
     const payload = {
-      // The job name discriminates distinct jobs (different suites, matrix
-      // legs) that share one workflow-level build id; without it they would
-      // silently merge into a single dashboard run. Playwright `--shard` is
-      // deliberately NOT discriminated: shards of one suite share the key so
-      // the dashboard merges them into a single run.
+      // Provider attempt prevents a workflow rerun from mutating its previous
+      // dashboard execution. The configured/CLI-selected project set keeps
+      // project matrix legs separate while remaining identical across native
+      // shards, including shards with no tests. WRIGHTFUL_MATRIX_KEY covers
+      // arbitrary matrix axes Playwright cannot see.
       idempotencyKey: generateIdempotencyKey(ci?.ciBuildId, {
         jobName: ci?.ciJobName ?? null,
+        runAttempt: executionPolicy.runAttempt,
+        projectNames: this.projectNames,
+        matrixKey: process.env.WRIGHTFUL_MATRIX_KEY ?? null,
       }),
       // Sent only for a sharded suite (spread away entirely otherwise, so a
       // non-sharded open is byte-for-byte unchanged). Tells the dashboard how
@@ -808,6 +847,14 @@ export default class WrightfulReporter implements Reporter {
     runStatus: "passed" | "failed" | "timedout" | "interrupted",
     durationMs: number,
   ): Promise<void> {
+    if (this.shard) {
+      if (this.options.postPrComment) {
+        warn(
+          "PR comment skipped for a native shard; enable the Wrightful GitHub App for aggregate sharded-run comments.",
+        );
+      }
+      return;
+    }
     const gate = shouldPostPrComment(
       this.options.postPrComment ?? false,
       this.ci,
@@ -821,7 +868,11 @@ export default class WrightfulReporter implements Reporter {
       }
       return;
     }
-    if (!this.baseUrl || !this.ci?.repo || !this.ci.prNumber) return;
+    const dashboardUrl = this.baseUrl;
+    const projectToken = this.token;
+    if (!dashboardUrl || !projectToken || !this.ci?.repo || !this.ci.prNumber) {
+      return;
+    }
 
     const total =
       this.counts.passed +
@@ -840,11 +891,29 @@ export default class WrightfulReporter implements Reporter {
       timedout: this.counts.timedout,
       total,
       runUrl: this.runUrl,
-      dashboardUrl: this.baseUrl,
+      dashboardUrl,
       repo: this.ci.repo,
       prNumber: this.ci.prNumber,
       environment: this.options.environment ?? null,
       commitSha: this.ci.commitSha,
+      commentScope: JSON.stringify({
+        dashboard: dashboardUrl,
+        runCollection: this.runUrl?.replace(
+          /\/runs\/[^/?#]+(?:[?#].*)?$/,
+          "/runs",
+        ),
+        projectCredential: this.runUrl
+          ? null
+          : projectCommentScope(projectToken, dashboardUrl),
+        workflow:
+          process.env.GITHUB_WORKFLOW_REF ??
+          process.env.GITHUB_WORKFLOW ??
+          null,
+        job: this.ci.ciJobName,
+        projects: this.projectNames,
+        matrix: process.env.WRIGHTFUL_MATRIX_KEY ?? null,
+        environment: this.options.environment ?? null,
+      }),
     };
     try {
       const result = await postPrComment(summary, gate.token);
@@ -878,145 +947,6 @@ export default class WrightfulReporter implements Reporter {
 
   printsToStdio(): boolean {
     return false;
-  }
-}
-
-/**
- * Extract the identifying fields for a test case (file, title, project,
- * derived testId). Used by both the open-run prefill (to send the full
- * planned list at onBegin) and `buildPayload` (when a test actually emits
- * a result) — so the same test lands with the same testId, enabling the
- * server to upsert /results rows onto the prefilled queued row.
- */
-export function buildTestDescriptor(
-  test: TestCase,
-  rootDir: string | null,
-): {
-  testId: string;
-  title: string;
-  file: string;
-  projectName: string | null;
-} {
-  const projectName = test.parent.project()?.name ?? "";
-  const titlePath = test.titlePath().filter(Boolean);
-  const absoluteFile = test.location.file;
-  const file = rootDir ? relativePath(rootDir, absoluteFile) : absoluteFile;
-  // `?? 0` guards test shims that omit repeatEachIndex (typed non-optional).
-  const testId = computeTestId(
-    file,
-    titlePath,
-    projectName,
-    test.repeatEachIndex ?? 0,
-  );
-  return {
-    testId,
-    // Truncate the DISPLAY title to the dashboard's hard cap so a long
-    // data-driven title can't 400 the open/`/results` call (which would disable
-    // streaming for the whole run). The `testId` above is hashed from the raw
-    // `titlePath`, not this string, so truncating display text can't change
-    // identity — the prefilled queued row and the streamed result still match.
-    title: truncate(titlePath.join(" > "), MAX_TITLE),
-    file,
-    projectName: projectName || null,
-  };
-}
-
-/** Playwright uses "timedOut"; our wire format uses "timedout". */
-function normaliseAttemptStatus(
-  status: TestResult["status"],
-): TestAttemptPayload["status"] {
-  if (status === "timedOut") return "timedout";
-  if (status === "failed") return "failed";
-  if (status === "passed") return "passed";
-  // "interrupted" and anything unexpected → surface as skipped rather than
-  // invent a new enum value on the wire.
-  return "skipped";
-}
-
-export function buildPayload(
-  entry: PendingTest,
-  rootDir: string | null = null,
-  shardIndex: number | null = null,
-): TestResultPayload {
-  const { test, results } = entry;
-  const descriptor = buildTestDescriptor(test, rootDir);
-
-  const totalDuration = results.reduce((s, r) => s + r.duration, 0);
-  const lastResult = results[results.length - 1];
-  const failing = results.find(
-    (r) => r.status === "failed" || r.status === "timedOut",
-  );
-
-  const status = mapOutcome(test, lastResult);
-  const errorSource = status === "flaky" ? failing : lastResult;
-
-  // One entry per Playwright attempt, ordered by `retry` (0 = initial).
-  // Preserves each attempt's own error instead of collapsing to one, so
-  // the test detail page can stop inferring which attempt "carries" the
-  // failure.
-  const attempts: TestAttemptPayload[] = [...results]
-    .sort((a, b) => a.retry - b.retry)
-    .map((r) => ({
-      attempt: r.retry,
-      status: normaliseAttemptStatus(r.status),
-      durationMs: Math.round(r.duration),
-      // Clamp free-form text client-side so a huge assertion diff can't 413 the
-      // whole batch before the server (which also truncates) can parse it.
-      errorMessage: truncateNullable(r.errors?.[0]?.message, MAX_MESSAGE),
-      errorStack: truncateNullable(r.errors?.[0]?.stack, MAX_STACK),
-      // Playwright exposes this attempt's stdout/stderr as Array<string|Buffer>
-      // at onTestEnd; join + decode + truncate so `console.log` CI debugging
-      // reaches the dashboard/MCP. `null` when nothing was written.
-      stdout: joinStdio(r.stdout, MAX_MESSAGE),
-      stderr: joinStdio(r.stderr, MAX_MESSAGE),
-    }));
-
-  return {
-    clientKey: descriptor.testId,
-    testId: descriptor.testId,
-    title: descriptor.title,
-    file: descriptor.file,
-    projectName: descriptor.projectName,
-    status,
-    durationMs: Math.round(totalDuration),
-    retryCount: Math.max(0, results.length - 1),
-    errorMessage: truncateNullable(
-      errorSource?.errors?.[0]?.message,
-      MAX_MESSAGE,
-    ),
-    errorStack: truncateNullable(errorSource?.errors?.[0]?.stack, MAX_STACK),
-    workerIndex:
-      lastResult && lastResult.workerIndex >= 0 ? lastResult.workerIndex : 0,
-    shardIndex,
-    tags: test.tags ?? [],
-    annotations: test.annotations.map((a) => ({
-      type: a.type,
-      // Clamp like the error text (server truncates too, but oversized bodies 413).
-      description:
-        a.description == null
-          ? a.description
-          : truncate(a.description, MAX_MESSAGE),
-    })),
-    attempts,
-  };
-}
-
-function mapOutcome(
-  test: TestCase,
-  lastResult: TestResult | undefined,
-): "passed" | "failed" | "flaky" | "skipped" | "timedout" {
-  const outcome = test.outcome();
-  switch (outcome) {
-    case "expected":
-      return "passed";
-    case "flaky":
-      return "flaky";
-    case "skipped":
-      return "skipped";
-    case "unexpected":
-      return lastResult?.status === "timedOut" ? "timedout" : "failed";
-    default:
-      return "failed";
   }
 }
 

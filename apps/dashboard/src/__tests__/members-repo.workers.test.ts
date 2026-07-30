@@ -15,6 +15,13 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
  * right shape, and that the owner-row lock fires ahead of the write for
  * demote/remove/leave (skipped for promote-to-owner).
  *
+ * A third mechanism sits in front of both: `lockTeamForChildMutation`, the
+ * parent-before-child order shared with invites/groups/projects/monitors. These
+ * also pin that it fires FIRST, takes the weaker `key share` mode (so sibling
+ * child mutations still run concurrently while conflicting with teardown's
+ * `for update`), and that losing it short-circuits before any child row is
+ * locked or written.
+ *
  * The stub records operator calls as `{ __op, args }` and captures each
  * top-level `tx` call as an ordered `Call` (its `.where`, `.orderBy`,
  * `.for("update")`), so tests read the guard predicate back out and assert the
@@ -29,7 +36,16 @@ type Call = {
   where: unknown;
   orderBy?: unknown;
   forUpdate?: boolean;
+  /** The raw `.for(...)` mode, so tests can tell "key share" from "update". */
+  forMode?: unknown;
 };
+
+/**
+ * A satisfied `lockTeamForChildMutation` (`teams` row still present). Every
+ * transaction in this module now opens with it, so it consumes the first queue
+ * slot and occupies `calls[0]`; an empty set here means teardown won the race.
+ */
+const TEAM_LOCK_HELD = [{ id: "team_1" }];
 
 let capturedWhere: unknown = null;
 // Ordered top-level select/update/delete calls per invocation, so tests can
@@ -60,7 +76,10 @@ vi.mock("void/db", async () => {
   };
   node.for = (mode: unknown) => {
     const current = calls[calls.length - 1];
-    if (current) current.forUpdate = mode === "update";
+    if (current) {
+      current.forUpdate = mode === "update";
+      current.forMode = mode;
+    }
     return node;
   };
   node.returning = chain;
@@ -166,15 +185,15 @@ describe("notLastOwner (the shared race-safe guard predicate)", () => {
 
 describe("setMemberRole — last-owner-safe demotion", () => {
   it("carries the owner-count guard in the UPDATE WHERE when demoting (non-owner target role)", async () => {
-    // Lock select consumes the first slot, then update().returning() → one row.
-    resultQueue = [[], [{ id: "m_1" }]];
+    // Team lock, owner-row lock, then update().returning() → one row.
+    resultQueue = [TEAM_LOCK_HELD, [], [{ id: "m_1" }]];
     const result = await setMemberRole("team_1", "user_2", "viewer");
     expect(result).toEqual({ ok: true });
     expect(findOwnerCountGuard(capturedWhere)).toBe(true);
   });
 
   it("does NOT apply the guard when PROMOTING to owner (never reduces owner count)", async () => {
-    resultQueue = [[{ id: "m_1" }]];
+    resultQueue = [TEAM_LOCK_HELD, [{ id: "m_1" }]];
     const result = await setMemberRole("team_1", "user_2", "owner");
     expect(result).toEqual({ ok: true });
     // Promoting to owner can't strand the team, so no owner-count subquery.
@@ -182,16 +201,16 @@ describe("setMemberRole — last-owner-safe demotion", () => {
   });
 
   it("reports `lastOwner` when the guarded UPDATE matches 0 rows but the row still exists as owner", async () => {
-    // Lock select, then update().returning() → 0 rows (guard blocked); follow-up
-    // select → still present (the sole owner).
-    resultQueue = [[], [], [{ role: "owner" }]];
+    // Team lock, owner lock, update().returning() → 0 rows (guard blocked);
+    // follow-up select → still present (the sole owner).
+    resultQueue = [TEAM_LOCK_HELD, [], [], [{ role: "owner" }]];
     const result = await setMemberRole("team_1", "user_1", "member");
     expect(result).toEqual({ ok: false, reason: "lastOwner" });
   });
 
   it("reports `noop` when the row simply doesn't exist", async () => {
-    // Lock select, 0 rows updated, 0 rows on the existence check.
-    resultQueue = [[], [], []];
+    // Team lock, owner lock, 0 rows updated, 0 rows on the existence check.
+    resultQueue = [TEAM_LOCK_HELD, [], [], []];
     const result = await setMemberRole("team_1", "ghost", "member");
     expect(result).toEqual({ ok: false, reason: "noop" });
   });
@@ -199,70 +218,141 @@ describe("setMemberRole — last-owner-safe demotion", () => {
 
 describe("removeMemberGuarded — last-owner-safe removal", () => {
   it("carries the owner-count guard in the DELETE WHERE", async () => {
-    resultQueue = [[], [{ id: "m_1" }]];
+    resultQueue = [TEAM_LOCK_HELD, [], [{ id: "m_1" }]];
     const result = await removeMemberGuarded("team_1", "user_2");
     expect(result).toEqual({ ok: true });
-    expect(findOwnerCountGuard(capturedWhere)).toBe(true);
+    expect(findOwnerCountGuard(calls[2]?.where)).toBe(true);
+    // team lock → owner lock → guarded delete → group-link delete.
+    expect(calls.map((c) => c.kind)).toEqual([
+      "select",
+      "select",
+      "delete",
+      "delete",
+    ]);
   });
 
   it("reports `lastOwner` when removing the sole owner is blocked (0 rows, still present)", async () => {
-    resultQueue = [[], [], [{ role: "owner" }]];
+    resultQueue = [TEAM_LOCK_HELD, [], [], [{ role: "owner" }]];
     const result = await removeMemberGuarded("team_1", "user_1");
     expect(result).toEqual({ ok: false, reason: "lastOwner" });
   });
 
   it("reports `noop` when the member is already gone", async () => {
-    resultQueue = [[], [], []];
+    resultQueue = [TEAM_LOCK_HELD, [], [], []];
     const result = await removeMemberGuarded("team_1", "ghost");
     expect(result).toEqual({ ok: false, reason: "noop" });
   });
 });
 
 describe("lockOwnerRows — cross-row write-skew guard (owner-row SELECT ... FOR UPDATE)", () => {
-  it("locks the team's owner rows FIRST, before the guarded UPDATE, when demoting", async () => {
-    resultQueue = [[], [{ id: "m_1" }]];
+  it("locks the team's owner rows before the guarded UPDATE, when demoting", async () => {
+    resultQueue = [TEAM_LOCK_HELD, [], [{ id: "m_1" }]];
     await setMemberRole("team_1", "user_2", "viewer");
-    expect(calls.map((c) => c.kind)).toEqual(["select", "update"]);
-    expect(calls[0]?.forUpdate).toBe(true);
-    expect(isOwnerRowLockWhere(calls[0]?.where, "team_1")).toBe(true);
+    expect(calls.map((c) => c.kind)).toEqual(["select", "select", "update"]);
+    expect(calls[1]?.forUpdate).toBe(true);
+    expect(isOwnerRowLockWhere(calls[1]?.where, "team_1")).toBe(true);
   });
 
   it("is SKIPPED when promoting to owner", async () => {
-    resultQueue = [[{ id: "m_1" }]];
+    resultQueue = [TEAM_LOCK_HELD, [{ id: "m_1" }]];
     await setMemberRole("team_1", "user_2", "owner");
-    expect(calls.map((c) => c.kind)).toEqual(["update"]);
+    // Only the team lock remains ahead of the write.
+    expect(calls.map((c) => c.kind)).toEqual(["select", "update"]);
+    expect(calls[0]?.forMode).toBe("key share");
   });
 
-  it("locks the team's owner rows FIRST, before the guarded DELETE, for removeMemberGuarded", async () => {
-    resultQueue = [[], [{ id: "m_1" }]];
+  it("locks the team's owner rows before the guarded DELETE, for removeMemberGuarded", async () => {
+    resultQueue = [TEAM_LOCK_HELD, [], [{ id: "m_1" }]];
     await removeMemberGuarded("team_1", "user_2");
-    expect(calls.map((c) => c.kind)).toEqual(["select", "delete"]);
-    expect(calls[0]?.forUpdate).toBe(true);
-    expect(isOwnerRowLockWhere(calls[0]?.where, "team_1")).toBe(true);
+    expect(calls.map((c) => c.kind)).toEqual([
+      "select",
+      "select",
+      "delete",
+      "delete",
+    ]);
+    expect(calls[1]?.forUpdate).toBe(true);
+    expect(isOwnerRowLockWhere(calls[1]?.where, "team_1")).toBe(true);
   });
 
-  it("locks the team's owner rows FIRST, before the guarded DELETE, for leaveTeamGuarded", async () => {
-    resultQueue = [[], [{ id: "m_1" }]];
+  it("locks the team's owner rows before the guarded DELETE, for leaveTeamGuarded", async () => {
+    resultQueue = [TEAM_LOCK_HELD, [], [{ id: "m_1" }]];
     await leaveTeamGuarded("team_1", "user_2");
-    expect(calls.map((c) => c.kind)).toEqual(["select", "delete"]);
-    expect(calls[0]?.forUpdate).toBe(true);
-    expect(isOwnerRowLockWhere(calls[0]?.where, "team_1")).toBe(true);
+    expect(calls.map((c) => c.kind)).toEqual([
+      "select",
+      "select",
+      "delete",
+      "delete",
+    ]);
+    expect(calls[1]?.forUpdate).toBe(true);
+    expect(isOwnerRowLockWhere(calls[1]?.where, "team_1")).toBe(true);
+  });
+});
+
+describe("lockTeamForChildMutation — parent-before-child order", () => {
+  // These transactions write `memberGroupMembers` as well as `memberships`.
+  // Without the parent lock, one holding owner rows while waiting on group links
+  // can deadlock with a team teardown holding the cascaded links and waiting on
+  // the owner rows. Taking the `teams` key-share lock first makes the two
+  // conflict on the parent, before either holds a child row.
+  for (const [name, run] of [
+    ["setMemberRole", () => setMemberRole("team_1", "user_2", "viewer")],
+    ["removeMemberGuarded", () => removeMemberGuarded("team_1", "user_2")],
+    ["leaveTeamGuarded", () => leaveTeamGuarded("team_1", "user_2")],
+  ] as const) {
+    it(`${name} takes the teams key-share lock as its very first statement`, async () => {
+      resultQueue = [TEAM_LOCK_HELD, [], [{ id: "m_1" }]];
+      await run();
+      expect(calls[0]?.kind).toBe("select");
+      // `key share`, NOT `update`: sibling child mutations must still run
+      // concurrently; only teardown's `for update` conflicts.
+      expect(calls[0]?.forMode).toBe("key share");
+      expect(calls[0]?.forUpdate).toBe(false);
+      // The parent predicate is a bare `eq(teams.id, ...)`, not the owner-row
+      // `and(...)` shape — proving this is the parent, not a membership lock.
+      expect(isOwnerRowLockWhere(calls[0]?.where, "team_1")).toBe(false);
+    });
+  }
+
+  it("setMemberRole short-circuits to `noop` when teardown already removed the team", async () => {
+    resultQueue = [[]];
+    const result = await setMemberRole("team_1", "user_2", "viewer");
+    expect(result).toEqual({ ok: false, reason: "noop" });
+    // Nothing beyond the parent lock ran: no owner lock, no write.
+    expect(calls).toHaveLength(1);
+  });
+
+  it("removeMemberGuarded short-circuits to `noop` when teardown already removed the team", async () => {
+    resultQueue = [[]];
+    const result = await removeMemberGuarded("team_1", "user_2");
+    expect(result).toEqual({ ok: false, reason: "noop" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("leaveTeamGuarded short-circuits when teardown already removed the team", async () => {
+    resultQueue = [[]];
+    // Reported as `gone`, NOT `lastOwner`. The zero-row delete would produce
+    // the same shape, but the caller renders `lastOwner` as "you're the last
+    // owner — delete the team instead" — false, and an instruction to do
+    // something impossible for a team that no longer exists.
+    const result = await leaveTeamGuarded("team_1", "user_2");
+    expect(result).toEqual({ ok: false, reason: "gone" });
+    expect(calls).toHaveLength(1);
   });
 });
 
 describe("leaveTeamGuarded — last-owner-safe self-leave", () => {
   it("carries the owner-count guard in the DELETE WHERE and reports ok on a deleted row", async () => {
-    resultQueue = [[], [{ id: "m_1" }]];
+    resultQueue = [TEAM_LOCK_HELD, [], [{ id: "m_1" }]];
     const result = await leaveTeamGuarded("team_1", "user_2");
     expect(result).toEqual({ ok: true });
-    expect(findOwnerCountGuard(capturedWhere)).toBe(true);
+    expect(findOwnerCountGuard(calls[2]?.where)).toBe(true);
   });
 
   it("reports `lastOwner` on a 0-row delete WITHOUT a vanished-vs-blocked re-check (membership is proven live)", async () => {
-    // Lock select consumes the first slot, the delete's returning() the
-    // second; a THIRD queued set would be left untouched if a re-check fired
-    // — assert it isn't.
-    resultQueue = [[], [], [{ role: "owner" }]];
+    // Team lock and owner lock consume the first two slots, the delete's
+    // returning() the third; a FOURTH queued set would be left untouched if a
+    // re-check fired — assert it isn't.
+    resultQueue = [TEAM_LOCK_HELD, [], [], [{ role: "owner" }]];
     const result = await leaveTeamGuarded("team_1", "user_1");
     expect(result).toEqual({ ok: false, reason: "lastOwner" });
     expect(resultQueue.length).toBe(1); // the existence-check set was NOT consumed

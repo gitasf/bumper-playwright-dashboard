@@ -108,6 +108,16 @@ describe("TraceViewer shell", () => {
     expect(screen.getByText("Click checkout")).toBeDefined();
     expect(screen.queryByRole("progressbar")).toBeNull();
     expect(container.querySelector('[aria-busy="true"]')).toBeNull();
+    expect(
+      screen.getByRole("separator", {
+        name: "Resize action list and trace details",
+      }),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("separator", {
+        name: "Resize snapshot and action details",
+      }),
+    ).toBeDefined();
   });
 
   it("keeps the workbench rendered during a switch, with an indeterminate bar", () => {

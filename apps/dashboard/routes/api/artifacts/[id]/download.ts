@@ -116,5 +116,5 @@ function resolveAllowedOrigin(
 // HEAD requests fall through to the GET route in Hono. `readArtifact` branches
 // on the method to short-circuit a HEAD with a metadata-only `storage.head()`
 // (no R2 GET); the range/304/header math then lives in the pure
-// `buildArtifactResponse` (see `@/lib/artifacts`).
+// `buildArtifactResponse` (see `@/lib/artifacts/read`).
 export const GET = defineHandler(handle);

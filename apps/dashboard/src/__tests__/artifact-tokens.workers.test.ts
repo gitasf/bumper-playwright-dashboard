@@ -163,7 +163,7 @@ describe("artifact download URL builders", () => {
 });
 
 /**
- * Cross-package contract canary. `packages/e2e/src/e2e.test.ts` forges artifact
+ * Cross-package contract canary. `packages/e2e/src/e2e-context.ts` forges artifact
  * download tokens by hand (Node `createHmac` + base64url over a
  * `{ r2Key, contentType, exp }` body) rather than scraping them from rendered
  * HTML — there is no compile-time link to the canonical signer. This canary
@@ -187,7 +187,7 @@ describe("e2e token forging contract", () => {
       .replace(/=+$/, "");
   }
 
-  // Byte-for-byte the algorithm in packages/e2e/src/e2e.test.ts#signArtifactToken.
+  // Byte-for-byte the algorithm in packages/e2e/src/e2e-context.ts#signArtifactToken.
   function forgeLikeE2e(
     r2Key: string,
     contentType: string,

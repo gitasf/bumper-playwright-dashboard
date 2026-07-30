@@ -136,7 +136,7 @@ describe("numAggExpr — numeric → double precision coercion", () => {
  * inner expression may carry bound params, e.g. uptime-analytics's window sums)
  * in the cast via the `sql` tagged template — NOT `sql.raw` — so the inner
  * `${…}` params survive the wrap instead of being inlined as text. Adopted at
- * `httpUptimeWindows` for its `sum(case when "createdAt" >= ${dN} …)` counts.
+ * `monitorUptimeWindows` for its `sum(case when "createdAt" >= ${dN} …)` counts.
  *
  * Under the void/db stub a tagged `sql\`cast(${inner} as integer)\`` records the
  * static cast literal in `strings` and the inner fragment in `args` — so we read

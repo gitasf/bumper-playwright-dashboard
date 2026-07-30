@@ -5,6 +5,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vite-plus/test";
 import { cleanup, render, screen } from "@testing-library/react";
 import { CallTab } from "@/trace-viewer/components/call-tab";
@@ -61,5 +62,44 @@ describe("CallTab", () => {
     expect(
       screen.getByText("Select an action to see its call details."),
     ).toBeTruthy();
+  });
+
+  it("caps the number of parameter rows mounted in the DOM", () => {
+    const model = makeModel();
+    const selectedAction = model.actions.find((a) => a.callId === "call@2")!;
+    selectedAction.params = Object.fromEntries(
+      Array.from({ length: 150 }, (_, index) => [`param-${index}`, index]),
+    );
+
+    render(<CallTab {...makeTabProps({ model, selectedAction })} />);
+
+    expect(screen.getByText("param-99")).toBeTruthy();
+    expect(screen.queryByText("param-100")).toBeNull();
+    expect(screen.getByText("Additional parameters omitted.")).toBeTruthy();
+  });
+
+  it("does not materialize every large-result key before bounded formatting", () => {
+    const model = makeModel();
+    const selectedAction = model.actions.find((a) => a.callId === "call@2")!;
+    const largeResult = Object.fromEntries(
+      Array.from({ length: 5_000 }, (_, index) => [`key-${index}`, index]),
+    );
+    selectedAction.result = largeResult;
+    const objectKeys = Object.keys;
+    const keysSpy = vi.spyOn(Object, "keys").mockImplementation((value) => {
+      if (value === largeResult) {
+        throw new Error(
+          "large return object was materialized with Object.keys",
+        );
+      }
+      return objectKeys(value);
+    });
+
+    try {
+      render(<CallTab {...makeTabProps({ model, selectedAction })} />);
+      expect(screen.getByText(/truncated/)).toBeTruthy();
+    } finally {
+      keysSpy.mockRestore();
+    }
   });
 });

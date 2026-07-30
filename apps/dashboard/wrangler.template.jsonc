@@ -12,15 +12,16 @@
   // OSS template holds NO account-specific values (see the marker below).
   //
   // Two deploy models:
-  //   - `void deploy` (managed platform): Void provisions D1/R2/Hyperdrive and
-  //     merges these blocks. Leave the CF_* env vars unset — the generated file
-  //     is then the generic fallback, identical to before.
+  //   - `void deploy` (managed platform): Void provisions Postgres/Hyperdrive,
+  //     R2, and the runtime resources, then merges these blocks. Leave the CF_*
+  //     env vars unset — the generated file is then the generic fallback,
+  //     identical to before.
   //   - `wrangler deploy` (your own Cloudflare account): set CF_* env vars
   //     (see .env.example / SELF-HOSTING.md) and gen-wrangler injects the real
   //     bindings below.
   //
-  // Do NOT add `main`, `migrations`, `assets`, or Durable Object bindings here —
-  // Void sets those programmatically and they collide with its runtime.
+  // Do NOT add `main`, `migrations`, `assets`, or runtime-managed bindings here
+  // — Void sets those programmatically and they collide with its runtime.
   "name": "__CF_WORKER_NAME__",
   "compatibility_date": "2026-05-22",
   "compatibility_flags": ["nodejs_compat"],
@@ -29,9 +30,9 @@
   // middleware, no CPU billed). Only explicit `public, …` responses are stored
   // — /assets/* chunks (immutable, via void.json routing.headers + Void's
   // asset entry) and worker-proxied artifact downloads (s-maxage-capped, see
-  // src/lib/artifacts.ts). Everything else is stamped `private, no-store` by
-  // middleware/00.cache.ts, which is the safety net that makes this flag safe
-  // to enable (Workers Cache heuristically caches responses with NO
+  // src/lib/artifacts/serve.ts). Everything else is stamped `private, no-store`
+  // by middleware/00.cache.ts, which is the safety net that makes this flag
+  // safe to enable (Workers Cache heuristically caches responses with NO
   // Cache-Control header, and session cookies do not bypass the cache).
   // Requires wrangler >= 4.101 (older versions reject the key).
   "cache": { "enabled": true },
@@ -95,7 +96,7 @@
     },
     {
       // Token-authenticated artifact download. Keyed by artifactId — per-file
-      // rather than per-caller, since trace.playwright.dev fetches many ranged
+      // rather than per-caller, since the trace viewer fetches many ranged
       // chunks of the same trace.
       "name": "ARTIFACT_RATE_LIMITER",
       "namespace_id": "1003",
@@ -105,10 +106,10 @@
       // Pre-auth IP backstop on the ingest routes, checked BEFORE the Bearer
       // key is validated (02.api-auth). Without it, failed-auth requests
       // returned 401 before the per-key limiter ever ran — an unthrottled
-      // D1-lookup amplification surface. NOTE: authenticated traffic consumes
-      // this bucket too, so it caps the COMBINED ingest rate of every key
-      // sharing one egress IP. 10× the per-key budget keeps a NAT'd fleet of
-      // up to ~10 concurrently-saturating keys below it; the per-key
+      // database-lookup amplification surface. NOTE: authenticated traffic
+      // consumes this bucket too, so it caps the COMBINED ingest rate of every
+      // key sharing one egress IP. 10× the per-key budget keeps a NAT'd fleet
+      // of up to ~10 concurrently-saturating keys below it; the per-key
       // API_RATE_LIMITER stays the real budget. Self-hosters with bigger
       // single-IP fleets should raise this.
       "name": "INGEST_IP_RATE_LIMITER",
@@ -122,7 +123,7 @@
   //   • "hyperdrive"  → { binding: HYPERDRIVE, id: $CF_HYPERDRIVE_ID }  (the Postgres DB)
   //   • "r2_buckets"  → { binding: STORAGE, bucket_name: $CF_R2_BUCKET }
   // Unset (e.g. `void deploy`) → the marker is removed and this file is the
-  // generic fallback. Queues / Durable Objects / the sandbox container are
-  // inferred and managed by Void — don't declare them here.
+  // generic fallback. Queues and the sandbox container are inferred and
+  // managed by Void — don't declare them here.
   // __CF_OWN_ACCOUNT_BINDINGS__
 }

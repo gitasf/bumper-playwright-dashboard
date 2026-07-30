@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
-import { buildChangedTests } from "@/lib/ingest";
+import { buildChangedTests } from "@/lib/ingest/write-and-publish";
 import type { TestResultInput } from "@/lib/schemas";
 
 function input(overrides: Partial<TestResultInput>): TestResultInput {

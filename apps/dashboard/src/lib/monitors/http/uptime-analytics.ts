@@ -10,7 +10,7 @@ import type { TenantScope } from "@/lib/scope";
  *   - {@link httpResponseTimeBuckets}: per-hour p50/p95 response time over a
  *     window, for the response-time trend chart. Reuses `percentilePick` (the
  *     discrete-percentile idiom) over an hourly partition.
- *   - {@link httpUptimeWindows}: pass+degraded ("up") vs countable counts over
+ *   - {@link monitorUptimeWindows}: pass+degraded ("up") vs countable counts over
  *     24h / 7d / 30d, for real time-based uptime % (vs the count-based last-N
  *     window the `ExecStrip` uses).
  *
@@ -33,8 +33,8 @@ export interface ResponseTimeBucketRow {
 
 /**
  * Per-hour p50/p95 response time for a monitor over `[windowStartSec, now]`.
- * The hourly divisor is inlined as a raw SQL literal (NOT a bound param) for the
- * same D1 text-affinity reason `bucketExpr` inlines its day/week divisors.
+ * The hourly divisor is an internal fixed literal, matching `bucketExpr`'s
+ * day/week bucket construction.
  */
 export function httpResponseTimeBuckets(opts: {
   scope: TenantScope;
@@ -99,7 +99,7 @@ interface RawUptimeRow {
  * the 24h / 7d / 30d windows, in one pass over the 30-day slice. The page turns
  * each into a % (`up / countable`), or null when nothing is countable yet.
  */
-export async function httpUptimeWindows(opts: {
+export async function monitorUptimeWindows(opts: {
   scope: TenantScope;
   monitorId: string;
   nowSec: number;

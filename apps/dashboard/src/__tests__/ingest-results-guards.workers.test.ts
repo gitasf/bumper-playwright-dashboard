@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { TestResultInput } from "@/lib/schemas";
 import {
-  dedupeResultsByTestId,
   RUN_WRITE_GRACE_SECONDS,
   runClosedForWrites,
-} from "@/lib/ingest";
+} from "@/lib/ingest/lifecycle";
+import { dedupeResultsByTestId } from "@/lib/ingest/results";
 
 function result(over: Partial<TestResultInput> = {}): TestResultInput {
   return {

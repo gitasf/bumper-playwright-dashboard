@@ -98,6 +98,14 @@ Own-account deployments require the explicit remote migration command; see
 - Use `runBatch` for atomic multi-statement writes and `runRows` for raw reads.
   Preserve the Postgres numeric coercion conventions in `src/lib/db/`;
   node-postgres and pglite return some aggregate types differently.
+- Any transaction that mutates a team-owned child (memberships, invites, member
+  groups, projects, monitors, artifacts) must open with
+  `lockTeamForChildMutation` from `src/lib/team-lock.ts`, before locking or
+  writing any child row. That parent-first order is what keeps concurrent child
+  writers off team teardown's cascade lock cycle; teardown takes the conflicting
+  `lockTeamForDeletion`. A lost parent lock means teardown won, so map it to the
+  caller's existing "already gone" outcome rather than raising. Coverage lives in
+  `src/__tests__/pg-integration/team-lock-order.test.ts`.
 
 ### Auth, ingest, artifacts, and realtime
 
@@ -109,7 +117,11 @@ Own-account deployments require the explicit remote migration command; see
 - `X-Wrightful-Version` applies to ingest only. `/api/v1/*` is a versionless
   Bearer query/export contract, and `/api/mcp` negotiates JSON-RPC/MCP itself.
 - Ingest routes are translation layers. The ownership → transaction → summary
-  → activity → broadcast pipeline belongs in `apps/dashboard/src/lib/ingest.ts`.
+  → activity → broadcast pipeline belongs in `apps/dashboard/src/lib/ingest/`
+  (`lifecycle` opens runs, `results` appends, `finalization` completes,
+  `stale-runs` sweeps, `write-and-publish` holds the shared statement builders
+  and the commit-then-publish tail). `src/lib/ingest.ts` is only the public
+  re-export surface — add new pipeline code to the owning module, not there.
 - Keep `packages/reporter/src/types.ts` synchronized with
   `apps/dashboard/src/lib/schemas.ts`. The reporter contract test parses built
   reporter payloads through the dashboard schemas.

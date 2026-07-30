@@ -164,15 +164,17 @@ export interface GuardedRoomConfig<
   server: ServerSchema;
   /**
    * Deployment origin allowlist source (`env.WRIGHTFUL_PUBLIC_URL`), resolved
-   * per connect inside the `onBeforeConnect` gate — NOT at wiring time, for the
-   * same reason as {@link GuardedRoomConfig.internalSecret}.
+   * per CONNECT inside `onBeforeConnect` — never at wiring time.
    *
-   * A room is wired at MODULE scope, and `void/env` only has Cloudflare
-   * bindings inside a request. Reading the key eagerly therefore throws while
-   * the worker's top-level scope runs, which is exactly what Cloudflare does to
-   * validate a `wrangler versions upload` — so an eager read fails the DEPLOY
-   * (`code: 10021`), not just the request, and no test lane catches it because
-   * the routes are never imported for real outside a deploy.
+   * A thunk for the same reason {@link GuardedRoomConfig.internalSecret} is one,
+   * and this one is load-bearing at DEPLOY time: `defineRoom(defineGuardedRoom(
+   * {...}))` is a module-scope call, so a bare `env.WRIGHTFUL_PUBLIC_URL` here
+   * is read while the worker's top level evaluates. Cloudflare evaluates that
+   * top level to validate an upload, with no request in flight — and
+   * `WRIGHTFUL_PUBLIC_URL` is a SECRET (`void secret put`, see env.ts), so it
+   * has no build-time value to fall back on and void's env proxy throws
+   * "Cloudflare env is unavailable". That surfaces as a 10021 validation error
+   * and fails the deploy outright, long before any test or local build notices.
    */
   publicUrl: () => string;
   /**

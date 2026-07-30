@@ -26,10 +26,9 @@ import {
 } from "@/lib/monitors/monitor-form-parse";
 import {
   httpResponseTimeBuckets,
-  httpUptimeWindows,
+  monitorUptimeWindows,
 } from "@/lib/monitors/http/uptime-analytics";
 import {
-  countMonitors,
   createMonitor,
   deleteMonitor,
   getMonitor,
@@ -37,13 +36,13 @@ import {
   setMonitorAlertsEnabled,
   setMonitorEnabled,
   updateMonitor,
+  MonitorLimitExceededError,
 } from "@/lib/monitors/monitors-repo";
 import { defineFlashSlots } from "@/lib/flash";
 import {
   requireOwnerTenantContext,
   requireTenantContext,
 } from "@/lib/tenant-context";
-import { uptimeFromExecutions } from "../monitors-ui.shared";
 
 export type Props = InferProps<typeof loader>;
 
@@ -166,14 +165,11 @@ export const loader = defineHandler(async (c) => {
         async executions() {
           return listExecutions(scope, monitorId, EXECUTIONS_LIMIT);
         },
-        // Both http AND tcp settle to the same pass/degraded/fail/error states,
-        // so the time-based uptime windows (`httpUptimeWindows`, keyed off
-        // `state`, not any http-only column) serve both. Browser monitors get
-        // none.
+        // Every monitor type settles to pass/degraded/fail/error. The window
+        // query keys only on state + time, so browser monitors use the same real
+        // 24h/7d/30d denominator as HTTP/TCP instead of "latest 50".
         async windows() {
-          return isHttp || isTcp
-            ? httpUptimeWindows({ scope, monitorId, nowSec })
-            : null;
+          return monitorUptimeWindows({ scope, monitorId, nowSec });
         },
         // Response-time TREND is http-only: it requires `statusCode is not
         // null`, and a tcp/ping check has no status code.
@@ -231,17 +227,11 @@ export const loader = defineHandler(async (c) => {
         // non-owners.
         members,
         groups: groups.map((g) => ({ id: g.id, name: g.name })),
-        // Real time-based uptime (24h/7d/30d) for http + tcp; null for browser
-        // (which uses the count-based `uptime` below). Each is a % or null when
-        // nothing countable yet.
+        // Real time-based uptime (24h/7d/30d) for every monitor type.
         uptimeWindows,
         // 24-slot hourly response-time trend (p50/p95) for http; null for
         // tcp/browser.
         responseTrend,
-        // Count-based uptime over the loaded window (null until there's
-        // something countable). The page colors it by the same >99 / >95
-        // thresholds as the design's meta row.
-        uptime: uptimeFromExecutions(executions),
       };
     }),
   };
@@ -262,8 +252,9 @@ function windowPct(w: { up: number; countable: number }): number | null {
 export const actions = {
   /**
    * Create a monitor (the `/monitors/new` form posts here). Enforces the
-   * per-project cap before insert (the unique `(projectId, name)` index is the
-   * race-proof guard); re-renders the create form via `?formError=` on a cap
+   * per-project cap inside the insert transaction (the unique
+   * `(projectId, name)` index separately guards duplicate names); re-renders
+   * the create form via `?formError=` on a cap
    * hit, invalid form, or duplicate name; redirects to the new monitor's detail.
    */
   createMonitor: defineHandler(async (c) => {
@@ -292,15 +283,6 @@ export const actions = {
         : type === "tcp"
           ? env.WRIGHTFUL_TCP_MONITOR_MAX_PER_PROJECT
           : env.WRIGHTFUL_MONITOR_MAX_PER_PROJECT;
-    const count = await countMonitors(scope, type);
-    if (count >= cap) {
-      const kind =
-        type === "http" ? "uptime" : type === "tcp" ? "TCP" : "browser";
-      return fail(
-        `This project has reached its limit of ${cap} ${kind} monitors. Delete one before creating another.`,
-      );
-    }
-
     const parsed = CreateMonitorSchema.safeParse(
       type === "http"
         ? {
@@ -336,9 +318,23 @@ export const actions = {
     const now = Math.floor(Date.now() / 1000);
     let monitorId: string;
     try {
-      const monitor = await createMonitor(scope, parsed.data, user.id, now);
+      const monitor = await createMonitor(scope, parsed.data, user.id, now, {
+        limit: cap,
+      });
+      // null = team teardown won between the tenant resolve and the insert, so
+      // this project is gone too. 404 like the detail actions do for a vanished
+      // monitor, rather than offering a retry that can never succeed.
+      if (!monitor) throw new Response("Not Found", { status: 404 });
       monitorId = monitor.id;
     } catch (err) {
+      if (err instanceof Response) throw err;
+      if (err instanceof MonitorLimitExceededError) {
+        const kind =
+          type === "http" ? "uptime" : type === "tcp" ? "TCP" : "browser";
+        return fail(
+          `This project has reached its limit of ${err.limit} ${kind} monitors. Delete one before creating another.`,
+        );
+      }
       return fail(
         mutationErrorMessage(err, {
           context: "create monitor failed",

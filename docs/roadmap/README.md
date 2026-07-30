@@ -2,20 +2,22 @@
 
 Wrightful's core loop — streaming ingest → analytics → flaky detection → artifacts → realtime — is ~90% done and solid. The remaining work is at the edges: turning insights into **actions** (gating, quarantine, ownership), **sharing/collaboration**, **monetization**, **enterprise admin**, and finishing several half-built or stubbed surfaces.
 
-The product is **pre-launch with zero users**, so schema/migrations are still malleable (`void db generate`, destructive ok) — the frozen-migration rule only snaps on at first deploy.
+Schema changes are forward-only: update `apps/dashboard/db/schema.ts`, generate
+a new committed migration, and never rewrite one that may already have been
+applied.
 
 Each feature below has its own grounded plan file (schema, routes/pages, reuse seams, verification). Features are grouped by priority and are largely independent — pick them up in any order, though a suggested sequence is noted per tier. **Email-sending + alerting are tracked separately and excluded here.**
 
 ## Recurring reuse seams (referenced across plans)
 
 - **Tenant scoping:** branded `TenantScope` / `AuthorizedProjectId` (`src/lib/scope.ts`), `tenantScopeForApiKey` (ingest), `requireTenantContext` / `resolveTenantApiScope` (session).
-- **Signed-token pattern:** `src/lib/artifact-tokens.ts` + `src/lib/token-crypto.ts` (HMAC via `crypto.subtle`, `timingSafeEqualBytes`, base64url).
-- **Ingest pipeline + atomic `db.batch`:** `src/lib/ingest.ts` (`openRun`/`appendRunResults`/`completeRun`, `aggregateDeltaStatement`).
+- **Signed-token pattern:** `src/lib/artifacts/tokens.ts` + `src/lib/token-crypto.ts` (HMAC via `crypto.subtle`, `timingSafeEqualBytes`, base64url).
+- **Ingest pipeline + atomic transactions:** `src/lib/ingest.ts` (`openRun`/`appendRunResults`/`completeRun`, `aggregateDeltaStatement`) through `runBatch`.
 - **Cron sweepers:** `crons/sweep-stuck-runs.ts` → `sweepStaleRuns` + `drainStaleRuns` (bounded `.limit`, `WRIGHTFUL_SWEEP_BATCH_SIZE`). Void crons use `defineScheduled` with a **unique cron expression per file** (dispatched via `switch(controller.cron)`) — never collide expressions.
 - **Settings gating:** `src/lib/settings-scope.ts` (`requireOwnerScope`/`requireRoleScope`, `gateTeamScope`).
 - **Analytics filters:** `src/lib/analytics/filters.ts` (`branchFragment`/`searchFragment`/`escapeLike`), `useSearchParam`/`useNavigatingSearchParam`.
 - **UI:** `src/components/ui/*` (Base UI wrappers), `cn()`, filter controls in `src/components/filter-controls.tsx`.
-- **Wire contract sync:** `packages/reporter/src/types.ts` ↔ `apps/dashboard/src/lib/schemas.ts`, canary `contract.test.ts`.
+- **Wire contract sync:** `packages/reporter/src/types.ts` ↔ `apps/dashboard/src/lib/schemas.ts`, canary `contract*.test.ts` suites.
 
 ## Index
 
@@ -50,6 +52,6 @@ _Suggested sequence: metering + retention de-risk cost exposure before opening s
 ## Global verification (applies to every feature)
 
 - `pnpm check` (format + lint + type-check via `vp check`) and `pnpm test` (dashboard + reporter unit) — dashboard tests run via `vp test run`, not `exec vitest run`.
-- Schema changes: `void db generate` (pre-launch, destructive ok); contract canary `contract.test.ts` must stay green for any wire-type change.
+- Schema changes: `pnpm --filter @wrightful/dashboard db:generate`; the reporter's `contract*.test.ts` canaries must stay green for any wire-type change.
 - A worklog entry in `docs/worklog/` per feature (required by `CLAUDE.md`).
 - Manual e2e via `packages/e2e` with `WRIGHTFUL_URL`/`WRIGHTFUL_TOKEN` set for ingest/reporter-touching features.

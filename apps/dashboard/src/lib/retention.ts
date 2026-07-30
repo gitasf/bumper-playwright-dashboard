@@ -2,7 +2,7 @@ import { and, db, eq, inArray, lt, sql } from "void/db";
 import { artifacts, projects, teams, testResults } from "@schema";
 import { deleteArtifactObjectsByKeys } from "@/lib/artifacts/store";
 import { runBatch } from "@/lib/db/batch";
-import { chunkByParams, PG_MAX_BOUND_PARAMS } from "@/lib/ingest";
+import { chunkByParams, PG_MAX_BOUND_PARAMS } from "@/lib/db/chunk";
 
 /**
  * Two-axis data retention sweep.
@@ -111,7 +111,7 @@ export function createSweepBudget(opts: {
  *
  * PURE orchestrator — no db/R2 — so the drain POLICY (keep going until budget,
  * stop when idle, fair round-robin) is unit-testable against a fake `sweepOne` +
- * fake budget, mirroring `drainStaleRuns` in ingest.ts. Round-robin (one chunk
+ * fake budget, mirroring `drainStaleRuns` in `ingest/stale-runs.ts`. Round-robin (one chunk
  * per project per round) rather than draining each project to completion keeps a
  * single huge project from starving the others within one invocation.
  *
@@ -168,7 +168,7 @@ export async function drainRetention<P>(
  * param AND the statement carries one fixed bind (`projectId`), so the ceiling is
  * reserved by one (`PG_MAX_BOUND_PARAMS - 1`): a full chunk binds `ids.length +
  * 1 <= 65_535`, never overflowing. The cap itself stays in its single home —
- * `PG_MAX_BOUND_PARAMS` / `chunkByParams` in ingest.ts — so there is no
+ * `PG_MAX_BOUND_PARAMS` / `chunkByParams` in `db/chunk.ts` — so there is no
  * chunk-size magic number to drift (this used to be a stale D1 99-param
  * `ID_DELETE_CHUNK`).
  */

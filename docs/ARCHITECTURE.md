@@ -30,7 +30,7 @@ The dashboard is the `@wrightful/dashboard` app in `apps/dashboard`, built on [V
 
 One **Postgres database** — over Cloudflare Hyperdrive in production, a direct `DATABASE_URL` in local dev — accessed through Drizzle (`db` from `void/db`, tables from `@schema`, schema source `apps/dashboard/db/schema.ts` in pg-core). Postgres result-shape coercions (node-postgres returns `int8`/`numeric` as strings, where pglite returns numbers) live in `numericSql` (`src/lib/db/sql-ops.ts`) and the raw-read `cast(… as integer)` idiom; multi-statement atomicity goes through `runBatch` (a `db.transaction`) in `src/lib/db/batch.ts`. See [`SELF-HOSTING.md`](../SELF-HOSTING.md) for deploy specifics and the Postgres-only worklog (`docs/worklog/2026-06-16-postgres-only.md`) for the D1-removal rationale.
 
-- **Control tables.** `teams` (incl. `tier` + per-team retention windows), `projects`, `memberships`, `teamInvites`, `apiKeys`, `userGithubAccounts`, `userState`, `usageCounters` (per-team-month run/test-result/artifact-byte meters), `githubInstallations` (GitHub App install → team), `githubPrComments` (sticky PR-summary comment id per `(project, repo, prNumber)`).
+- **Control tables.** `teams` (incl. `tier` + per-team retention windows), `projects`, `memberships`, `teamInvites`, `apiKeys`, `userGithubAccounts`, `userState`, `usageCounters` (per-team-month run/test-result/artifact-byte meters), `githubInstallations` (GitHub App install → team), `githubPrComments` (sticky PR-summary comment id per `(project, repo, prNumber)`), and `projectArtifactCleanupJobs` (FK-free transactional outbox that survives project/team deletion until its R2 prefix is empty).
 - **Tenant tables.** `runs` (carries `origin`, `monitorId`, `githubCheckRunId`, `lastActivityAt`, `expectedTotalTests`), `testResults`, `testResultAttempts`, `testTags`, `testAnnotations`, `artifacts`, plus the test-management tables `quarantinedTests`, `testOwners`, and the synthetic-monitoring tables `monitors` + `monitorExecutions`. Every run-scoped child carries denormalized `teamId` (on `runs`) and `projectId` so scope is enforced without joining through `runs`. Reached only through the auth-checked `TenantScope` from `src/lib/scope.ts` / `src/lib/tenant-context.ts`.
 - **`auditLog`.** Team-scoped audit trail (member/key/config/project mutations); `actorUserId` is a logical FK (no DB constraint), like `memberships.userId`. `projectId` is `set null` so a row survives a project delete.
 - **Better Auth tables** (`user`, `session`, `account`, `verification`) are owned by `void/auth` — bootstrapped idempotently against the same database and intentionally not declared in the schema. Cross-table joins use raw SQL.
@@ -62,17 +62,19 @@ Void file-based routing. API handlers in `apps/dashboard/routes/`, pages in `app
 
 Cross-cutting middleware: `00.errors` (error → page/redirect), `01.context` (tenant bundle) / `01.head` (theme), `02.api-auth` (Bearer key on ingest), `03.rate-limit` (per-surface Cloudflare rate-limiter bindings — `AUTH` / `API` / `QUERY` / `ARTIFACT` / `INGEST_IP`; runs after auth so it can key by resolved `apiKey.id`).
 
-**Ingest pipeline.** `routes/api/runs/*` handlers are auth + translation only; the verify-ownership → batch (`db.transaction`) → summary → activity-bump → broadcast pipeline lives behind `openRun` / `appendRunResults` / `completeRun` in `src/lib/ingest.ts`.
+**Ingest pipeline.** `routes/api/runs/*` handlers are auth + translation only; the verify-ownership → batch (`db.transaction`) → summary → activity-bump → broadcast pipeline lives behind `openRun` / `appendRunResults` / `completeRun`, implemented under `src/lib/ingest/` (`lifecycle.ts`, `results.ts`, `finalization.ts`, `stale-runs.ts`, plus the shared `write-and-publish.ts`). `src/lib/ingest.ts` re-exports only that public surface; the statement builders and broadcast helpers stay internal because they are only valid inside a specific `runBatch` or after a committed write.
 
 ## Background work (crons + queues)
 
-Seven Void crons (each a unique cron expression — the 5-minute reaper family is offset `*/5` / `2-59/5` / `4-59/5` so `switch(controller.cron)` never collides):
+Nine Void crons (each a unique cron expression — the 5-minute reaper family is offset so `switch(controller.cron)` never collides):
 
 - `sweep-monitors` (every 1m) — arms due monitors' `nextRunAt`, enqueues them to the `monitors` (browser) / `uptime` (http·tcp) Queues.
 - `sweep-stuck-runs` (every 5m) — finalizes runs stuck at `running` past `WRIGHTFUL_RUN_STALE_MINUTES`.
 - `sweep-stuck-executions` / `sweep-synthetic-keys` (every 5m, offset) — reap non-terminal monitor executions + orphaned per-run ingest keys.
+- `sweep-project-artifact-cleanup` (every 5m, offset) — retry bounded R2-prefix cleanup jobs transactionally enqueued by project/team deletion.
 - `sweep-retention` (every 6h) — two-axis sweep (R2 artifact bytes, then `testResults` rows) per the team/instance retention windows.
 - `rollup-usage` (daily 03:00 UTC) — rolls per-team-month meters into `usageCounters`.
+- `sweep-invites` (daily 04:15 UTC) — garbage-collect expired team invites.
 - `reconcile-billing` (daily 04:30 UTC) — reconciles each team's billing state against Polar; a clean no-op when billing is off (the OSS default).
 
 **Monitor execution** is the schedule→queue→execute pipeline: the `monitors` / `uptime` Queue consumers (`createMonitorConsumer`, `src/lib/monitors/queue-consumer.ts`) run the pure `runMonitorJob` against the resolved `MonitorExecutor` — `sandbox` (Void Sandbox container running the user's Playwright) or `stub` (in-process, for dev/CI), selected by `WRIGHTFUL_MONITOR_EXECUTOR` — and stream the outcome through the normal run ingest path.

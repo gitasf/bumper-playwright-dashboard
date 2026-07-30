@@ -1,8 +1,14 @@
 import { z } from "zod";
 import { and, db, eq, ne, or, sql } from "void/db";
-import { memberships, type MembershipRole } from "@schema";
+import {
+  memberGroupMembers,
+  memberGroups,
+  memberships,
+  type MembershipRole,
+} from "@schema";
 import type { BatchExecutor } from "@/lib/db/batch";
 import { ASSIGNABLE_ROLES } from "@/lib/roles";
+import { lockTeamForChildMutation } from "@/lib/team-lock";
 
 /**
  * Membership mutations (roadmap 3.1: role editing + removal) and the one
@@ -21,6 +27,15 @@ import { ASSIGNABLE_ROLES } from "@/lib/roles";
  *    `db.transaction` before the guarded write on that same `tx`: the second
  *    caller blocks until the first commits, then sees the post-commit count.
  *    Same lock-then-write shape as `appendRunResults` in `src/lib/ingest.ts`.
+ *
+ * Every transaction here additionally opens with `lockTeamForChildMutation`
+ * (`src/lib/team-lock.ts`), which is the global parent-before-child order shared
+ * with invites, groups, projects, and monitors. Membership rows are children of
+ * `teams`, and these transactions also write `memberGroupMembers`
+ * (`removeTeamGroupLinks`), so without the parent lock a remove holding owner
+ * rows and waiting on group links can deadlock with a team teardown holding the
+ * cascaded group links and waiting on the owner rows. The parent lock makes the
+ * two conflict on `teams` first, before either holds a child row.
  *
  * Callers read `.returning()` to detect a guard-blocked write and surface the
  * inline error. The role validator + guard live here (a tiny repo seam) so they
@@ -66,13 +81,39 @@ export function notLastOwner(teamId: string) {
  * gives every caller the same lock-acquisition order, avoiding a lock-order
  * deadlock between racing peers.
  */
-async function lockOwnerRows(tx: BatchExecutor, teamId: string) {
+export async function lockOwnerRows(
+  tx: BatchExecutor,
+  teamId: string,
+): Promise<void> {
   await tx
     .select({ id: memberships.id })
     .from(memberships)
     .where(and(eq(memberships.teamId, teamId), eq(memberships.role, "owner")))
     .orderBy(memberships.id)
     .for("update");
+}
+
+/**
+ * Remove group links owned by one team after its membership delete succeeds.
+ * `memberGroupMembers.userId` is intentionally only a logical user reference,
+ * so the team predicate must come through the owning group.
+ */
+async function removeTeamGroupLinks(
+  tx: BatchExecutor,
+  teamId: string,
+  userId: string,
+): Promise<void> {
+  await tx.delete(memberGroupMembers).where(
+    and(
+      eq(memberGroupMembers.userId, userId),
+      sql`exists (
+        select 1
+        from ${memberGroups}
+        where ${memberGroups.id} = ${memberGroupMembers.groupId}
+          and ${memberGroups.teamId} = ${teamId}
+      )`,
+    ),
+  );
 }
 
 /** Outcome of a last-owner-guarded write. */
@@ -99,6 +140,13 @@ export async function setMemberRole(
   role: MembershipRole,
 ): Promise<GuardedWriteResult> {
   return db.transaction(async (tx) => {
+    // Parent-before-child (see module doc). A lost race means teardown removed
+    // the team and cascaded this membership, which is the same observable state
+    // as the row having vanished.
+    if (!(await lockTeamForChildMutation(tx, teamId))) {
+      return { ok: false, reason: "noop" };
+    }
+
     // Only demoting away from owner can strand the team, so only it needs the
     // lock; promoting to/keeping owner never reduces the count and is safe to race.
     if (role !== "owner") await lockOwnerRows(tx, teamId);
@@ -148,6 +196,13 @@ export async function removeMemberGuarded(
   targetUserId: string,
 ): Promise<GuardedWriteResult> {
   return db.transaction(async (tx) => {
+    // Parent-before-child (see module doc). This transaction goes on to write
+    // `memberGroupMembers`, so the parent lock is what keeps it off the teardown
+    // cascade's lock cycle. Team gone → the membership cascaded with it.
+    if (!(await lockTeamForChildMutation(tx, teamId))) {
+      return { ok: false, reason: "noop" };
+    }
+
     await lockOwnerRows(tx, teamId);
 
     const deleted = await tx
@@ -161,7 +216,10 @@ export async function removeMemberGuarded(
       )
       .returning({ id: memberships.id });
 
-    if (deleted.length > 0) return { ok: true };
+    if (deleted.length > 0) {
+      await removeTeamGroupLinks(tx, teamId, targetUserId);
+      return { ok: true };
+    }
 
     const stillThere = await tx
       .select({ role: memberships.role })
@@ -179,7 +237,9 @@ export async function removeMemberGuarded(
 }
 
 /** Outcome of the self-leave guarded delete — narrower than {@link GuardedWriteResult}. */
-export type LeaveTeamResult = { ok: true } | { ok: false; reason: "lastOwner" };
+export type LeaveTeamResult =
+  | { ok: true }
+  | { ok: false; reason: "lastOwner" | "gone" };
 
 /**
  * Remove the actor's OWN membership from `teamId`, guarded so the last owner
@@ -196,6 +256,16 @@ export async function leaveTeamGuarded(
   userId: string,
 ): Promise<LeaveTeamResult> {
   return db.transaction(async (tx) => {
+    // Parent-before-child (see module doc). A lost lock means teardown removed
+    // the team, so this needs its OWN arm rather than folding into `lastOwner`:
+    // the zero-row delete would return the same value, but the caller renders
+    // that as "you're the last owner — delete the team instead", which is both
+    // false and an instruction to do something impossible for a team that no
+    // longer exists.
+    if (!(await lockTeamForChildMutation(tx, teamId))) {
+      return { ok: false, reason: "gone" };
+    }
+
     await lockOwnerRows(tx, teamId);
 
     const deleted = await tx
@@ -209,8 +279,8 @@ export async function leaveTeamGuarded(
       )
       .returning({ id: memberships.id });
 
-    return deleted.length > 0
-      ? { ok: true }
-      : { ok: false, reason: "lastOwner" };
+    if (deleted.length === 0) return { ok: false, reason: "lastOwner" };
+    await removeTeamGroupLinks(tx, teamId, userId);
+    return { ok: true };
   });
 }
