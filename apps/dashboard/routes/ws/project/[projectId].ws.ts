@@ -31,7 +31,7 @@ export default defineRoom(
     param: "projectId",
     client: projectRoomClientSchema,
     server: projectRoomServerSchema,
-    publicUrl: env.WRIGHTFUL_PUBLIC_URL,
+    publicUrl: () => env.WRIGHTFUL_PUBLIC_URL,
     internalSecret: () => resolveInternalSecret(env),
     authorize: authorizeTopicSubscription,
   }),

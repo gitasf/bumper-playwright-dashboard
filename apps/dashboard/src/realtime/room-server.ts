@@ -162,8 +162,19 @@ export interface GuardedRoomConfig<
   client: ClientSchema;
   /** Server-event schema — broadcast payloads are parsed through it before fan-out. */
   server: ServerSchema;
-  /** Resolved deployment origin allowlist source (`env.WRIGHTFUL_PUBLIC_URL`). */
-  publicUrl: string;
+  /**
+   * Deployment origin allowlist source (`env.WRIGHTFUL_PUBLIC_URL`), resolved
+   * per connect inside the `onBeforeConnect` gate — NOT at wiring time, for the
+   * same reason as {@link GuardedRoomConfig.internalSecret}.
+   *
+   * A room is wired at MODULE scope, and `void/env` only has Cloudflare
+   * bindings inside a request. Reading the key eagerly therefore throws while
+   * the worker's top-level scope runs, which is exactly what Cloudflare does to
+   * validate a `wrangler versions upload` — so an eager read fails the DEPLOY
+   * (`code: 10021`), not just the request, and no test lane catches it because
+   * the routes are never imported for real outside a deploy.
+   */
+  publicUrl: () => string;
   /**
    * Internal-publish secret resolver, called per publish request inside the
    * `onRequest` gate (NOT at wiring time) — exactly as the hand-spelled rooms
@@ -214,7 +225,7 @@ export function defineGuardedRoom<
     async onBeforeConnect(ctx: Ctx) {
       const origin = ctx.request.headers.get("origin");
       const host = ctx.request.headers.get("host");
-      if (!isAllowedWsOrigin(origin, host, config.publicUrl)) {
+      if (!isAllowedWsOrigin(origin, host, config.publicUrl())) {
         return new Response("Forbidden", { status: 403 });
       }
       if (roomAtCapacity(ctx.room.getConnections())) {

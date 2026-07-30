@@ -48,6 +48,7 @@ function fakeAuthz(verdict: { ok: true } | { ok: false; status: number }) {
 function makeRoom(opts?: {
   authz?: { ok: true } | { ok: false; status: number };
   secret?: () => string;
+  publicUrl?: () => string;
 }) {
   const authz = fakeAuthz(opts?.authz ?? { ok: true });
   const room = defineGuardedRoom({
@@ -55,7 +56,7 @@ function makeRoom(opts?: {
     param: "runId",
     client: clientSchema,
     server: serverSchema,
-    publicUrl: PUBLIC_URL,
+    publicUrl: opts?.publicUrl ?? (() => PUBLIC_URL),
     internalSecret: opts?.secret ?? (() => SECRET),
     authorize: authz.fn,
   }) as unknown as RoomDef;
@@ -174,6 +175,25 @@ describe("defineGuardedRoom — publish gate (onRequest)", () => {
 });
 
 describe("defineGuardedRoom — connect gate (onBeforeConnect)", () => {
+  it("reads the public URL PER connect (lazily), not at wiring time", async () => {
+    let reads = 0;
+    // Rooms are wired at MODULE scope, where `void/env` has no Cloudflare
+    // bindings — and Cloudflare runs that top-level scope to validate a
+    // `versions upload`. An eager read here therefore fails the DEPLOY
+    // (code 10021), which no other lane catches because nothing imports the
+    // route files for real. See GuardedRoomConfig.publicUrl.
+    const { room } = makeRoom({
+      publicUrl: () => {
+        reads += 1;
+        return PUBLIC_URL;
+      },
+    });
+    expect(reads).toBe(0);
+
+    await room.onBeforeConnect(connectCtx({ origin: PUBLIC_URL }));
+    expect(reads).toBe(1);
+  });
+
   it("403s a cross-site Origin before consulting authz (defense in depth)", async () => {
     const { room, authz } = makeRoom();
     const res = await room.onBeforeConnect(
@@ -249,7 +269,7 @@ describe("defineGuardedRoom — connect gate (onBeforeConnect)", () => {
       param: "projectId",
       client: clientSchema,
       server: serverSchema,
-      publicUrl: PUBLIC_URL,
+      publicUrl: () => PUBLIC_URL,
       internalSecret: () => SECRET,
       authorize: authz.fn,
     }) as unknown as RoomDef;

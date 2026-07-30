@@ -27,7 +27,7 @@ export default defineRoom(
     param: "runId",
     client: runRoomClientSchema,
     server: runRoomServerSchema,
-    publicUrl: env.WRIGHTFUL_PUBLIC_URL,
+    publicUrl: () => env.WRIGHTFUL_PUBLIC_URL,
     internalSecret: () => resolveInternalSecret(env),
     authorize: authorizeTopicSubscription,
   }),
