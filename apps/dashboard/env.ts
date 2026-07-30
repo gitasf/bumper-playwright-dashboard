@@ -352,8 +352,10 @@ export default defineEnv({
    * Per-project cap on HTTP (uptime) monitors. Separate from the browser cap
    * because an http check is a plain `fetch()` from the queue consumer — no
    * container, ~free — so a project can hold many without eating its browser
-   * budget. Enforced by a TYPE-SCOPED `countMonitors(scope, "http")`, so the two
-   * caps never cross-contaminate. Default 50.
+   * budget. Enforced inside `createMonitor`'s transaction, which locks the owning
+   * project row and then counts rows of THIS type only, so the caps never
+   * cross-contaminate and concurrent creates cannot both observe headroom.
+   * Default 50.
    */
   WRIGHTFUL_HTTP_MONITOR_MAX_PER_PROJECT: number().default(50),
 
@@ -362,8 +364,9 @@ export default defineEnv({
    * browser caps for the same reason they're separate from each other: a tcp
    * check is a single raw `connect()` from the queue consumer — no container,
    * ~free — so a project can hold many without eating its other budgets.
-   * Enforced by a TYPE-SCOPED `countMonitors(scope, "tcp")`, so the caps never
-   * cross-contaminate. Counts `tcp` rows only — a `ping` monitor is stored with
+   * Enforced inside `createMonitor`'s transaction under the project row lock,
+   * counting rows of THIS type only, so the caps never cross-contaminate.
+   * Counts `tcp` rows only — a `ping` monitor is stored with
    * `type = 'tcp'` (a ping IS a TCP-connect probe; see `tcp/tcp-run.ts`), so it
    * falls under this cap. Default 50.
    */

@@ -2,7 +2,9 @@ import { expect, test } from "./fixtures";
 import { FAILURES_BRANCH } from "./global-setup";
 
 // Real trace parsing crosses the artifact proxy, service worker, and iframe.
-test.setTimeout(90_000);
+// A model load can legitimately spend 30s starting the worker plus 60s
+// loading after readiness, and the longest spec performs two such loads.
+test.setTimeout(300_000);
 
 /**
  * Embedded Test Replay — Wrightful's OWN trace viewer.
@@ -39,7 +41,6 @@ test.describe("Test Replay (embedded trace viewer)", () => {
     for (const path of [
       "/trace-viewer/sw.bundle.js",
       "/trace-viewer/bridge.html",
-      "/trace-viewer/index.html", // official-viewer fallback, still vendored
     ]) {
       const res = await page.request.get(path);
       expect(res.status(), path).toBe(200);
@@ -53,6 +54,19 @@ test.describe("Test Replay (embedded trace viewer)", () => {
       expect(h["service-worker-allowed"], path).toBe("/trace-viewer/");
     }
 
+    // Playwright's own HTML shells frame snapshots with a HARDCODED
+    // `sandbox="allow-same-origin allow-scripts"` that we cannot override, and
+    // trace bytes are attacker-craftable — so without a configured cookieless
+    // viewer origin they are not vendored at all. These are static assets, so
+    // absence is the only real boundary; unlinking them is not one.
+    for (const path of [
+      "/trace-viewer/index.html",
+      "/trace-viewer/snapshot.html",
+      "/trace-viewer/uiMode.html",
+    ]) {
+      expect((await page.request.get(path)).status(), path).toBe(404);
+    }
+
     // Every other route keeps the strict global policy — the relaxation must
     // not leak. A normal page response still denies framing entirely.
     const normal = await page.request.get("/login");
@@ -64,11 +78,7 @@ test.describe("Test Replay (embedded trace viewer)", () => {
   test("run test-list Replay button opens the native workbench, deep-links, and closes on Escape", async ({
     page,
     openSeededRun,
-  }, testInfo) => {
-    // Three 40s workbench outcomes, two dialog remounts, and the later snapshot
-    // and cold deep-link checks must all fit when both recovery attempts fire.
-    testInfo.setTimeout(240_000);
-
+  }) => {
     await openSeededRun(FAILURES_BRANCH);
 
     // The button renders only for rows whose test has a trace (the row's
@@ -102,37 +112,49 @@ test.describe("Test Replay (embedded trace viewer)", () => {
     await expect(dialog).toBeVisible({ timeout: 10_000 });
 
     // The NATIVE workbench loads the real trace through the real service
-    // worker: the action list populates from the parsed model. Under a busy
-    // preview (parallel workers), the workbench's own 30s no-progress
-    // watchdog (BRIDGE_TIMEOUT_MS in use-trace-model.ts) can fire before the
-    // queued SW/trace fetches complete, leaving a terminal "Couldn't load
-    // this trace" state. Closing and reopening the dialog remounts the
-    // bridge iframe — a pure read, no side effects to repeat — so recover
-    // from that specific terminal state rather than failing on contention.
+    // worker: the action list populates from the parsed model. The bridge
+    // reports readiness only after the iframe is controlled by an active
+    // worker, so this assertion exercises one authoritative load rather than
+    // accepting a terminal error and retrying the dialog.
     const actionList = dialog.getByRole("listbox", { name: "Actions" });
-    const loadError = dialog.getByText(/couldn't load this trace/i);
-    const workbenchOutcome = async (): Promise<"ready" | "error"> => {
-      await expect(actionList.or(loadError)).toBeVisible({ timeout: 40_000 });
-      return (await actionList.isVisible()) ? "ready" : "error";
-    };
-    let outcome = await workbenchOutcome();
-    for (let retry = 0; outcome === "error" && retry < 2; retry++) {
-      await page.keyboard.press("Escape");
-      await expect(dialog).not.toBeVisible();
-      await replay.click();
-      await expect(dialog).toBeVisible({ timeout: 10_000 });
-      outcome = await workbenchOutcome();
-    }
-    expect(outcome).toBe("ready");
+    await expect(actionList).toBeVisible({ timeout: 95_000 });
     expect(await actionList.getByRole("option").count()).toBeGreaterThan(0);
 
     // …and the DOM snapshot iframes are served by the SW from the trace
     // (up to three stacked, one per Before/Action/After — see snapshot-pane).
-    await expect(
-      dialog.locator('iframe[title^="DOM snapshot"]').first(),
-    ).toHaveAttribute("src", /\/trace-viewer\/snapshot\/.+\?.*trace=/, {
-      timeout: 30_000,
-    });
+    const snapshotFrame = dialog
+      .locator('iframe[title^="DOM snapshot"]')
+      .first();
+    await expect(snapshotFrame).toHaveAttribute(
+      "src",
+      /\/trace-viewer\/snapshot\/.+\?.*trace=/,
+      { timeout: 30_000 },
+    );
+
+    // A correct `src` is NOT enough. Playwright renders every snapshot behind a
+    // `visibility: hidden` guard stylesheet that its inline bootstrap lifts on
+    // load — and same-origin snapshot iframes deliberately run without
+    // `allow-scripts`, so that bootstrap is blocked and
+    // `prepareScriptlessSnapshot` has to lift the guard from the parent
+    // instead. When that path breaks the pane renders fully blank while the
+    // `src` assertion above stays green: exactly how the blank-pane regression
+    // shipped. Assert what the user actually sees.
+    const snapshotBody = snapshotFrame.contentFrame().locator("body");
+    await expect(snapshotBody).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(
+        () =>
+          snapshotBody.evaluate(
+            (body) => getComputedStyle(body).visibility === "visible",
+          ),
+        {
+          timeout: 30_000,
+          message:
+            "snapshot body is still `visibility: hidden` — Playwright's guard " +
+            "stylesheet was never lifted, so replay renders a blank pane",
+        },
+      )
+      .toBe(true);
 
     // Parity-pass chrome renders alongside the workbench: the action search
     // box, the Call detail tab, and the timeline strip above the panes.
@@ -158,7 +180,7 @@ test.describe("Test Replay (embedded trace viewer)", () => {
     await expect(relinked).toBeVisible({ timeout: 10_000 });
     await expect(
       relinked.getByRole("listbox", { name: "Actions" }),
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: 95_000 });
   });
 
   test("test-detail rail shows Replay (native viewer) alongside the standalone video/screenshot buttons", async ({
@@ -205,7 +227,7 @@ test.describe("Test Replay (embedded trace viewer)", () => {
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible({ timeout: 10_000 });
     await expect(dialog.getByRole("listbox", { name: "Actions" })).toBeVisible({
-      timeout: 30_000,
+      timeout: 95_000,
     });
   });
 });

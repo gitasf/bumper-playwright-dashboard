@@ -7,6 +7,7 @@ import {
   timingSafeEqualBytes,
 } from "@/lib/token-crypto";
 import { isReplayTraceArtifact } from "@/lib/artifacts/trace";
+import { traceViewerOrigin } from "@/trace-viewer/origin";
 
 /**
  * Lifetime of an artifact-download token (1 hour). Exported because two other
@@ -124,21 +125,30 @@ export function signedDownloadHref(artifactId: string, token: string): string {
 export const TRACE_VIEWER_PATH = "/trace-viewer/index.html";
 
 /**
- * Wrap an ABSOLUTE signed download URL in our SELF-HOSTED trace-viewer link.
- * Same-origin by construction: the viewer served from our origin range-reads
- * the trace from the (same-origin) download URL, so the bytes stay on this
- * dashboard and are never handed to the third-party trace.playwright.dev — the
- * whole point of vendoring the viewer.
+ * Wrap an ABSOLUTE signed download URL in our SELF-HOSTED trace-viewer link, or
+ * return `undefined` when there is nowhere safe to serve it from.
  *
- * The result is absolute (origin taken from the download URL), so it's a valid
- * standalone link: the artifacts rail's "has a replayable trace" gate and the
- * MCP `get_artifact` response both hand it out. The one place that deliberately
- * opts into trace.playwright.dev is the dialog's "Public viewer" button, which
- * builds that cross-origin URL itself.
+ * `TRACE_VIEWER_PATH` is Playwright's stock SPA, which frames DOM snapshots
+ * with a hardcoded `allow-scripts` sandbox we cannot override. Trace bytes are
+ * attacker-craftable, so that shell only ships on a cookieless viewer origin
+ * (`scripts/vendor-trace-viewer.mjs` prunes it otherwise) — hence `undefined`
+ * in same-origin mode rather than a link to a file that isn't there. Callers
+ * fall back to `npx playwright show-trace <downloadUrl>`, which renders on the
+ * user's own localhost and holds no dashboard session.
+ *
+ * The origin comes from `traceViewerOrigin()`, NOT from the download URL, so a
+ * deployment that has configured isolation doesn't get the scripted SPA pointed
+ * back at its session origin. The trace bytes still come from the
+ * dashboard-origin download URL and never reach trace.playwright.dev; the one
+ * place that deliberately opts into that is the dialog's "Public viewer"
+ * button, which builds the cross-origin URL itself.
  */
-export function selfHostedTraceViewerUrl(absoluteDownloadUrl: string): string {
-  const { origin } = new URL(absoluteDownloadUrl);
-  return `${origin}${TRACE_VIEWER_PATH}?trace=${encodeURIComponent(absoluteDownloadUrl)}`;
+export function selfHostedTraceViewerUrl(
+  absoluteDownloadUrl: string,
+): string | undefined {
+  const viewerOrigin = traceViewerOrigin();
+  if (viewerOrigin === "") return undefined;
+  return `${viewerOrigin}${TRACE_VIEWER_PATH}?trace=${encodeURIComponent(absoluteDownloadUrl)}`;
 }
 
 export async function signArtifactToken(

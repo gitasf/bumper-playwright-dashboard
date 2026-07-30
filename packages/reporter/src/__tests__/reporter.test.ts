@@ -11,47 +11,11 @@ import {
 import type { FullResult } from "@playwright/test/reporter";
 import WrightfulReporter from "../index.js";
 import { makeConfig, makeResult, makeSuite, makeTest } from "./fixtures.js";
-
-// Block CI auto-detection so the OpenRunPayload shape is deterministic
-// regardless of where these tests run.
-const CI_ENV_VARS = [
-  "CI",
-  "GITHUB_ACTIONS",
-  "GITLAB_CI",
-  "CIRCLECI",
-  "GITHUB_RUN_ID",
-  "GITHUB_JOB",
-  "GITHUB_REF",
-  "GITHUB_REF_NAME",
-  "GITHUB_HEAD_REF",
-  "GITHUB_SHA",
-  "GITHUB_REPOSITORY",
-  "GITHUB_ACTOR",
-  "GITHUB_TRIGGERING_ACTOR",
-  "GITHUB_EVENT_PATH",
-  "WRIGHTFUL_IDEMPOTENCY_KEY",
-];
-
-function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-// Route requests to canned responses by URL substring. Returns unmatched
-// responses as 200 {} so the reporter's graceful degradation can show through.
-function makeFetch(
-  handlers: Array<(url: string, init: RequestInit) => Response | undefined>,
-) {
-  return vi.fn(async (url: string, init: RequestInit) => {
-    for (const h of handlers) {
-      const r = h(url, init);
-      if (r) return r;
-    }
-    return jsonResponse(200, {});
-  });
-}
+import {
+  CI_ENV_VARS,
+  jsonResponse,
+  makeFetch,
+} from "./reporter-test-support.js";
 
 describe("WrightfulReporter lifecycle", () => {
   let originalEnv: Record<string, string | undefined>;
@@ -627,57 +591,6 @@ describe("WrightfulReporter lifecycle", () => {
       .map((c) => String(c[0]))
       .find((s) => s.includes('failed to enqueue result for "evil"'));
     expect(msg).toContain("titlePath exploded");
-  });
-
-  it("derives the idempotency key from build id + job name, never the Playwright shard", async () => {
-    process.env.GITHUB_ACTIONS = "true";
-    process.env.GITHUB_RUN_ID = "42";
-    process.env.GITHUB_JOB = "e2e";
-
-    const fetchMock = makeFetch([
-      (url) =>
-        url.endsWith("/api/runs")
-          ? jsonResponse(200, { runId: "run_abc" })
-          : undefined,
-    ]);
-    vi.stubGlobal("fetch", fetchMock);
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-
-    const openKey = async (): Promise<string> => {
-      const callsBefore = fetchMock.mock.calls.length;
-      const reporter = new WrightfulReporter({
-        url: "http://dash.example",
-        token: "tok",
-        flushIntervalMs: 5,
-      });
-      // `config.shard` is set, but the key must NOT carry a shard suffix:
-      // shards run slices of ONE suite and share the idempotency key so the
-      // dashboard merges them into a single run (openRun's duplicate path and
-      // completeRun's cross-shard status merge are designed around that).
-      reporter.onBegin(
-        makeConfig(null, { current: 1, total: 2 }),
-        makeSuite([]),
-      );
-      await reporter.onEnd({
-        status: "passed",
-        startTime: new Date(),
-        duration: 0,
-      } as FullResult);
-      const openCall = fetchMock.mock.calls
-        .slice(callsBefore)
-        .find(([url]) => url.endsWith("/api/runs"));
-      expect(openCall).toBeDefined();
-      const rawBody = openCall![1].body;
-      const body = (typeof rawBody === "string" ? JSON.parse(rawBody) : {}) as {
-        idempotencyKey: string;
-      };
-      return body.idempotencyKey;
-    };
-
-    const first = await openKey();
-    expect(first).toBe("42-e2e");
-    // Deterministic across re-runs of the same job — a re-run recovers the run.
-    expect(await openKey()).toBe(first);
   });
 
   it("sends WRIGHTFUL_IDEMPOTENCY_KEY verbatim on the wire, undecorated", async () => {

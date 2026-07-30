@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vite-plus/test";
+import { changedRows } from "@/lib/db/batch";
 import {
-  statementChangedRows,
+  RunAggregateSummary,
   summaryFromBatchResults,
-  type RunAggregateSummary,
-} from "@/lib/ingest";
+} from "@/lib/ingest/write-and-publish";
 
 /**
  * Guards the summary-extraction convention shared by appendRunResults /
@@ -78,26 +78,26 @@ describe("summaryFromBatchResults", () => {
  * on a no-op finalize, so the read shape + missing-count fallback get pinned in
  * one place.
  */
-describe("statementChangedRows", () => {
+describe("changedRows", () => {
   it("reads rowCount (node-postgres) when the flip matched rows", () => {
-    expect(statementChangedRows({ rowCount: 1 })).toBe(1);
+    expect(changedRows({ rowCount: 1 })).toBe(1);
   });
 
   it("reads affectedRows (pglite) when the flip matched rows", () => {
-    expect(statementChangedRows({ affectedRows: 1 })).toBe(1);
+    expect(changedRows({ affectedRows: 1 })).toBe(1);
   });
 
   it("returns 0 when a guarded WHERE matched nothing (the no-op finalize)", () => {
-    expect(statementChangedRows({ rowCount: 0 })).toBe(0);
+    expect(changedRows({ rowCount: 0 })).toBe(0);
   });
 
   it("defaults to 0 for shapes without a count (conservative no-op)", () => {
     // A `.returning()` UPDATE yields a rows array, not a driver result; an absent
     // or non-numeric count must read as "nothing changed" so a broadcast guarded
     // on ">0" stays silent rather than firing on a malformed result.
-    expect(statementChangedRows([{ id: "row" }])).toBe(0);
-    expect(statementChangedRows(undefined)).toBe(0);
-    expect(statementChangedRows({})).toBe(0);
-    expect(statementChangedRows({ rowCount: "1" })).toBe(0);
+    expect(changedRows([{ id: "row" }])).toBe(0);
+    expect(changedRows(undefined)).toBe(0);
+    expect(changedRows({})).toBe(0);
+    expect(changedRows({ rowCount: "1" })).toBe(0);
   });
 });

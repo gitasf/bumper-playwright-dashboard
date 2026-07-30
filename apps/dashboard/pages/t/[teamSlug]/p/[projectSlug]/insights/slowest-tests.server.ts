@@ -20,10 +20,11 @@ import {
   statusCounter,
 } from "@/lib/analytics/per-test";
 import { makeRangeParser } from "@/lib/analytics/range";
-import { paginateOffsetTable, resolveOffsetPage } from "@/lib/page-window";
+import { resolveOffsetPage } from "@/lib/page-window";
 import { deferredNoStore, pageProjectFields } from "@/lib/page-loader";
 import { parsePage } from "@/lib/runs/filters";
 import { requireTenantContext } from "@/lib/tenant-context";
+import type { TenantScope } from "@/lib/scope";
 
 export type Props = InferProps<typeof loader>;
 
@@ -56,6 +57,28 @@ export interface SparklinePoint {
   avg: number;
 }
 
+export interface SlowestKpis {
+  slowestTitle: string | null;
+  slowestP95: number | null;
+  averageP95: number | null;
+}
+
+export interface SlowestRankedPage {
+  kpis: SlowestKpis;
+  bottlenecks: BottleneckRow[];
+}
+
+interface SlowestRankedQueryRow extends SlowestKpis {
+  testId: string | null;
+  n: number | null;
+  avgDur: number | null;
+  p95: number | null;
+  title: string | null;
+  file: string | null;
+  failCount: number | null;
+  flakyCount: number | null;
+}
+
 interface TotalsRow {
   totalResults: number;
   maxDurationMs: number;
@@ -71,6 +94,132 @@ function pickBinWidthMs(maxDurationMs: number): number {
   ];
   for (const n of nice) if (raw <= n) return n;
   return 600_000;
+}
+
+/**
+ * Rank the full filtered window once, deriving both the whole-window KPI
+ * summary and one paginated table slice from the same `per_test` CTE.
+ */
+export async function loadSlowestRankedPage(
+  scope: TenantScope,
+  windowStartSec: number,
+  branchFilter: string | null,
+  query: string | null,
+  offset: number,
+): Promise<SlowestRankedPage> {
+  const branchSql = branchFragment(branchFilter);
+  const querySql = searchFragment(query, scope.projectId);
+  const rows = await runRows<SlowestRankedQueryRow>(sql`
+    with filtered as (
+      select
+        tr."testId" as "testId",
+        tr."durationMs" as "durationMs",
+        tr.title as title,
+        tr.file as file,
+        tr.status as status,
+        tr."createdAt" as "createdAt"
+      from "testResults" tr
+      ${testResultsScopeJoin(scope)}
+        and tr."createdAt" >= ${windowStartSec}
+        and tr.status != 'skipped'
+        ${branchSql}
+        ${querySql}
+    ),
+    ranked as (
+      select *,
+        row_number() over (
+          partition by "testId"
+          order by "durationMs"
+        ) as "rnDur",
+        ${latestPerTestRn(`"rnTime"`, {
+          testIdCol: `"testId"`,
+          orderByCol: `"createdAt"`,
+        })},
+        count(*) over (partition by "testId") as cnt
+      from filtered
+    ),
+    per_test as (
+      select
+        "testId",
+        cast(max(cnt) as integer) as n,
+        ${numAggExpr(`avg("durationMs")`, { alias: `"avgDur"` })},
+        ${percentilePick(0.95, {
+          rn: `"rnDur"`,
+          cnt: "cnt",
+          value: `"durationMs"`,
+        })} as p95,
+        ${latestPerTestValue("title", { alias: "title" })},
+        ${latestPerTestValue("file", { alias: "file" })},
+        ${statusCounter("fail", { alias: `"failCount"` })},
+        ${statusCounter("flaky", { alias: `"flakyCount"` })}
+      from ranked
+      group by "testId"
+    ),
+    summary as (
+      select
+        ${numAggExpr("max(p95)", { alias: `"slowestP95"` })},
+        ${numAggExpr("avg(p95)", { alias: `"averageP95"` })},
+        (
+          select title
+          from per_test
+          where p95 is not null
+          order by p95 desc, "testId"
+          limit 1
+        ) as "slowestTitle"
+      from per_test
+    ),
+    page as (
+      select *
+      from per_test
+      order by p95 desc, "testId"
+      limit ${PAGE_SIZE}
+      offset ${offset}
+    )
+    select
+      summary."slowestTitle",
+      summary."slowestP95",
+      summary."averageP95",
+      page."testId",
+      page.n,
+      page."avgDur",
+      page.p95,
+      page.title,
+      page.file,
+      page."failCount",
+      page."flakyCount"
+    from summary
+    left join page on true
+    order by page.p95 desc, page."testId"
+  `);
+  const first = rows[0];
+  const kpis: SlowestKpis = first
+    ? {
+        slowestTitle: first.slowestTitle,
+        slowestP95: first.slowestP95,
+        averageP95: first.averageP95,
+      }
+    : {
+        slowestTitle: null,
+        slowestP95: null,
+        averageP95: null,
+      };
+  const bottlenecks: BottleneckRow[] = rows.flatMap((row) =>
+    row.testId === null
+      ? []
+      : [
+          {
+            testId: row.testId,
+            n: row.n ?? 0,
+            avgDur: row.avgDur,
+            p95: row.p95,
+            title: row.title,
+            file: row.file,
+            failCount: row.failCount ?? 0,
+            flakyCount: row.flakyCount ?? 0,
+          },
+        ],
+  );
+  return { kpis, bottlenecks };
 }
 
 /**
@@ -137,6 +286,23 @@ export const loader = defineHandler(async (c) => {
     pageSize: PAGE_SIZE,
     requestedPage,
   });
+  const rankedPagePromise =
+    totals.totalUniqueTests > 0
+      ? loadSlowestRankedPage(
+          scope,
+          windowStartSec,
+          branchFilter,
+          q || null,
+          offset,
+        )
+      : Promise.resolve<SlowestRankedPage>({
+          kpis: {
+            slowestTitle: null,
+            slowestP95: null,
+            averageP95: null,
+          },
+          bottlenecks: [],
+        });
 
   // Shell data: the branch list is cheap (index-covered DISTINCT) and drives
   // the always-visible header control; the totals above are the cheap
@@ -194,6 +360,10 @@ export const loader = defineHandler(async (c) => {
         : [],
     ),
 
+    // The KPI region and paginated table share one full-window ranking promise:
+    // page 2 cannot relabel rank 21 as "slowest", and p95 is not computed twice.
+    kpis: defer<SlowestKpis>(async () => (await rankedPagePromise).kpis),
+
     // Ranked bottlenecks + their 7-day sparklines. The sparklines depend on the
     // bottleneck rows' testIds (a dependency chain), so they resolve together in
     // ONE boundary: fetch the ranked slice, then its sparklines, then fold the
@@ -201,64 +371,7 @@ export const loader = defineHandler(async (c) => {
     // testId→points map); all JSX (icons, tooltips, sparkline SVGs) is built in
     // the client component that reads this via `use()`.
     slowest: defer(async () => {
-      // The total is eagerly known (the shell derived `offset`/`fromRow` from
-      // it above), so `paginateOffsetTable` clamps first, fetches the ranked
-      // slice ONCE at the clamped offset (skipping the query for an empty set),
-      // and derives `toRow` from the slice length. `mapRows` is omitted — the
-      // ranked rows already carry the rendered shape, so the fetched slice IS
-      // the output.
-      const page = await paginateOffsetTable<BottleneckRow>({
-        page: requestedPage,
-        pageSize: PAGE_SIZE,
-        count: totals.totalUniqueTests,
-        pageQuery: (off) =>
-          runRows<BottleneckRow>(sql`
-      with filtered as (
-        select
-          tr."testId" as "testId",
-          tr."durationMs" as "durationMs",
-          tr.title as title,
-          tr.file as file,
-          tr.status as status,
-          tr."createdAt" as "createdAt",
-          tr."runId" as "runId",
-          tr.id as "testResultId"
-        from "testResults" tr
-        ${testResultsScopeJoin(scope)}
-          and tr."createdAt" >= ${windowStartSec}
-          and tr.status != 'skipped'
-          ${branchSql}
-          ${qSql}
-      ),
-      ranked as (
-        select *,
-          row_number() over (partition by "testId" order by "durationMs") as "rnDur",
-          ${latestPerTestRn(`"rnTime"`, {
-            testIdCol: `"testId"`,
-            orderByCol: `"createdAt"`,
-          })},
-          count(*) over (partition by "testId") as cnt
-        from filtered
-      )
-      select
-        "testId",
-        cast(max(cnt) as integer) as n,
-        ${numAggExpr(`avg("durationMs")`, { alias: `"avgDur"` })},
-        ${percentilePick(0.95, { rn: `"rnDur"`, cnt: "cnt", value: `"durationMs"` })} as p95,
-        ${latestPerTestValue("title", { alias: "title" })},
-        ${latestPerTestValue("file", { alias: "file" })},
-        ${statusCounter("fail", { alias: `"failCount"` })},
-        ${statusCounter("flaky", { alias: `"flakyCount"` })}
-      from ranked
-      group by "testId"
-      -- "testId" breaks p95 ties so OFFSET pagination is stable (rows sharing a
-      -- p95 can't be skipped/duplicated across page boundaries).
-      order by p95 desc, "testId"
-      limit ${PAGE_SIZE}
-      offset ${off}
-    `),
-      });
-      const bottlenecks = page.rows;
+      const { bottlenecks } = await rankedPagePromise;
 
       const pageTestIds = bottlenecks.map((r) => r.testId);
       const sparklinesEntries: [string, SparklinePoint[]][] = [];
@@ -295,12 +408,10 @@ export const loader = defineHandler(async (c) => {
         sparklinesEntries.push(...sparkMap.entries());
       }
 
-      // `toRow` reflects the real page slice — `paginateOffsetTable` derived it
-      // from the slice length (the eager shell only knew `fromRow`/`offset`).
       return {
         bottlenecks,
         sparklines: Object.fromEntries(sparklinesEntries),
-        toRow: page.toRow,
+        toRow: offset + bottlenecks.length,
       };
     }),
   };

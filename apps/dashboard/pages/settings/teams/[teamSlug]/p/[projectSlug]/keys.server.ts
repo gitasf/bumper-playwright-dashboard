@@ -1,5 +1,6 @@
 import { all } from "better-all";
 import { defineHandler, type InferProps } from "void";
+import { requireAuth } from "void/auth";
 import { and, db, desc, eq, isNull, ne } from "void/db";
 import { apiKeys, projects } from "@schema";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
@@ -254,21 +255,18 @@ export const actions = {
       );
     }
 
-    // Record the audit row SYNCHRONOUSLY *before* the delete (roadmap 3.2): the
-    // delete cascades and nulls this row's `projectId`, so we capture the
-    // project's slug/name as the human-readable target NOW, while the entity
-    // still exists. The row persists under its team after the project is gone.
-    await recordAudit(c, {
-      teamId: project.teamId,
-      projectId: project.id,
-      action: AUDIT_ACTIONS.PROJECT_DELETE,
-      targetType: "project",
-      targetId: project.slug,
-      metadata: { projectName: project.name, projectId: project.id },
-    });
-
     try {
-      await teardownProject(c, project.teamId, project.id);
+      const actor = requireAuth(c);
+      await teardownProject(c, project.teamId, project.id, {
+        actorUserId: actor.id,
+        input: {
+          teamId: project.teamId,
+          action: AUDIT_ACTIONS.PROJECT_DELETE,
+          targetType: "project",
+          targetId: project.slug,
+          metadata: { projectName: project.name, projectId: project.id },
+        },
+      });
     } catch (err) {
       logMutationFailure("delete project failed", err, {
         projectId: project.id,

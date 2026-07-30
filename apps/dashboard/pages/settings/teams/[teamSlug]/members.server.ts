@@ -199,8 +199,13 @@ export const actions = {
     const result = await leaveTeamGuarded(team.id, actor.id);
 
     if (!result.ok) {
-      // The only guard that can match 0 rows for a live membership is the
-      // owner-count subquery — the actor is the last owner.
+      // Teardown won the race for the team, so the actor's membership cascaded
+      // away with it — they are already out. Same destination as a successful
+      // leave, minus the audit row: the team's `auditLog` cascaded too, so that
+      // write would have nowhere to land.
+      if (result.reason === "gone") return c.redirect("/");
+      // Otherwise the only guard that can match 0 rows for a live membership is
+      // the owner-count subquery — the actor is the last owner.
       return MEMBERS_FLASH.fail(
         c,
         here ?? "/",

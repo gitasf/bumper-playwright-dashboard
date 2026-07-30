@@ -106,11 +106,34 @@
             );
 
           await navigator.serviceWorker.register("sw.bundle.js");
+          // Registration resolving only means the registration exists; wait
+          // until the scope has an active worker before asking whether this
+          // iframe is controlled by it.
+          await navigator.serviceWorker.ready;
           if (!navigator.serviceWorker.controller) {
-            await new Promise((resolve) => {
-              navigator.serviceWorker.oncontrollerchange = () => resolve();
-            });
+            // Playwright's worker calls clients.claim() during activation, but
+            // Chromium can miss controllerchange when two cold bridge frames
+            // register together (the intent-warm frame and the replay frame).
+            // Once `ready` resolves the worker is active, so one same-scope
+            // navigation is the browser-native way to acquire control. Keep a
+            // per-frame marker to turn a genuine control failure into a useful
+            // host error instead of a reload loop.
+            const reloadMarker =
+              "wrightful-trace-bridge:service-worker-activation-reload";
+            if (window.name === reloadMarker) {
+              throw new Error(
+                "The trace viewer service worker is active but could not control its bridge.",
+              );
+            }
+            window.name = reloadMarker;
+            location.reload();
+            return;
           }
+          window.name = "";
+          // Let the host start its trace-load watchdog only once this iframe
+          // is an actual SW-controlled client. Slow worker activation should
+          // not consume the trace parsing/fetch budget.
+          send("ready", {});
 
           if (!trace) {
             // Warm mode: SW registered + active; nothing to load.

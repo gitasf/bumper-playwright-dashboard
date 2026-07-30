@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
  * full status-matrix parity with the JS reference, `bucketExpr`'s UTC month
  * bucketing, the `numericSql`/`cast(… as integer)` int8-as-string coercion
  * guards, ILIKE case-insensitive search, and the uptime-analytics raw
- * aggregate loaders (`httpUptimeWindows` / `httpResponseTimeBuckets`) —
+ * aggregate loaders (`monitorUptimeWindows` / `httpResponseTimeBuckets`) —
  * executed against the real schema (pglite by default, real node-postgres
  * under PG_TEST_URL). See `./harness.ts` for the shared hoisted-mock boot
  * dance.
@@ -45,11 +45,14 @@ const { runRows } = await import("@/lib/runs/db");
 const { bucketExpr } = await import("@/lib/analytics/bucketing-sql");
 const { numericSql } = await import("@/lib/db/sql-ops");
 const { latestPerTestRn } = await import("@/lib/analytics/per-test");
-const { chunkByParams, mergeRunStatus, mergeRunStatusSql } =
-  await import("@/lib/ingest");
+const { chunkByParams } = await import("@/lib/db/chunk");
+const { mergeRunStatus, mergeRunStatusSql } =
+  await import("@/lib/ingest/finalization");
 const { makeTenantScope } = await import("@/lib/scope");
-const { httpResponseTimeBuckets, httpUptimeWindows } =
+const { httpResponseTimeBuckets, monitorUptimeWindows } =
   await import("@/lib/monitors/http/uptime-analytics");
+const { loadSlowestRankedPage } =
+  await import("../../../pages/t/[teamSlug]/p/[projectSlug]/insights/slowest-tests.server");
 const { countTeamTestResults, monthStartSeconds } = await import("@/lib/usage");
 const { teams, usageCounters, runs, projects, testResults, monitorExecutions } =
   await import("../../../db/schema");
@@ -137,7 +140,7 @@ describe("Postgres path", () => {
 
   it("changedRows reads the affected-row count from a no-returning update", async () => {
     // The Postgres result shape (`affectedRows` on pglite, `rowCount` on
-    // node-postgres) differs from D1's `meta.changes`; `changedRows` must read
+    // node-postgres) differs from pglite's `affectedRows`; `changedRows` must read
     // it so the guarded-write callers (reconcileAndBroadcast's no-op finalize,
     // the invite-decline 404 probe) work on PG. runBatch returns the collected
     // per-statement results, so res[0] is the update's driver result.
@@ -573,8 +576,8 @@ describe("uptime-analytics loaders (raw aggregate execution)", () => {
     });
   });
 
-  it("httpUptimeWindows returns numeric up/countable counts per window, tenant+monitor scoped", async () => {
-    const res = await httpUptimeWindows({ scope, monitorId, nowSec });
+  it("monitorUptimeWindows returns numeric up/countable counts per window, tenant+monitor scoped", async () => {
+    const res = await monitorUptimeWindows({ scope, monitorId, nowSec });
 
     // 24h: e1 pass (up+countable), e2 fail (countable only).
     expect(res.d1).toEqual({ up: 1, countable: 2 });
@@ -616,5 +619,68 @@ describe("uptime-analytics loaders (raw aggregate execution)", () => {
     // Sorted ascending by hour bucket (the `order by bucket`).
     const order = buckets.map((b) => b.bucket);
     expect(order).toEqual([...order].sort((a, z) => a - z));
+  });
+});
+
+describe("slowest-test whole-window KPIs", () => {
+  it("aggregates every ranked test rather than a 20-row page", async () => {
+    const scope = makeTenantScope({
+      teamId: "t-slowest",
+      projectId: "p-slowest",
+      teamSlug: "acme",
+      projectSlug: "slowest",
+    });
+    const runId = "run-slowest-kpis";
+    await h.db.insert(runs).values({
+      id: runId,
+      teamId: scope.teamId,
+      projectId: scope.projectId,
+      totalTests: 21,
+      passed: 21,
+      failed: 0,
+      flaky: 0,
+      skipped: 0,
+      durationMs: 21_000,
+      status: "passed",
+      createdAt: 1_700_000_000,
+      lastActivityAt: 1_700_000_000,
+      completedAt: 1_700_000_001,
+      origin: "ci",
+    });
+    await h.db.insert(testResults).values(
+      Array.from({ length: 21 }, (_, index) => {
+        const rank = index + 1;
+        return {
+          id: `slow-result-${rank}`,
+          projectId: scope.projectId,
+          runId,
+          testId: `slow-test-${String(rank).padStart(2, "0")}`,
+          title: `test ${rank}`,
+          file: "slow.spec.ts",
+          status: "passed",
+          durationMs: rank * 100,
+          retryCount: 0,
+          createdAt: 1_700_000_000,
+          updatedAt: 1_700_000_000,
+        };
+      }),
+    );
+
+    try {
+      const page = await loadSlowestRankedPage(scope, 0, null, null, 20);
+      expect(page.kpis).toEqual({
+        slowestTitle: "test 21",
+        slowestP95: 2100,
+        averageP95: 1100,
+      });
+      expect(page.bottlenecks).toEqual([
+        expect.objectContaining({
+          testId: "slow-test-01",
+          p95: 100,
+        }),
+      ]);
+    } finally {
+      await h.db.delete(runs).where(eq(runs.id, runId));
+    }
   });
 });

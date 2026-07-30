@@ -16,6 +16,7 @@ import { cn } from "@/lib/cn";
 export function SplitPane({
   direction,
   initial,
+  separatorLabel,
   min = 0.15,
   max = 0.85,
   className,
@@ -24,6 +25,8 @@ export function SplitPane({
   direction: "horizontal" | "vertical";
   /** Initial size of the first pane as a fraction of the container. */
   initial: number;
+  /** Accessible name describing the panes this separator resizes. */
+  separatorLabel: string;
   min?: number;
   max?: number;
   className?: string;
@@ -33,6 +36,7 @@ export function SplitPane({
   const draggingRef = useRef(false);
   const [fraction, setFraction] = useState(initial);
   const horizontal = direction === "horizontal";
+  const clamp = (value: number) => Math.min(max, Math.max(min, value));
 
   return (
     <div
@@ -51,7 +55,12 @@ export function SplitPane({
       </div>
       <div
         role="separator"
+        aria-label={separatorLabel}
         aria-orientation={horizontal ? "vertical" : "horizontal"}
+        aria-valuemin={Math.round(min * 100)}
+        aria-valuemax={Math.round(max * 100)}
+        aria-valuenow={Math.round(fraction * 100)}
+        tabIndex={0}
         onPointerDown={(event) => {
           event.preventDefault();
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -65,13 +74,25 @@ export function SplitPane({
           const next = horizontal
             ? (event.clientX - rect.left) / rect.width
             : (event.clientY - rect.top) / rect.height;
-          setFraction(Math.min(max, Math.max(min, next)));
+          setFraction(clamp(next));
+        }}
+        onKeyDown={(event) => {
+          const decreaseKey = horizontal ? "ArrowLeft" : "ArrowUp";
+          const increaseKey = horizontal ? "ArrowRight" : "ArrowDown";
+          let next: number | null = null;
+          if (event.key === decreaseKey) next = fraction - 0.02;
+          if (event.key === increaseKey) next = fraction + 0.02;
+          if (event.key === "Home") next = min;
+          if (event.key === "End") next = max;
+          if (next === null) return;
+          event.preventDefault();
+          setFraction(clamp(next));
         }}
         onLostPointerCapture={() => {
           draggingRef.current = false;
         }}
         className={cn(
-          "shrink-0 bg-line-1 transition-colors hover:bg-ring/60",
+          "shrink-0 bg-line-1 outline-none transition-colors hover:bg-ring/60 focus-visible:bg-ring focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
           horizontal ? "w-px cursor-col-resize px-0" : "h-px cursor-row-resize",
           // Widen the hit area without widening the visible line.
           horizontal

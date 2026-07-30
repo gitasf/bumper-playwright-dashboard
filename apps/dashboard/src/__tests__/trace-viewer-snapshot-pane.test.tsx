@@ -1,5 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+
+// The popout is origin-gated (see `snapshotScriptsEnabled`), so this suite has
+// to drive `VITE_WRIGHTFUL_TRACE_VIEWER_ORIGIN`. Left unset by default —
+// same-origin mode, which is what every other test in this file assumes.
+const config = vi.hoisted(() => ({
+  VITE_WRIGHTFUL_TRACE_VIEWER_ORIGIN: undefined as string | undefined,
+}));
+vi.mock("void/env", () => ({ env: config }));
+
 import { ScaledSnapshotStage } from "@/trace-viewer/components/snapshot-stage";
 import type { PlaybackController } from "@/trace-viewer/components/use-playback";
 import { SnapshotPane } from "@/trace-viewer/components/snapshot-pane";
@@ -61,6 +77,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   restoreDomStubs();
+  // Back to the same-origin default so a popout test can't leak the separate
+  // viewer origin into the sandbox/iframe assertions below it.
+  config.VITE_WRIGHTFUL_TRACE_VIEWER_ORIGIN = undefined;
 });
 
 /** Parse a mounted snapshot iframe's `src` into a URL for param assertions. */
@@ -118,7 +137,31 @@ describe("SnapshotPane", () => {
     expect(await screen.findByText("https://app.example/cart")).toBeTruthy();
   });
 
-  it("links the popout to the vendored snapshot.html shell", () => {
+  // The popout renders through Playwright's vendored `snapshot.html`, whose
+  // iframe hardcodes `allow-scripts` — we cannot drop it there the way
+  // `snapshotSandbox` does for the embedded pane. Same-origin that would run
+  // attacker-craftable snapshot HTML against the session cookies, so the
+  // control only exists once a separate viewer origin makes scripts safe.
+  it("offers no popout in same-origin mode", () => {
+    const model = makeModel();
+    const action = model.actions.find((a) => a.callId === "call@1")!;
+    render(
+      <SnapshotPane
+        action={action}
+        bridge={makeBridge()}
+        playback={STUB_PLAYBACK}
+      />,
+    );
+    expect(
+      screen.queryByRole("link", { name: "Open snapshot in a new tab" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Open snapshot in a new tab" }),
+    ).toBeNull();
+  });
+
+  it("links the popout to the vendored snapshot.html shell on a separate origin", () => {
+    config.VITE_WRIGHTFUL_TRACE_VIEWER_ORIGIN = "https://traces.example.com";
     const model = makeModel();
     const action = model.actions.find((a) => a.callId === "call@1")!;
     render(

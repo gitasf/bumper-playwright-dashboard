@@ -1,12 +1,13 @@
 import { defineHandler, type InferProps } from "void";
 import { getSession, requireAuth } from "void/auth";
 import { and, db, eq, gt } from "void/db";
-import { ulid } from "ulid";
 import { memberships, teamInvites, teams, type MembershipRole } from "@schema";
+import { logMutationFailure } from "@/lib/action-errors";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
-import { runBatch } from "@/lib/db/batch";
+import { isUniqueViolation } from "@/lib/db/batch";
 import { inviteIsDirected, inviteMatchesUser } from "@/lib/invite-identity";
 import { hashInviteToken } from "@/lib/invite-tokens";
+import { consumeTokenInvite } from "@/lib/invites";
 
 const DIRECTED_MISMATCH_ERROR =
   "This invite is addressed to someone else. Sign in with the invited account or ask the team owner for a fresh link.";
@@ -155,21 +156,35 @@ export const action = defineHandler(async (c) => {
     return c.redirect(`/t/${invite.teamSlug}`);
   }
 
+  let joined: { teamId: string; role: string } | null;
   try {
-    await runBatch((tx) => [
-      tx.insert(memberships).values({
-        id: ulid(),
-        userId: user.id,
-        teamId: invite.teamId,
-        role: invite.role,
-        createdAt: Math.floor(Date.now() / 1000),
-      }),
-      tx.delete(teamInvites).where(eq(teamInvites.id, invite.id)),
-    ]);
-  } catch {
+    joined = await consumeTokenInvite(
+      user.id,
+      invite.id,
+      Math.floor(Date.now() / 1000),
+    );
+  } catch (err) {
+    // The user may have joined concurrently through another invite. Preserve
+    // the pre-existing behavior: redirect as a member without burning this
+    // open link when our membership insert did not win.
+    if (isUniqueViolation(err)) return c.redirect(`/t/${invite.teamSlug}`);
+    // Anything else is a real transaction failure on the primary accept path.
+    // The user only ever sees the generic flash below, so without this the
+    // failure leaves no trace anywhere Cloudflare Tail can see it.
+    logMutationFailure("accept invite failed", err, {
+      teamId: invite.teamId,
+      inviteId: invite.id,
+    });
     return c.redirect(
       `${here}?error=${encodeURIComponent(
         "Could not join the team — please try again.",
+      )}`,
+    );
+  }
+  if (!joined) {
+    return c.redirect(
+      `${here}?error=${encodeURIComponent(
+        "This invite is no longer valid. Ask the team owner for a fresh link.",
       )}`,
     );
   }
@@ -178,11 +193,11 @@ export const action = defineHandler(async (c) => {
   // real join is recorded, not just the programmatic /api/invites/:id/accept
   // route. Best-effort; reached only after the batch above succeeds.
   await recordAudit(c, {
-    teamId: invite.teamId,
+    teamId: joined.teamId,
     action: AUDIT_ACTIONS.INVITE_ACCEPT,
     targetType: "member",
     targetId: user.id,
-    metadata: { role: invite.role, inviteId: invite.id },
+    metadata: { role: joined.role, inviteId: invite.id },
   });
 
   return c.redirect(`/t/${invite.teamSlug}`);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vite-plus/test";
-import { STATUS_BUCKET_MEMBERS, statusBucket } from "@/lib/ingest";
+import { STATUS_BUCKET_MEMBERS, statusBucket } from "@/lib/status-buckets";
 import { STATUS_BUCKETS, WIRE_INVISIBLE_STATUSES } from "@/lib/status-buckets";
 
 /**

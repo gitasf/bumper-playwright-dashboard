@@ -3,6 +3,8 @@
 import type React from "react";
 import { AnsiPre } from "@/components/ansi-pre";
 import {
+  formatJsonRecordPreview,
+  formatJsonValuePreview,
   formatTraceDuration,
   formatTraceOffset,
   formatWallClock,
@@ -14,27 +16,40 @@ import type {
 } from "../vendor/model-util";
 import { Field, Section, TabNotice } from "./detail-shared";
 
-/** Compact JSON preview: single-line for primitives, pretty + capped for objects. */
-function renderJsonValue(value: unknown): React.ReactElement {
-  const isObjectLike = typeof value === "object" && value !== null;
-  if (!isObjectLike) {
+/** Compact JSON preview: single-line for primitives, pretty + bounded for objects. */
+function renderJsonPreview(
+  preview: string,
+  objectLike: boolean,
+): React.ReactElement {
+  if (!objectLike) {
     return (
-      <span className="break-words font-mono text-caption">
-        {JSON.stringify(value)}
-      </span>
+      <span className="break-words font-mono text-caption">{preview}</span>
     );
   }
   return (
     <pre className="max-h-40 overflow-auto break-words font-mono text-caption">
-      {JSON.stringify(value, null, 2)}
+      {preview}
     </pre>
+  );
+}
+
+function renderJsonValue(value: unknown): React.ReactElement {
+  return renderJsonPreview(
+    formatJsonValuePreview(value),
+    typeof value === "object" && value !== null,
   );
 }
 
 function isNonEmptyResult(value: unknown): boolean {
   if (value === undefined) return false;
   if (value !== null && typeof value === "object") {
-    return Object.keys(value).length > 0;
+    // Stop at the first own enumerable property. `Object.keys` materializes
+    // every key before the bounded preview formatter gets a chance to cap the
+    // trace value, which can freeze the Call tab on a huge return object.
+    for (const key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) return true;
+    }
+    return false;
   }
   return true;
 }
@@ -54,7 +69,7 @@ export function CallTab({
 
   const action = activeAction;
   const params: Record<string, unknown> = action.params ?? {};
-  const paramEntries = Object.entries(params);
+  const paramPreview = formatJsonRecordPreview(params);
   const hasResult = isNonEmptyResult(action.result);
   const errorMessage = action.error?.message;
 
@@ -88,19 +103,24 @@ export function CallTab({
           </dl>
         </div>
 
-        {paramEntries.length > 0 ? (
+        {paramPreview.entries.length > 0 ? (
           <Section title="Parameters">
             <dl className="flex flex-col gap-2">
-              {paramEntries.map(([key, value]) => (
-                // `bare`: renderJsonValue brings its own mono/size classes.
+              {paramPreview.entries.map((entry, index) => (
+                // `bare`: the preview brings its own mono/size classes.
                 <Field
-                  key={key}
-                  label={key}
-                  value={renderJsonValue(value)}
+                  key={`${index}:${entry.label}`}
+                  label={entry.label}
+                  value={renderJsonPreview(entry.preview, entry.objectLike)}
                   variant="bare"
                 />
               ))}
             </dl>
+            {paramPreview.truncated ? (
+              <div className="mt-2 text-caption text-fg-4">
+                Additional parameters omitted.
+              </div>
+            ) : null}
           </Section>
         ) : null}
 

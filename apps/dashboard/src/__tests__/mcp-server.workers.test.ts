@@ -413,10 +413,16 @@ describe("buildMcpServer tool surface", () => {
       const meta = JSON.parse(block.text) as {
         downloadUrl: string;
         downloadUrlExpiresInSeconds: number;
-        traceViewerUrl: string;
+        traceViewerUrl?: string;
+        hint: string;
       };
       expect(meta.downloadUrlExpiresInSeconds).toBe(TRACE_TOKEN_TTL_SECONDS);
-      expect(meta.traceViewerUrl).toContain("/trace-viewer/index.html");
+      // No `traceViewerUrl` in same-origin mode: that link points at
+      // Playwright's stock SPA, which frames attacker-craftable snapshots with a
+      // hardcoded `allow-scripts` sandbox, so it is never vendored there. The
+      // hint steers to `show-trace`, which renders on the user's own localhost.
+      expect(meta.traceViewerUrl).toBeUndefined();
+      expect(meta.hint).toContain("npx playwright show-trace");
 
       const token = new URL(meta.downloadUrl).searchParams.get("t");
       expect(token).not.toBeNull();

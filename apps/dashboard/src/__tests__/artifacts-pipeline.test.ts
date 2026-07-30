@@ -60,6 +60,12 @@ function makeBuilder(kind: string): BuilderNode {
   ] as const) {
     node[m] = chain;
   }
+  // `.for(...)` is a lock MODIFIER, not a terminal: it chains like `.where`, so
+  // the row-locking selects (the team key-share lock and the live-project probe
+  // in `finalizeUploads`) draw from the same `awaitResults` FIFO as every other
+  // statement. Returning a hardcoded non-empty row here instead would make both
+  // fail-closed guards permanently true and silently unfalsifiable.
+  node.for = chain;
   node.then = (onFulfilled?: (value: unknown) => unknown) => {
     const rows = awaitResults.shift() ?? [];
     return Promise.resolve(onFulfilled ? onFulfilled(rows) : rows);
@@ -119,7 +125,6 @@ const {
   safeKeySegment,
   artifactIdentity,
   buildArtifactR2Key,
-  filenameFromKey,
   findOversizedArtifact,
   planArtifactRegistration,
   registerArtifacts,
@@ -283,37 +288,6 @@ describe("buildArtifactR2Key", () => {
       "a/b/shot.png",
     );
     expect(key).toBe("t/team-1/p/proj-1/runs/run-1/tr-1/art-1/shot.png");
-  });
-});
-
-// ─── construct ⇆ reverse round-trip (download Content-Disposition filename) ──
-
-/**
- * `buildArtifactR2Key` and `filenameFromKey` are mutually-inverse on the
- * trailing segment: the download hot path skips the DB (the signed token
- * carries only `{ r2Key, contentType }`, not the original name), so the served
- * filename is whatever `filenameFromKey` recovers from the key. This property
- * pins the construct ⇆ reverse invariant in one place — a future key-layout
- * change in `buildArtifactR2Key` (e.g. a date partition) that broke the
- * trailing-segment convention would fail here instead of silently corrupting
- * the `Content-Disposition` of every download.
- */
-describe("filenameFromKey ⇆ buildArtifactR2Key round-trip", () => {
-  it("recovers the sanitized filename from a constructed key", () => {
-    for (const name of [
-      "shot.png",
-      "a/b/trace.zip",
-      "weird name!.txt",
-      "...hidden",
-    ]) {
-      const key = buildArtifactR2Key(scope, "run-1", "tr-1", "art-1", name);
-      expect(filenameFromKey(key)).toBe(safeKeySegment(name));
-    }
-  });
-
-  it("falls back to 'artifact' for a degenerate key", () => {
-    expect(filenameFromKey("")).toBe("artifact");
-    expect(filenameFromKey("t/team/p/proj/runs/r/tr/art/")).toBe("artifact");
   });
 });
 
@@ -643,7 +617,8 @@ describe("registerArtifacts", () => {
   it("refreshes a reused row's size/type on a re-run (fresh trace bytes accepted)", async () => {
     // [0] ownerRun found; [1] testResults validation → tr-1 valid;
     // [2] existing-artifacts SELECT → identity match at the OLD size;
-    // [3] usage-quota SELECT (net-positive delta → a quota check runs).
+    // [3] usage-quota SELECT (net-positive delta → a quota check runs);
+    // [4] the write transaction's parent lock.
     awaitResults = [
       [{ id: "run-1" }],
       [{ id: "tr-1" }],
@@ -668,6 +643,7 @@ describe("registerArtifacts", () => {
           artifactBytes: 0,
         },
       ],
+      [{ id: "team-1" }], // write-tx lockTeamForChildMutation
     ];
     const payload: RegisterArtifactsPayload = {
       runId: "run-1",
@@ -692,12 +668,14 @@ describe("registerArtifacts", () => {
 
   it("inserts a fresh row with a tenant-prefixed key and returns its upload", async () => {
     // [0] ownerRun found; [1] testResults validation → tr-1 valid;
-    // [2] existing-artifacts SELECT → none; [3] usage-quota SELECT → free, unused.
+    // [2] existing-artifacts SELECT → none; [3] usage-quota SELECT → free,
+    // unused; [4] the write transaction's parent lock.
     awaitResults = [
       [{ id: "run-1" }],
       [{ id: "tr-1" }],
       [],
       [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
+      [{ id: "team-1" }], // write-tx lockTeamForChildMutation
     ];
     const payload: RegisterArtifactsPayload = {
       runId: "run-1",
@@ -724,6 +702,10 @@ describe("registerArtifacts", () => {
       [{ id: "tr-1" }],
       [],
       [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
+      [{ id: "team-1" }], // write-tx lockTeamForChildMutation
+      [], // artifacts INSERT
+      [{ id: "team-1" }], // lockTeamForChildMutation
+      [{ id: "proj-1" }], // live-project revalidation
     ];
     const signPut = vi.fn(
       async (
@@ -779,6 +761,10 @@ describe("registerArtifacts", () => {
           contentType: "image/png",
         },
       ],
+      // Pure reuse takes the early return, so there is no INSERT — just the two
+      // locks `finalizeUploads` holds while minting the capability.
+      [{ id: "team-1" }], // lockTeamForChildMutation
+      [{ id: "proj-1" }], // live-project revalidation
     ];
     const signPut = vi.fn(
       async (
@@ -799,7 +785,9 @@ describe("registerArtifacts", () => {
       signPut,
     );
     if (result.kind !== "ok") throw new Error("expected ok");
-    expect(transactionSpy).not.toHaveBeenCalled(); // pure reuse, no insert
+    // Pure reuse needs no write transaction, but direct-R2 capability minting
+    // now holds one short live-project lock transaction through signing.
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
     const upload = result.uploads[0];
     expect(signPut).toHaveBeenCalledWith("reused/key.png", {
       contentType: "image/png",
@@ -818,6 +806,10 @@ describe("registerArtifacts", () => {
       [{ id: "tr-1" }],
       [],
       [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
+      [{ id: "team-1" }], // write-tx lockTeamForChildMutation
+      [], // artifacts INSERT
+      [{ id: "team-1" }], // lockTeamForChildMutation
+      [{ id: "proj-1" }], // live-project revalidation
     ];
     const signPut = vi.fn(async () => "https://r2/url");
     const payload: RegisterArtifactsPayload = {
@@ -840,12 +832,101 @@ describe("registerArtifacts", () => {
     });
   });
 
+  // Both fail-closed guards in `finalizeUploads`. A presigned PUT stays usable
+  // after its artifact row is gone, so losing either lock must return NO url
+  // rather than one pointing at a deleted project's prefix. Each asserts the
+  // signer was never invoked — a returned `runNotFound` with a minted-but-
+  // discarded URL would still have leaked the capability.
+  it("returns runNotFound WITHOUT signing when teardown already removed the team", async () => {
+    awaitResults = [
+      [{ id: "run-1" }],
+      [{ id: "tr-1" }],
+      [],
+      [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
+      [{ id: "team-1" }], // write-tx lockTeamForChildMutation
+      [], // artifacts INSERT
+      [], // lockTeamForChildMutation → team gone
+      // A LIVE project deliberately follows. The team guard must short-circuit
+      // before this is ever read; without it the flow would fall through to a
+      // live project and mint a URL, so this row is what makes the team guard
+      // independently falsifiable rather than masked by the project guard.
+      [{ id: "proj-1" }],
+    ];
+    const signPut = vi.fn(async () => "https://r2/url");
+    const result = await registerArtifacts(
+      scope,
+      { runId: "run-1", artifacts: [artifact()] },
+      MAX_BYTES,
+      NOW,
+      signPut,
+    );
+    expect(result).toEqual({ kind: "runNotFound" });
+    expect(signPut).not.toHaveBeenCalled();
+  });
+
+  it("returns runNotFound WITHOUT signing when the project vanished under the lock", async () => {
+    awaitResults = [
+      [{ id: "run-1" }],
+      [{ id: "tr-1" }],
+      [],
+      [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
+      [{ id: "team-1" }], // write-tx lockTeamForChildMutation
+      [], // artifacts INSERT
+      [{ id: "team-1" }], // team lock held
+      [], // live-project revalidation → project gone
+    ];
+    const signPut = vi.fn(async () => "https://r2/url");
+    const result = await registerArtifacts(
+      scope,
+      { runId: "run-1", artifacts: [artifact()] },
+      MAX_BYTES,
+      NOW,
+      signPut,
+    );
+    expect(result).toEqual({ kind: "runNotFound" });
+    expect(signPut).not.toHaveBeenCalled();
+  });
+
+  // The WRITE transaction's parent lock, which is a separate guard from the two
+  // above: it runs on the worker-proxied path too (no signer), and it is what
+  // keeps this transaction's two implicit FK locks — the project row via
+  // `artifacts`, the team row via `usageCounters` — in teardown's order. Losing
+  // it must abandon the write rather than insert children under a team that
+  // teardown has already committed to deleting.
+  it("returns runNotFound WITHOUT writing when the write-tx parent lock is lost", async () => {
+    awaitResults = [
+      [{ id: "run-1" }],
+      [{ id: "tr-1" }],
+      [],
+      [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
+      [], // write-tx lockTeamForChildMutation → team gone
+      // Everything downstream deliberately succeeds: an INSERT, then BOTH
+      // `finalizeUploads` locks live. Without the write-tx guard the flow runs
+      // to completion and mints a URL, so `signPut` not being called is what
+      // isolates this guard instead of letting the project guard mask it.
+      [], // artifacts INSERT
+      [{ id: "team-1" }], // finalizeUploads team lock
+      [{ id: "proj-1" }], // live-project revalidation
+    ];
+    const signPut = vi.fn(async () => "https://r2/url");
+    const result = await registerArtifacts(
+      scope,
+      { runId: "run-1", artifacts: [artifact()] },
+      MAX_BYTES,
+      NOW,
+      signPut,
+    );
+    expect(result).toEqual({ kind: "runNotFound" });
+    expect(signPut).not.toHaveBeenCalled();
+  });
+
   it("de-dupes identical artifacts within one request to a single inserted row", async () => {
     awaitResults = [
       [{ id: "run-1" }],
       [{ id: "tr-1" }],
       [],
       [{ tier: "free", runsCount: 0, artifactBytes: 0 }],
+      [{ id: "team-1" }], // write-tx lockTeamForChildMutation
     ];
     const payload: RegisterArtifactsPayload = {
       runId: "run-1",

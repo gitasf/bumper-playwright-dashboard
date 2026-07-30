@@ -55,7 +55,7 @@ function makeRoom(opts?: {
     param: "runId",
     client: clientSchema,
     server: serverSchema,
-    publicUrl: PUBLIC_URL,
+    publicUrl: () => PUBLIC_URL,
     internalSecret: opts?.secret ?? (() => SECRET),
     authorize: authz.fn,
   }) as unknown as RoomDef;
@@ -249,7 +249,7 @@ describe("defineGuardedRoom — connect gate (onBeforeConnect)", () => {
       param: "projectId",
       client: clientSchema,
       server: serverSchema,
-      publicUrl: PUBLIC_URL,
+      publicUrl: () => PUBLIC_URL,
       internalSecret: () => SECRET,
       authorize: authz.fn,
     }) as unknown as RoomDef;
@@ -273,11 +273,34 @@ describe("defineGuardedRoom — connect gate (onBeforeConnect)", () => {
 // mocked so the route module is importable without a live worker.
 
 vi.mock("void/ws", () => ({ defineRoom: (def: unknown) => def }));
+
+/**
+ * `void/env` mocked the way the PLATFORM behaves, not the way that is
+ * convenient: Cloudflare's env exists only while a request is in flight, so
+ * void's proxy throws for any read during module evaluation.
+ *
+ * A plain-object mock (what this was) resolves eagerly, which is precisely how
+ * a module-scope `publicUrl: env.WRIGHTFUL_PUBLIC_URL` in both `.ws.ts` routes
+ * passed every test and every local build, then failed Cloudflare's upload
+ * validation — it evaluates the worker's top level with no request, and
+ * `WRIGHTFUL_PUBLIC_URL` is a secret with no build-time value to fall back on
+ * (10021, "Cloudflare env is unavailable"). Flipping this flag only AFTER the
+ * route imports below is what makes that class of regression fail here first.
+ */
+const runtimeEnv = vi.hoisted(() => ({ available: false }));
 vi.mock("void/env", () => ({
-  env: {
-    REALTIME_INTERNAL_SECRET: SECRET,
-    WRIGHTFUL_PUBLIC_URL: PUBLIC_URL,
-  },
+  env: new Proxy(
+    {},
+    {
+      get(_target, key) {
+        if (typeof key !== "string") return undefined;
+        if (!runtimeEnv.available) {
+          throw new Error("env: Cloudflare env is unavailable");
+        }
+        return key === "REALTIME_INTERNAL_SECRET" ? SECRET : PUBLIC_URL;
+      },
+    },
+  ),
 }));
 const routeAuthzSpy =
   vi.fn<
@@ -288,15 +311,28 @@ const routeAuthzSpy =
   >();
 vi.mock("@/lib/authz", () => ({ authorizeTopicSubscription: routeAuthzSpy }));
 
+// Imported with `runtimeEnv.available` still FALSE — this is the deploy-time
+// startup condition. An eager env read in either route throws right here, which
+// fails this file outright rather than shipping a worker Cloudflare rejects.
 const runRoom = (await import("../../../routes/ws/run/[runId].ws"))
   .default as unknown as RoomDef;
 const projectRoom = (await import("../../../routes/ws/project/[projectId].ws"))
   .default as unknown as RoomDef;
+// Startup is over; from here on a request is notionally in flight.
+runtimeEnv.available = true;
 
 describe("per-room wiring (route files delegate to the factory)", () => {
   beforeEach(() => {
     routeAuthzSpy.mockReset();
     routeAuthzSpy.mockResolvedValue({ ok: true });
+  });
+
+  it("evaluates both route modules without reading runtime env (deploy-time startup)", () => {
+    // The real assertion already happened at import time above. This states the
+    // contract so the next reader knows the imports are load-bearing: every
+    // env-derived room input must be a thunk resolved per connect/publish.
+    expect(typeof runRoom.onBeforeConnect).toBe("function");
+    expect(typeof projectRoom.onBeforeConnect).toBe("function");
   });
 
   it("run room wires param=runId, prefix=run, and the run schemas", async () => {

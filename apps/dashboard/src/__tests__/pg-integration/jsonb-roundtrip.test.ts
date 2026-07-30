@@ -141,7 +141,7 @@ describe("jsonb columns round-trip (object in → object out, no double-encoding
         id: "al-2",
         teamId: "t-json",
         actorUserId: "u-json",
-        action: "team.delete",
+        action: "project.delete",
         metadata: null,
         createdAt: 1001,
       },

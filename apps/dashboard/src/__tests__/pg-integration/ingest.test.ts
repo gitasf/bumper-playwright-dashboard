@@ -53,12 +53,11 @@ vi.mock("void/env", () => ({
 
 const { resetTables } = await import("./harness");
 const { runBatch } = await import("@/lib/db/batch");
-const {
-  appendRunResults,
-  applyShardExpectedTests,
-  buildRunInsertValues,
-  buildTestCatalogUpsertStatements,
-} = await import("@/lib/ingest");
+const { applyShardExpectedTests, buildRunInsertValues } =
+  await import("@/lib/ingest/lifecycle");
+const { buildTestCatalogUpsertStatements } =
+  await import("@/lib/ingest/write-and-publish");
+const { appendRunResults } = await import("@/lib/ingest/results");
 const { makeTenantScope } = await import("@/lib/scope");
 const { loadTestResultChildren } = await import("@/lib/test-result-children");
 const { buildTestSearchWhere } = await import("@/lib/command-search");
@@ -635,11 +634,7 @@ describe("sharded expected-total merge (applyShardExpectedTests jsonb re-sum)", 
     expect(await readRun("run-shardsum")).toEqual(before);
   });
 
-  it("a terminal re-run with a CHANGED total resets the map, replaces expectedShards, and drops stale shard rows", async () => {
-    // Deterministic CI re-run reusing the idempotency key after the shard
-    // count changed (3 → 2): the stored map/total and the previous run's
-    // completion rows describe dead configuration — kept, they would 409
-    // every /complete (`invalidShard`) or finalize against the wrong count.
+  it("never mutates a terminal execution when a changed shard total is presented", async () => {
     const rerun = buildRunInsertValues(
       "run-reshard",
       scope,
@@ -672,9 +667,9 @@ describe("sharded expected-total merge (applyShardExpectedTests jsonb re-sum)", 
     );
 
     expect(await readRun("run-reshard")).toMatchObject({
-      expectedShards: 2,
-      shardExpectedTests: { "1": 4 },
-      expectedTotalTests: 4,
+      expectedShards: 3,
+      shardExpectedTests: { "1": 2 },
+      expectedTotalTests: 2,
     });
     const staleRows = await h.db
       .select({ shardIndex: runShards.shardIndex })
@@ -685,17 +680,10 @@ describe("sharded expected-total merge (applyShardExpectedTests jsonb re-sum)", 
           eq(runShards.runId, "run-reshard"),
         ),
       );
-    expect(staleRows).toEqual([]);
+    expect(staleRows).toHaveLength(3);
   });
 
-  it("a terminal re-run with the SAME total also resets the map, drops the completion rows, and re-arms the run", async () => {
-    // The most common CI re-run: same shard matrix, same idempotency key. The
-    // previous run's completion rows carry the SAME shardTotal, so a
-    // total-keyed delete would keep them and the re-run's first /complete
-    // would find a full count and finalize against dead sibling results. The
-    // reset latches on the terminal status instead, and the same UPDATE
-    // re-arms the run (status='running', completedAt=null) so the latch fires
-    // exactly once under racing sibling opens.
+  it("never re-arms a terminal execution when the same shard total is presented", async () => {
     const rerun = buildRunInsertValues(
       "run-samereshard",
       scope,
@@ -729,14 +717,14 @@ describe("sharded expected-total merge (applyShardExpectedTests jsonb re-sum)", 
 
     expect(await readRun("run-samereshard")).toMatchObject({
       expectedShards: 3,
-      shardExpectedTests: { "2": 5 },
-      expectedTotalTests: 5,
+      shardExpectedTests: { "1": 2 },
+      expectedTotalTests: 2,
     });
     const rearmed = await h.db
       .select({ status: runs.status, completedAt: runs.completedAt })
       .from(runs)
       .where(eq(runs.id, "run-samereshard"));
-    expect(rearmed[0]).toEqual({ status: "running", completedAt: null });
+    expect(rearmed[0]).toEqual({ status: "failed", completedAt: T + 100 });
     const staleRows = await h.db
       .select({ shardIndex: runShards.shardIndex })
       .from(runShards)
@@ -746,7 +734,7 @@ describe("sharded expected-total merge (applyShardExpectedTests jsonb re-sum)", 
           eq(runShards.runId, "run-samereshard"),
         ),
       );
-    expect(staleRows).toEqual([]);
+    expect(staleRows).toHaveLength(3);
   });
 
   it("a MID-FLIGHT open with a different total keeps the stored total (coalesce, no reset)", async () => {

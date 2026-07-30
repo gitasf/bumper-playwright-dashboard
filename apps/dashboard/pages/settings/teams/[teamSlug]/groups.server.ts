@@ -1,5 +1,6 @@
 import { defineHandler, type InferProps } from "void";
 import { requireAuth } from "void/auth";
+import { mutationErrorMessage } from "@/lib/action-errors";
 import { listTeamMembers } from "@/lib/auth-users";
 import { defineFlashSlots } from "@/lib/flash";
 import { readField } from "@/lib/form";
@@ -7,8 +8,7 @@ import {
   createGroup,
   deleteGroup,
   listGroups,
-  renameGroup,
-  setGroupMembers,
+  updateGroup,
 } from "@/lib/member-groups";
 import { requireOwnerScope, requireRoleScope } from "@/lib/settings-scope";
 
@@ -69,13 +69,21 @@ export const actions = {
     }
     const now = Math.floor(Date.now() / 1000);
     try {
+      // A null result means team teardown won between the owner check and the
+      // insert. Fall through to the redirect so the loader reports the missing
+      // team, exactly as `saveGroup` does for a group that vanished — the flash
+      // below is for failures a retry could actually fix.
       await createGroup(team.id, name, checkedMembers(form), user.id, now);
-    } catch {
+    } catch (err) {
       return GROUPS_FLASH.fail(
         c,
         here,
         "groupsError",
-        "A group with that name already exists.",
+        mutationErrorMessage(err, {
+          context: "create member group failed",
+          uniqueMessage: "A group with that name already exists.",
+          genericMessage: "Could not save the group. Please try again.",
+        }),
       );
     }
     return c.redirect(here);
@@ -98,16 +106,19 @@ export const actions = {
     }
     const now = Math.floor(Date.now() / 1000);
     try {
-      await renameGroup(team.id, groupId, name, now);
-    } catch {
+      await updateGroup(team.id, groupId, name, checkedMembers(form), now);
+    } catch (err) {
       return GROUPS_FLASH.fail(
         c,
         here,
         "groupsError",
-        "A group with that name already exists.",
+        mutationErrorMessage(err, {
+          context: "update member group failed",
+          uniqueMessage: "A group with that name already exists.",
+          genericMessage: "Could not save the group. Please try again.",
+        }),
       );
     }
-    await setGroupMembers(team.id, groupId, checkedMembers(form), now);
     return c.redirect(here);
   }),
 

@@ -5,7 +5,8 @@ import { mountBridgeIframe } from "./bridge-iframe";
 import { traceViewerBridgeOrigin } from "./origin";
 import type { ContextEntry } from "./vendor/entries";
 
-const BRIDGE_TIMEOUT_MS = 30_000;
+const BRIDGE_STARTUP_TIMEOUT_MS = 30_000;
+const TRACE_LOAD_SILENCE_TIMEOUT_MS = 60_000;
 const BRIDGE_FETCH_TIMEOUT_MS = 20_000;
 
 type Progress = { done: number; total: number };
@@ -28,6 +29,7 @@ export type TraceBridge = {
 
 type BridgeMessage =
   | { method: "progress"; params: Progress }
+  | { method: "ready"; params: Record<string, never> }
   | { method: "model"; params: { contextEntries: ContextEntry[] } }
   | { method: "error"; params: { error: string } }
   | { method: "warm"; params: Record<string, never> }
@@ -62,6 +64,8 @@ export function isBridgeMessage(data: unknown): data is BridgeMessage {
   switch (data.method) {
     case "progress":
       return isProgress(params);
+    case "ready":
+      return isRecord(params);
     case "model":
       return isRecord(params) && Array.isArray(params.contextEntries);
     case "error":
@@ -233,16 +237,24 @@ export function useTraceModel(traceUrl: string): {
     };
 
     let watchdog = 0;
-    const armWatchdog = (): void => {
+    const armWatchdog = (timeoutMs: number, error: string): void => {
       window.clearTimeout(watchdog);
       watchdog = window.setTimeout(() => {
         if (done) return;
-        fail(
-          "Timed out loading the trace. The trace viewer's service worker may be blocked in this browser.",
-        );
-      }, BRIDGE_TIMEOUT_MS);
+        fail(error);
+      }, timeoutMs);
     };
-    armWatchdog();
+    const armStartupWatchdog = (): void =>
+      armWatchdog(
+        BRIDGE_STARTUP_TIMEOUT_MS,
+        "Timed out starting the trace viewer. Its service worker may be blocked in this browser.",
+      );
+    const armLoadWatchdog = (): void =>
+      armWatchdog(
+        TRACE_LOAD_SILENCE_TIMEOUT_MS,
+        "Timed out loading the trace after the trace viewer became ready.",
+      );
+    armStartupWatchdog();
 
     const onMessage = (event: MessageEvent): void => {
       if (event.origin !== traceViewerBridgeOrigin(window.location.origin))
@@ -250,13 +262,17 @@ export function useTraceModel(traceUrl: string): {
       if (event.source !== iframe.contentWindow) return;
       if (!isBridgeMessage(event.data)) return;
       const message = event.data;
-      if (!done) armWatchdog();
       switch (message.method) {
         case "fetchResult":
         case "warm":
           return;
+        case "ready":
+          if (done) return;
+          armLoadWatchdog();
+          return;
         case "progress":
           if (done) return;
+          armLoadWatchdog();
           setState((prev) =>
             isSwitch && prev.status === "ready"
               ? { ...prev, switching: { progress: message.params } }

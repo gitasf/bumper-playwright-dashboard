@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { snapshotIframeUrl } from "../model";
 import type { SnapshotSet, SnapshotTabId } from "../model";
-import { snapshotSandbox } from "../origin";
+import { snapshotSandbox, snapshotScriptsEnabled } from "../origin";
 import { useElementSize } from "../use-element-size";
 import { bindEscapeAcrossFrames } from "./escape-frames";
+import { prepareScriptlessSnapshot } from "./scriptless-snapshot";
 
 export const TAB_LABELS: Record<SnapshotTabId, string> = {
   before: "Before",
@@ -281,15 +282,21 @@ function SnapshotFrame({
         transform: `scale(${scale})`,
       }}
       onLoad={(e) => {
+        const win = e.currentTarget.contentWindow;
+        // Bookkeeping first, snapshot content last: reaching into the hostile
+        // document is the only step that can fail, so no snapshot can wedge the
+        // pane by starving the escape binding or the back-buffer promotion.
         escapeCleanupRef.current?.();
         escapeCleanupRef.current = null;
-        if (onEscape) {
-          const win = e.currentTarget.contentWindow;
-          if (win) {
-            escapeCleanupRef.current = bindEscapeAcrossFrames(win, onEscape);
-          }
+        if (onEscape && win) {
+          escapeCleanupRef.current = bindEscapeAcrossFrames(win, onEscape);
         }
         onLoaded?.();
+        // Same-origin snapshots run without `allow-scripts`, so nothing inside
+        // the frame lifts Playwright's visibility guard — do it from here.
+        if (win && !snapshotScriptsEnabled(pageOrigin)) {
+          prepareScriptlessSnapshot(win);
+        }
       }}
     />
   );

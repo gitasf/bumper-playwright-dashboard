@@ -53,7 +53,7 @@ describe("resolveRetentionWindows", () => {
 
 /**
  * The IN-list chunker for the per-project delete/R2-cleanup loops. It defers the
- * bound-param ceiling to `chunkByParams` (ingest.ts) rather than carrying its own
+ * bound-param ceiling to `chunkByParams` (`db/chunk.ts`) rather than carrying its own
  * magic number — this asserts the seam is wired correctly, not the cap's math
  * (the cap is covered by ingest's own chunk tests).
  */

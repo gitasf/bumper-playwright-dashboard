@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vite-plus/test";
-import { drainStaleRuns } from "@/lib/ingest";
+import { drainStaleRuns } from "@/lib/ingest/stale-runs";
 
 /**
  * `drainStaleRuns` (`@/lib/ingest`) is the watchdog's budget policy as a PURE

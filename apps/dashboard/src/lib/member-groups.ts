@@ -1,15 +1,16 @@
 /**
  * Repository for `memberGroups` — named, team-scoped sets of members (see the
  * schema doc-comment). All reads/writes are scoped by `teamId` so a caller can
- * never touch another team's groups. Group membership is replaced wholesale by
- * `setGroupMembers` (the edit form posts the full desired set), and is always
- * intersected with the team's CURRENT members so a stale user id can't be
- * stored.
+ * never touch another team's groups. The edit flow atomically renames and
+ * replaces the complete member set, always intersecting posted ids with the
+ * team's CURRENT members.
  */
 import { and, db, eq, inArray } from "void/db";
 import { ulid } from "ulid";
-import { memberGroupMembers, memberGroups } from "@schema";
-import { listTeamMembers } from "@/lib/auth-users";
+import { memberGroupMembers, memberGroups, memberships } from "@schema";
+import type { BatchExecutor } from "@/lib/db/batch";
+import { lockOwnerRows } from "@/lib/members-repo";
+import { lockTeamForChildMutation } from "@/lib/team-lock";
 
 export interface MemberGroupSummary {
   id: string;
@@ -34,6 +35,13 @@ export async function listGroups(
       userId: memberGroupMembers.userId,
     })
     .from(memberGroupMembers)
+    .innerJoin(
+      memberships,
+      and(
+        eq(memberships.teamId, teamId),
+        eq(memberships.userId, memberGroupMembers.userId),
+      ),
+    )
     .where(
       inArray(
         memberGroupMembers.groupId,
@@ -63,6 +71,13 @@ export async function listUserIdsInGroups(
     .select({ userId: memberGroupMembers.userId })
     .from(memberGroupMembers)
     .innerJoin(memberGroups, eq(memberGroups.id, memberGroupMembers.groupId))
+    .innerJoin(
+      memberships,
+      and(
+        eq(memberships.teamId, memberGroups.teamId),
+        eq(memberships.userId, memberGroupMembers.userId),
+      ),
+    )
     .where(
       and(
         eq(memberGroups.teamId, teamId),
@@ -72,59 +87,55 @@ export async function listUserIdsInGroups(
   return [...new Set(rows.map((r) => r.userId))];
 }
 
-/** Create a group and set its initial members (intersected with live members). */
+/**
+ * Create a group and set its initial members (intersected with live members).
+ * Returns the new id, or null when concurrent team teardown already removed the
+ * parent — the same "already gone" outcome {@link updateGroup} reports as
+ * `false`, not a retryable failure.
+ */
 export async function createGroup(
   teamId: string,
   name: string,
   userIds: string[],
   createdBy: string,
   now: number,
-): Promise<string> {
+): Promise<string | null> {
   const id = ulid();
-  await db.insert(memberGroups).values({
-    id,
-    teamId,
-    name,
-    createdBy,
-    createdAt: now,
-    updatedAt: now,
+  const created = await db.transaction(async (tx) => {
+    if (!(await lockTeamForChildMutation(tx, teamId))) return false;
+    await tx.insert(memberGroups).values({
+      id,
+      teamId,
+      name,
+      createdBy,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await replaceMembers(tx, teamId, id, userIds);
+    return true;
   });
-  await replaceMembers(teamId, id, userIds);
-  return id;
+  return created ? id : null;
 }
 
-/** Rename a group (scoped to the team). */
-export async function renameGroup(
+/** Atomically rename a group and replace its complete member set. */
+export async function updateGroup(
   teamId: string,
   groupId: string,
   name: string,
-  now: number,
-): Promise<void> {
-  await db
-    .update(memberGroups)
-    .set({ name, updatedAt: now })
-    .where(and(eq(memberGroups.id, groupId), eq(memberGroups.teamId, teamId)));
-}
-
-/** Replace a group's members with `userIds` (intersected with live members). */
-export async function setGroupMembers(
-  teamId: string,
-  groupId: string,
   userIds: string[],
   now: number,
-): Promise<void> {
-  // Verify the group belongs to the team before touching its membership.
-  const owned = await db
-    .select({ id: memberGroups.id })
-    .from(memberGroups)
-    .where(and(eq(memberGroups.id, groupId), eq(memberGroups.teamId, teamId)))
-    .limit(1);
-  if (owned.length === 0) return;
-  await replaceMembers(teamId, groupId, userIds);
-  await db
-    .update(memberGroups)
-    .set({ updatedAt: now })
-    .where(eq(memberGroups.id, groupId));
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    if (!(await lockTeamForChildMutation(tx, teamId))) return false;
+    const renamed = await tx
+      .update(memberGroups)
+      .set({ name, updatedAt: now })
+      .where(and(eq(memberGroups.id, groupId), eq(memberGroups.teamId, teamId)))
+      .returning({ id: memberGroups.id });
+    if (renamed.length === 0) return false;
+    await replaceMembers(tx, teamId, groupId, userIds);
+    return true;
+  });
 }
 
 /** Delete a group (its membership rows cascade). */
@@ -142,17 +153,32 @@ export async function deleteGroup(
  * the team's CURRENT members — so a stale/non-member id is never stored.
  */
 async function replaceMembers(
+  exec: BatchExecutor,
   teamId: string,
   groupId: string,
   userIds: string[],
 ): Promise<void> {
-  const liveIds = new Set((await listTeamMembers(teamId)).map((m) => m.userId));
+  // Member removal locks owners before its target row. Take that same prefix
+  // lock before locking the full live set, otherwise an update holding a
+  // low-sorting non-owner while waiting for an owner can deadlock with a remove
+  // holding that owner while waiting for the non-owner. Once these locks land,
+  // a concurrent remove/leave must wait; after this transaction commits it
+  // removes any departing member's links. If removal wins first, this read
+  // resumes without that member and cannot recreate the link.
+  await lockOwnerRows(exec, teamId);
+  const liveRows = await exec
+    .select({ userId: memberships.userId })
+    .from(memberships)
+    .where(eq(memberships.teamId, teamId))
+    .orderBy(memberships.id)
+    .for("update");
+  const liveIds = new Set(liveRows.map((m) => m.userId));
   const valid = [...new Set(userIds)].filter((id) => liveIds.has(id));
-  await db
+  await exec
     .delete(memberGroupMembers)
     .where(eq(memberGroupMembers.groupId, groupId));
   if (valid.length > 0) {
-    await db
+    await exec
       .insert(memberGroupMembers)
       .values(valid.map((userId) => ({ groupId, userId })));
   }

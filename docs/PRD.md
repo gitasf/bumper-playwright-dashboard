@@ -4,9 +4,13 @@
 
 This document is the strategy + decisions doc — what Wrightful is, what it isn't, and why we made the architectural calls we did. For the request flow, storage layout, and route surface as they stand today, see [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md). For self-hosting steps, see [`SELF-HOSTING.md`](../SELF-HOSTING.md). For the dated narrative behind specific changes, see [`docs/worklog/`](./worklog/).
 
-> **Architecture note (2026-05):** the dashboard was migrated from RedwoodSDK + per-team Durable Objects + Kysely onto [Void](https://void.cloud) with a single D1 database + Drizzle. Several decisions below were reversed by that migration; they're kept and annotated rather than deleted, because the reasoning is part of the project's history. The consolidated record is [`docs/worklog/void-migration-consolidated.md`](./worklog/void-migration-consolidated.md).
-
-> **Architecture note (2026-06):** the backend was briefly **dual-dialect** — optional Postgres-over-Cloudflare-Hyperdrive alongside the original single D1, selected by `WRIGHTFUL_DB_DIALECT` — and was then **simplified to Postgres-only**: D1 was removed entirely, so the dashboard now runs on **Postgres over Hyperdrive** in production (a direct `DATABASE_URL` in local dev). Maintaining two dialects (raw-SQL seams, dual migration histories, a real-Postgres CI leg) wasn't worth it pre-launch — one well-supported store is simpler to operate and self-host, and Postgres is the one that scales. The "single D1" framing below is kept as annotated history. See [`docs/worklog/2026-06-16-postgres-only.md`](./worklog/2026-06-16-postgres-only.md) and [`SELF-HOSTING.md`](../SELF-HOSTING.md).
+> **Current architecture:** the dashboard is a Void application backed only by
+> Postgres — through Cloudflare Hyperdrive in production and `DATABASE_URL`
+> locally — with Drizzle as its data layer. The earlier
+> RedwoodSDK/Durable-Object, D1, and short-lived dual-dialect designs are
+> historical; see the
+> [Void migration record](./worklog/void-migration-consolidated.md) and
+> [Postgres-only decision](./worklog/2026-06-16-postgres-only.md).
 
 ## Problem
 
@@ -31,56 +35,60 @@ Non-goals (explicitly out of scope):
 
 ## Tech Stack
 
-| Layer          | Technology                                          | Why                                                                                                                                                                                                     |
-| -------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Framework      | **Void**                                            | Fullstack Vite plugin + deploy platform for Cloudflare. File-based Hono routing + Inertia-style server-rendered pages with co-located loaders.                                                          |
-| Data store     | **Single Cloudflare D1**                            | One SQLite database holds auth, tenancy, runs, and derived rows. Tenant isolation is logical (filter by `teamId`/`projectId`), not physical.                                                            |
-| Query builder  | **Drizzle ORM**                                     | Ships with Void (`void/db`); schema in `db/schema.ts`; typed routes + typed fetch client. Multi-statement writes via D1 `db.batch`.                                                                     |
-| Auth/tenancy   | **Better Auth via `void/auth`**                     | Sessions (email + password, optional GitHub OAuth). Better Auth's own tables are void-managed; our tenancy tables live in the same D1.                                                                  |
-| Realtime       | **`void/ws`**                                       | DO-backed WebSocket rooms (run + project rooms); ingest broadcasts to the run room, run detail/list islands subscribe via `useRunRoom` / `useProjectRoom`.                                              |
-| Object storage | **Cloudflare R2**                                   | S3-compatible storage for traces, screenshots, videos. 10GB free, zero egress charges. Artifacts are uploaded and downloaded through worker routes (worker-proxied PUT/GET; no presigned R2 URL today). |
-| Reporter       | **`@wrightful/reporter`**                           | Custom Playwright reporter that streams per-test results live as the suite runs (open run → append batches → complete). Not a JSON-file uploader.                                                       |
-| CI integration | **Reporter PR comment**                             | Opt-in `postPrComment` upserts a PR comment with run summary, tallies, and a dashboard link, posted from CI with the runner's `GITHUB_TOKEN`.                                                           |
-| API auth       | **Bearer API keys**                                 | Per-project keys, SHA-256 hashed at rest, looked up by 8-char prefix. Multiple keys per project with individual revocation.                                                                             |
-| Dashboard auth | **Better Auth** (sessions; email + optional GitHub) | Email/password sign-in by default, optional GitHub OAuth. Session cookie gates the UI.                                                                                                                  |
+| Layer          | Technology                                          | Why                                                                                                                                                                                                                                      |
+| -------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Framework      | **Void**                                            | Fullstack Vite plugin + deploy platform for Cloudflare. File-based Hono routing + Inertia-style server-rendered pages with co-located loaders.                                                                                           |
+| Data store     | **Postgres**                                        | One database holds auth, tenancy, runs, and derived rows. Production connects through Hyperdrive; local development uses `DATABASE_URL`. Tenant isolation is logical (filter by `teamId`/`projectId`), not physical.                     |
+| Query builder  | **Drizzle ORM**                                     | Accessed through `void/db`; application schema lives in `db/schema.ts`. Multi-statement writes use the shared `runBatch` transaction seam.                                                                                               |
+| Auth/tenancy   | **Better Auth via `void/auth`**                     | Sessions (email + password, optional GitHub OAuth). Better Auth owns its tables in the same Postgres database; the application schema owns tenancy.                                                                                      |
+| Realtime       | **`void/ws`**                                       | Managed WebSocket rooms for run and project audiences; ingest broadcasts to those rooms and client islands subscribe with `useRunRoom` / `useProjectRoom`.                                                                               |
+| Object storage | **Cloudflare R2**                                   | Stores traces, screenshots, and videos. Bytes are worker-proxied by default; self-hosters who configure all four R2 S3 credentials use SigV4-presigned direct uploads/downloads while retaining the same authorization and expiry rules. |
+| Reporter       | **`@wrightful/reporter`**                           | Custom Playwright reporter that streams per-test results live as the suite runs (open run → append batches → complete). Not a JSON-file uploader.                                                                                        |
+| CI integration | **GitHub App + reporter fallback**                  | The GitHub App posts aggregate check runs and sticky PR comments. Unsharded GitHub Actions runs can instead opt into the reporter's `GITHUB_TOKEN` comment fallback.                                                                     |
+| API auth       | **Bearer API keys**                                 | Per-project keys, SHA-256 hashed at rest, looked up by 8-char prefix. Multiple keys per project with individual revocation.                                                                                                              |
+| Dashboard auth | **Better Auth** (sessions; email + optional GitHub) | Email/password sign-in by default, optional GitHub OAuth. Session cookie gates the UI.                                                                                                                                                   |
 
 ### Why Void
 
 - Server-rendered Inertia-style pages: a page's `*.server.ts` loader queries the data layer and returns props directly — no separate REST API to maintain for the UI.
-- Auto-provisioned D1/KV/R2 bindings inferred from source; `void deploy` builds, runs Drizzle migrations, and ships in one command — no manual resource creation, no migrate orchestration.
+- Managed deployment provisions Postgres/Hyperdrive, R2, queues, and runtime
+  resources; `pnpm deploy:void` builds, applies committed migrations, and
+  deploys them together.
 - First-class Drizzle integration with typed routes and a typed fetch client.
 - Vite-based dev experience; built-in auth, cron jobs, and realtime (`void/ws`).
 
-### Storage: single D1 (and the earlier Durable Object detour)
+### Storage: one Postgres database
 
-The project's original Cloudflare design used a singleton `ControlDO` for auth/tenancy plus one `TenantDO` per team for test data, queried with Kysely. The reasoning at the time:
-
-1. **Per-tenant write isolation** — sharding runs by team into per-team DOs avoided a single-writer noisy-neighbour problem and made tenant isolation physical.
-2. **Auto-provisioning friction** — Cloudflare's binding behaviour for newly-created D1 made the first deploy need a multi-step migrate orchestration; a singleton `ControlDO` sidestepped it.
-
-**The 2026-05 Void migration reversed this** and moved everything to a single D1 with Drizzle. What changed the calculus:
-
-- **Void removed the provisioning friction.** `void deploy` infers and provisions D1/R2/KV and runs migrations as part of deploy — the orchestration that motivated the DO approach no longer exists.
-- **The write-rate concern was overstated.** Wrightful's write rate is single-digit per team per second; a single D1 writer handles it comfortably.
-- **One store is simpler and more capable.** Cross-team joins, one source of truth, one migration history, and far less operational surface than N Durable Objects.
-
-The trade-off accepted: isolation is now logical, not physical. Every run-scoped query must filter by `teamId`/`projectId`; the branded `AuthorizedProjectId` on `TenantScope` enforces this through the type system so it can't be forgotten.
+Postgres is the sole application database. One store gives Wrightful
+cross-team joins, one source of truth, and one migration history without
+maintaining parallel dialects. The trade-off is logical rather than physical
+tenant isolation: every run-scoped query must filter by `projectId` and by
+`teamId` where present. The branded authorization ids on `TenantScope` carry
+that checked scope through the type system.
 
 ## Architecture
 
 For the canonical view, see [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md). One-paragraph summary:
 
-A single Cloudflare Worker (a Void app) hosts both the streaming ingest API (`/api/runs/*`, `/api/artifacts/*`) and the server-rendered dashboard UI (`/t/:teamSlug/p/:projectSlug/…`). API requests authenticate with a project-scoped Bearer key; dashboard requests carry a Better Auth session cookie. All reads/writes go to a single D1 database via Drizzle — auth/tenancy tables and run/derived tables live together, isolated logically by `teamId`/`projectId`. Artifact bytes go to R2 via worker-proxied PUT/GET (the worker is on the byte path; not presigned R2 URLs). Realtime progress is broadcast to `void/ws` rooms (run + project rooms), which the run-detail and run-list islands subscribe to via `useRunRoom` / `useProjectRoom`.
+A single Cloudflare Worker (a Void app) hosts both the streaming ingest API
+(`/api/runs/*`, `/api/artifacts/*`) and the server-rendered dashboard UI
+(`/t/:teamSlug/p/:projectSlug/…`). API requests authenticate with a
+project-scoped Bearer key; dashboard requests carry a Better Auth session
+cookie. All application reads/writes go through Drizzle to Postgres, isolated
+logically by `teamId`/`projectId`. Artifact metadata lives in Postgres and
+bytes live in R2. The Worker proxies artifact bytes by default; optional R2
+S3 credentials switch to presigned direct-R2 transfers. Realtime progress is
+broadcast to `void/ws` run and project rooms.
 
 ### Streaming ingest flow
 
 The reporter doesn't dump a JSON file at the end of the suite — it streams. Three phases:
 
 - `onBegin` → `POST /api/runs` opens the run. The reporter declares the planned test list and gets back a `runId`.
-- `onTestEnd` → buffer per test until all retries are settled, then `POST /api/runs/:runId/results` in batches. Each response returns `clientKey → testResultId`, which the reporter uses to register and PUT artifacts via `POST /api/artifacts/register` (which returns a relative worker upload URL; bytes stream through the worker into R2, not via presigned R2 URLs).
+- `onTestEnd` → buffer per test until all retries are settled, then `POST /api/runs/:runId/results` in batches. Each response returns `clientKey → testResultId`, which the reporter uses to register artifacts via `POST /api/artifacts/register`. That returns either a relative worker upload URL (the default) or, when direct R2 is configured, a SigV4-presigned R2 PUT URL.
 - `onEnd` → `POST /api/runs/:runId/complete` sets the terminal status.
 
-The route handlers are auth + translation only; the batch pipeline lives behind `openRun` / `appendRunResults` / `completeRun` in `apps/dashboard/src/lib/ingest.ts`. Per-test emission means one row per test at its final outcome, with retries aggregated into `flaky`. Wire types live in both `packages/reporter/src/types.ts` (TypeScript) and `apps/dashboard/src/lib/schemas.ts` (Zod) — keep them in sync; `packages/reporter/src/__tests__/contract.test.ts` is the canary.
+The route handlers are auth + translation only; the batch pipeline lives behind `openRun` / `appendRunResults` / `completeRun` in `apps/dashboard/src/lib/ingest.ts`. Per-test emission means one row per test at its final outcome, with retries aggregated into `flaky`. Wire types live in both `packages/reporter/src/types.ts` (TypeScript) and `apps/dashboard/src/lib/schemas.ts` (Zod) — keep them in sync; the `packages/reporter/src/__tests__/contract*.test.ts` suites are the canary.
 
 ### Multi-tenancy
 
@@ -101,11 +109,20 @@ This is the same approach used by Currents.dev and TestDino. The tradeoff is acc
 
 ### Idempotency
 
-The reporter generates an idempotency key per run (e.g. derived from `GITHUB_RUN_ID` so shards converge on the same run). The open-run endpoint checks the key:
+The reporter generates an idempotency key per logical execution. It derives
+the key from the CI build and job, GitHub run attempt, selected Playwright
+project set (excluding shard coordinates), and an optional
+`WRIGHTFUL_MATRIX_KEY`. Native Playwright shards deliberately share one key so
+they converge on the same dashboard run. An
+explicit `WRIGHTFUL_IDEMPOTENCY_KEY` overrides the derivation and must be new
+for every new logical execution.
 
 - If the key doesn't exist: insert normally, return `201 Created`
-- If the key already exists: return `200 OK` with the existing run ID, skip insertion
+- If it identifies the same in-progress execution: return `200 OK` with the
+  existing run ID, skip insertion
+- If it identifies a terminal run: reject the stale reuse with `409 Conflict`
 - This makes retries safe — a flaky network in CI won't create duplicate runs
+  — without letting a rerun overwrite stored terminal results
 
 ### Protocol versioning
 
@@ -121,7 +138,7 @@ Reporter requests carry `X-Wrightful-Version`. Currently only version 3 is suppo
 2. **Runs list** (`/t/:teamSlug/p/:projectSlug`)
    - Table: branch, commit, status (pass/fail), test counts, duration, timestamp
    - Filter by branch, status, date range, tags
-   - Shard-aware: groups shards by `ciBuildId` (extracted from CI env), shows merged totals
+   - Shard-aware: every shard contributes to the run sharing its idempotency key; the list shows the merged totals
 
 3. **Run detail** (`/t/:teamSlug/p/:projectSlug/runs/:runId`)
    - Summary: pass/fail/flaky/skipped counts, total duration, commit info
@@ -131,7 +148,7 @@ Reporter requests carry `X-Wrightful-Version`. Currently only version 3 is suppo
 
 4. **Test detail** (`/t/:teamSlug/p/:projectSlug/runs/:runId/tests/:testResultId`)
    - Error message + stack trace (syntax highlighted)
-   - Artifacts: trace viewer link via `trace.playwright.dev`, screenshots inline, video player
+   - Artifacts: self-hosted trace viewer, screenshots inline, video player
    - Retry history within this run (one row per attempt)
    - Tags and annotations
    - Link to historical view of this test
@@ -158,7 +175,13 @@ Reporter requests carry `X-Wrightful-Version`. Currently only version 3 is suppo
 
 ## CI integration
 
-The reporter has an opt-in `postPrComment` option: when a run finishes inside a GitHub Actions PR workflow, it posts (or upserts) a PR comment with a summary table and a link back to the dashboard. The comment is posted from CI using the runner's `GITHUB_TOKEN` — no GitHub App, no per-tenant install state. Fork PRs without secret access degrade gracefully (skip + warn rather than fail the workflow). A GitHub App is the longer-term answer if check runs / status checks / non-Actions runners are wanted.
+The preferred integration is the Wrightful GitHub App. After an aggregate run
+reaches a terminal state, the dashboard posts or updates its check run and
+sticky PR comment with a summary and deep links. The App's installation token
+also works for fork PRs. For an unsharded GitHub Actions run,
+`postPrComment: true` remains a no-App fallback using the runner's
+`GITHUB_TOKEN`; native shards skip that fallback because each process sees
+only a partial summary.
 
 ## Self-hosting
 
@@ -172,7 +195,10 @@ The original plan was a CLI that reads Playwright's built-in JSON report after t
 
 ### Per-shard streaming, dashboard merges
 
-Each CI shard's reporter streams independently. The dashboard groups shards by idempotency key (derived from CI env vars like `GITHUB_RUN_ID`) and presents merged views. No merge step required in CI; works naturally with any CI system that exposes a build/run ID.
+Each CI shard's reporter streams independently. Native Playwright shards share
+an idempotency key derived from the CI execution identity, so the dashboard
+presents one merged run without a CI merge step. Rerun attempts and unrelated
+job/project/matrix legs receive distinct keys.
 
 ### Stable test IDs via hashing
 
@@ -182,9 +208,15 @@ Playwright's internal `test.id` is not stable across runs. We generate our own b
 
 To keep R2 storage manageable, the default reporter config uploads traces/screenshots/videos only for failed and flaky tests. Users can override with `artifacts: 'all'`. This matches Playwright's recommended `trace: 'on-first-retry'` and `screenshot: 'only-on-failure'` config.
 
-### Worker-proxied artifact upload + signed-token download
+### Capability-flagged artifact byte path
 
-Artifacts are uploaded by the reporter to a worker route (`PUT /api/artifacts/:id/upload`, returned by `register`) and served to the browser from a worker route (`GET /api/artifacts/:id/download`) gated by a short-lived HMAC token that carries the R2 key (so GETs skip the DB). Both directions are **worker-proxied** — the worker `storage.put`s the upload body and `storage.get`s + streams the download bytes, so it is on the byte path for every artifact transfer. This means Worker CPU time, egress, and request/response-size limits apply to artifact traffic; capacity and failure-mode planning must account for the worker on the data path. (A real presigned-R2 model that takes the worker off the byte path would be a separate, deliberate architectural change.) Served content types are normalized against an allowlist with `Content-Disposition: attachment` to prevent stored-XSS via artifact downloads.
+By default, uploads and downloads are worker-proxied: the reporter PUTs to a
+worker route and signed download URLs authorize a worker GET from R2. When all
+four optional R2 S3 credentials are configured, registration returns
+SigV4-presigned PUT URLs and authorized downloads redirect to presigned GETs,
+taking the Worker off the byte path. Both modes share authorization, expiry,
+content-type normalization, size checks, and forced download-disposition
+rules. See [ADR-0003](./adr/0003-direct-r2-artifact-byte-path.md).
 
 ### Server-rendered pages over a React SPA
 
@@ -200,18 +232,23 @@ Tags and annotations are stored in dedicated tables (`testTags`, `testAnnotation
 
 ### Migration policy
 
-Schema lives in `apps/dashboard/db/schema.ts`; migrations are generated with `void db generate` into `apps/dashboard/db/migrations/` and applied by `void deploy`. Changes are forward-only / additive (new tables, new nullable columns); never edit a migration already applied to a live database. (Pre-migration, the project used a single in-place `0000_init` Kysely-DSL migration per DO — superseded by the Drizzle migration history under Void.)
+Schema lives in `apps/dashboard/db/schema.ts`; migrations are generated with
+`pnpm --filter @wrightful/dashboard db:generate` into
+`apps/dashboard/db/migrations/`. Void-managed deploys apply committed
+migrations; own-account Cloudflare deployments run the explicit remote
+migration command documented in `SELF-HOSTING.md`. Changes are forward-only;
+never edit a migration already applied to a live database.
 
 ## Decisions (Resolved)
 
-| Question                                | Decision           | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| --------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Support non-Playwright runners?         | No                 | Playwright-specific features (traces, annotations, projects) are core differentiators. Generalization would dilute the product.                                                                                                                                                                                                                                                                                                                                                                                  |
-| Framework?                              | Void               | Server-rendered pages + auto-provisioned bindings + one-command deploy on Cloudflare. (Migrated from RedwoodSDK in 2026-05.)                                                                                                                                                                                                                                                                                                                                                                                     |
-| Single D1 vs per-tenant DO + ControlDO? | Single D1          | Void removes the provisioning friction that motivated DOs; write rate is trivial; one store = cross-team joins + simpler ops. Reversed the earlier DO decision. _(2026-06 update: D1 was first joined by an optional Postgres backend, then **replaced** by it — the dashboard is now **Postgres-only** over Hyperdrive (D1 removed). The "single store, cross-team joins, simple ops" rationale still holds; only the engine changed. See [the Postgres-only worklog](./worklog/2026-06-16-postgres-only.md).)_ |
-| Drizzle vs Kysely?                      | Drizzle            | Ships with Void; typed routes + typed fetch; D1 `batch` atomicity. Reversed the earlier Kysely decision.                                                                                                                                                                                                                                                                                                                                                                                                         |
-| CLI uploader vs streaming reporter?     | Streaming reporter | Matches the dashboard's realtime model; per-test emission integrates cleanly with sharded CI.                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Bring-your-own-Postgres alternative?    | No                 | Split maintenance focus kills OSS projects. Community contribution if demand exists. _(2026-06 update: superseded — Postgres-over-Hyperdrive is now the **only** backend (D1 removed), so the store is first-party Postgres rather than a pluggable choice. Self-hosters bring their own Postgres — Neon's free tier, or PlanetScale Postgres at scale. See [the Postgres-only worklog](./worklog/2026-06-16-postgres-only.md).)_                                                                                |
-| License                                 | MIT                | Lower friction for adoption, matches Playwright itself.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Monorepo tooling                        | pnpm workspaces    | Skip Turborepo unless pain is felt — overhead for a few packages.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Naming                                  | Wrightful          | Finalized on 2026-04-16. Short, memorable, and paired with the `wrightful.dev` domain.                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Question                            | Decision           | Rationale                                                                                                                                                |
+| ----------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Support non-Playwright runners?     | No                 | Playwright-specific features (traces, annotations, projects) are core differentiators. Generalization would dilute the product.                          |
+| Framework?                          | Void               | Server-rendered pages + auto-provisioned bindings + one-command deploy on Cloudflare. (Migrated from RedwoodSDK in 2026-05.)                             |
+| Data store?                         | Postgres only      | One well-supported store and migration history; Hyperdrive in production and a direct URL locally. D1 and the dual-dialect seam were removed in 2026-06. |
+| Drizzle vs Kysely?                  | Drizzle            | Ships with Void; schema-owned typed queries, with multi-statement atomicity concentrated behind `runBatch`.                                              |
+| CLI uploader vs streaming reporter? | Streaming reporter | Matches the dashboard's realtime model; per-test emission integrates cleanly with sharded CI.                                                            |
+| Self-hosted database?               | Bring Postgres     | Postgres is the only backend. Self-hosters provide the database rather than selecting among application dialects.                                        |
+| License                             | MIT                | Lower friction for adoption, matches Playwright itself.                                                                                                  |
+| Monorepo tooling                    | pnpm workspaces    | Skip Turborepo unless pain is felt — overhead for a few packages.                                                                                        |
+| Naming                              | Wrightful          | Finalized on 2026-04-16. Short, memorable, and paired with the `wrightful.dev` domain.                                                                   |

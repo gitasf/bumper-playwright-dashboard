@@ -66,11 +66,15 @@ export function makeResult(opts: {
 export function makeConfig(
   rootDir: string | null = null,
   shard: { current: number; total: number } | null = null,
+  projectNames: string[] = ["chromium"],
+  argv: string[] = [],
 ): FullConfig {
   return {
     rootDir: rootDir ?? "",
     version: "1.59.0",
     shard,
+    projects: projectNames.map((name) => ({ name })),
+    argv,
   } as unknown as FullConfig;
 }
 

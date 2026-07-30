@@ -8,10 +8,25 @@ import {
 } from "vite-plus/test";
 import {
   buildCommentBody,
+  buildCommentMarker,
   postPrComment,
+  projectCommentScope,
   shouldPostPrComment,
   type RunSummary,
 } from "../pr-comment.js";
+
+describe("projectCommentScope", () => {
+  it("is stable and credential-scoped without exposing the credential", () => {
+    const token = "wrf_super_secret_project_key";
+    const scope = projectCommentScope(token, "https://dash.example");
+    expect(projectCommentScope(token, "https://dash.example")).toBe(scope);
+    expect(
+      projectCommentScope("wrf_another_project", "https://dash.example"),
+    ).not.toBe(scope);
+    expect(scope).not.toContain(token);
+    expect(scope).toMatch(/^[a-f0-9]{24}$/);
+  });
+});
 
 const baseSummary: RunSummary = {
   status: "failed",
@@ -28,6 +43,7 @@ const baseSummary: RunSummary = {
   prNumber: 42,
   environment: "ci",
   commitSha: "abc1234567",
+  commentScope: "dashboard|workflow|e2e|chromium",
 };
 
 describe("shouldPostPrComment", () => {
@@ -87,7 +103,7 @@ describe("shouldPostPrComment", () => {
 describe("buildCommentBody", () => {
   it("contains the marker, link, and tallies", () => {
     const body = buildCommentBody(baseSummary);
-    expect(body).toContain("<!-- wrightful:pr-comment -->");
+    expect(body).toContain(buildCommentMarker(baseSummary.commentScope));
     expect(body).toContain(
       "https://wrightful.example.com/t/acme/p/web/runs/r_123",
     );
@@ -95,6 +111,18 @@ describe("buildCommentBody", () => {
     expect(body).toContain("1m 14s"); // formatted duration
     expect(body).toContain("`abc1234`"); // short sha
     expect(body).toContain("`ci`"); // environment
+  });
+
+  it("uses distinct markers for independent project and matrix scopes", () => {
+    const chromium = buildCommentMarker(
+      "dashboard|workflow|e2e|chromium|linux",
+    );
+    const firefox = buildCommentMarker("dashboard|workflow|e2e|firefox|linux");
+    const chromiumMac = buildCommentMarker(
+      "dashboard|workflow|e2e|chromium|mac",
+    );
+
+    expect(new Set([chromium, firefox, chromiumMac]).size).toBe(3);
   });
 
   it("collapses failed + timedout into one column", () => {
@@ -117,6 +145,12 @@ describe("buildCommentBody", () => {
     const body = buildCommentBody({ ...baseSummary, durationMs: 119_700 });
     expect(body).toContain("2m 0s");
     expect(body).not.toContain("1m 60s");
+  });
+
+  it("does not render a rounded sub-minute duration as 60.0 seconds", () => {
+    const body = buildCommentBody({ ...baseSummary, durationMs: 59_960 });
+    expect(body).toContain("1m 0s");
+    expect(body).not.toContain("60.0s");
   });
 });
 
@@ -143,7 +177,10 @@ describe("postPrComment", () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(200, [
         { id: 999, body: "not us, lol" },
-        { id: 1234, body: "<!-- wrightful:pr-comment -->\n…" },
+        {
+          id: 1234,
+          body: `${buildCommentMarker(baseSummary.commentScope)}\n…`,
+        },
       ]),
     );
     fetchMock.mockResolvedValueOnce(jsonResponse(200, {}));
@@ -157,6 +194,40 @@ describe("postPrComment", () => {
     );
     expect(patchInit.method).toBe("PATCH");
     expect(patchInit.headers.Authorization).toBe("Bearer ghp_token");
+  });
+
+  it("does not PATCH another workflow leg's scoped comment", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, [
+        {
+          id: 1234,
+          body: `${buildCommentMarker("dashboard|workflow|e2e|firefox")}\n…`,
+        },
+      ]),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { id: 7 }));
+
+    const result = await postPrComment(baseSummary, "ghp_token");
+
+    expect(result.status).toBe("created");
+    expect(fetchMock.mock.calls[1][1].method).toBe("POST");
+  });
+
+  it("does not treat a quoted marker fragment as the owned marker line", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, [
+        {
+          id: 1234,
+          body: `quoted ${buildCommentMarker(baseSummary.commentScope)}`,
+        },
+      ]),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { id: 7 }));
+
+    await expect(postPrComment(baseSummary, "ghp_token")).resolves.toEqual({
+      status: "created",
+    });
+    expect(fetchMock.mock.calls[1][1].method).toBe("POST");
   });
 
   it("POSTs a new comment when no marker is found", async () => {

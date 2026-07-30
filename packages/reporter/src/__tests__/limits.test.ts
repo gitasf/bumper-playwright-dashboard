@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import { joinStdio, MAX_MESSAGE, truncate } from "../limits.js";
 
 // `joinStdio` decodes + joins Playwright's per-attempt `TestResult.stdout` /
@@ -44,6 +44,14 @@ describe("joinStdio", () => {
     expect(out).toBe("pre:héllo:post");
   });
 
+  it("does not carry an incomplete Buffer byte past a later string chunk", () => {
+    const out = joinStdio(
+      [Buffer.from([0xc3]), "X", Buffer.from([0xa9])],
+      MAX_MESSAGE,
+    );
+    expect(out).toBe("�X�");
+  });
+
   it("returns null for a missing, empty, or all-empty-string array", () => {
     expect(joinStdio(undefined, MAX_MESSAGE)).toBeNull();
     expect(joinStdio(null, MAX_MESSAGE)).toBeNull();
@@ -59,5 +67,22 @@ describe("joinStdio", () => {
     expect(out).toBe(
       truncate("x".repeat(40_000) + "y".repeat(40_000), MAX_MESSAGE),
     );
+  });
+
+  it("does bounded work for one huge Buffer chunk", () => {
+    const huge = Buffer.alloc(8 * 1024 * 1024, 0x78);
+    const subarraySpy = vi.spyOn(huge, "subarray");
+    const out = joinStdio([huge], MAX_MESSAGE);
+
+    expect(out).toBe("x".repeat(MAX_MESSAGE));
+    const furthestRead = Math.max(
+      ...subarraySpy.mock.calls.map(([, end]) => end ?? 0),
+    );
+    expect(furthestRead).toBeLessThanOrEqual(MAX_MESSAGE);
+  });
+
+  it("does not re-encode an entire huge string before truncating", () => {
+    const huge = "😀".repeat(4 * 1024 * 1024);
+    expect(joinStdio([huge], MAX_MESSAGE)).toBe(truncate(huge, MAX_MESSAGE));
   });
 });

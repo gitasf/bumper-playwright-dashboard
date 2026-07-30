@@ -223,6 +223,19 @@ describe("members-repo (last-owner guard, functional against Postgres)", () => {
   beforeEach(async () => {
     // Clean up our own rows first (re-run safety) — never the whole table.
     await h.db.delete(memberships).where(eq(memberships.teamId, RACE_TEAM));
+    await h.db.delete(teams).where(eq(teams.id, RACE_TEAM));
+    // The parent row must exist: every members-repo transaction now opens with
+    // `lockTeamForChildMutation`, and a missing team reads as "teardown already
+    // won". The harness creates tables WITHOUT foreign keys, so an orphan
+    // membership is insertable here even though the real schema's cascade makes
+    // it impossible in production — hence seeding the parent explicitly.
+    await h.db.insert(teams).values({
+      id: RACE_TEAM,
+      slug: "race-lastowner",
+      name: "Race",
+      tier: "free",
+      createdAt: NOW,
+    });
   });
 
   it("demotes one of two co-owners, blocks demoting the sole remaining owner, and no-ops on a ghost user", async () => {

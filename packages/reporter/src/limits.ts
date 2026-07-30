@@ -23,6 +23,8 @@ export const MAX_STACK = 131_072;
 /** Dashboard request caps mirrored and pinned by the contract tests. */
 export const MAX_RESULTS_PER_BATCH = 5000;
 export const MAX_PLANNED_TESTS = 100_000;
+const STDIO_DECODE_SLICE_BYTES = 16 * 1024;
+const STDIO_STRING_SLICE_UNITS = 8 * 1024;
 
 /**
  * Truncate `s` to at most `max` UTF-16 code units, byte-for-byte matching the
@@ -57,24 +59,62 @@ export function truncateNullable(
  * `null` rather than `""` — the dashboard column is nullable and the two
  * surfaces (reporter + Zod schema) agree on "no output === null".
  *
- * `Buffer` chunks are decoded via one `StringDecoder("utf8")` shared across the
+ * All chunks are decoded via one `StringDecoder("utf8")` shared across the
  * array: Playwright can split a UTF-8 codepoint across two chunks at any byte
  * boundary, and per-chunk `toString("utf8")` would mangle the split into
- * replacement chars — the decoder carries incomplete trailing bytes to the next
- * chunk. Already-string chunks pass through. Chunks join in emission order with
- * no separator (Playwright's chunks carry their own newlines). Accumulation
- * stops once output reaches `max` so a runaway `console.log` can't balloon the
- * heap before truncation.
+ * replacement chars. String chunks are re-encoded before they enter the
+ * decoder so an incomplete byte buffered from an earlier chunk is resolved in
+ * emission order instead of being carried past the string and completed by a
+ * later buffer. Chunks join with no separator (Playwright's chunks carry their
+ * own newlines). Accumulation stops once output reaches `max` so a runaway
+ * `console.log` can't balloon the heap before truncation.
  */
 export function joinStdio(
   chunks: ReadonlyArray<string | Buffer> | undefined | null,
   max: number,
 ): string | null {
-  if (chunks == null || chunks.length === 0) return null;
+  if (chunks == null || chunks.length === 0 || max <= 0) return null;
   const decoder = new StringDecoder("utf8");
   let out = "";
+
+  const writeBytes = (bytes: Buffer): void => {
+    for (let offset = 0; offset < bytes.length && out.length < max;) {
+      const remainingUnits = max - out.length;
+      // A UTF-8 codepoint is at most four bytes. Never inspect an unbounded
+      // suffix of one giant Buffer merely to retain a bounded string prefix.
+      const usefulBytes = remainingUnits * 4 + 3;
+      const end = Math.min(
+        bytes.length,
+        offset + STDIO_DECODE_SLICE_BYTES,
+        offset + usefulBytes,
+      );
+      out += decoder.write(bytes.subarray(offset, end));
+      offset = end;
+    }
+  };
+
   for (const chunk of chunks) {
-    out += typeof chunk === "string" ? chunk : decoder.write(chunk);
+    if (typeof chunk !== "string") {
+      writeBytes(chunk);
+      if (out.length >= max) break;
+      continue;
+    }
+
+    // Encoding an entire multi-megabyte string would allocate another
+    // multi-megabyte Buffer before truncation. Encode only bounded slices,
+    // keeping surrogate pairs together at slice boundaries.
+    for (let offset = 0; offset < chunk.length && out.length < max;) {
+      const remainingUnits = max - out.length;
+      let end = Math.min(
+        chunk.length,
+        offset + STDIO_STRING_SLICE_UNITS,
+        offset + remainingUnits + 1,
+      );
+      const last = chunk.charCodeAt(end - 1);
+      if (last >= 0xd800 && last <= 0xdbff && end < chunk.length) end += 1;
+      writeBytes(Buffer.from(chunk.slice(offset, end), "utf8"));
+      offset = end;
+    }
     if (out.length >= max) break;
   }
   out += decoder.end();

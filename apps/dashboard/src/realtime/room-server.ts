@@ -162,8 +162,21 @@ export interface GuardedRoomConfig<
   client: ClientSchema;
   /** Server-event schema — broadcast payloads are parsed through it before fan-out. */
   server: ServerSchema;
-  /** Resolved deployment origin allowlist source (`env.WRIGHTFUL_PUBLIC_URL`). */
-  publicUrl: string;
+  /**
+   * Deployment origin allowlist source (`env.WRIGHTFUL_PUBLIC_URL`), resolved
+   * per CONNECT inside `onBeforeConnect` — never at wiring time.
+   *
+   * A thunk for the same reason {@link GuardedRoomConfig.internalSecret} is one,
+   * and this one is load-bearing at DEPLOY time: `defineRoom(defineGuardedRoom(
+   * {...}))` is a module-scope call, so a bare `env.WRIGHTFUL_PUBLIC_URL` here
+   * is read while the worker's top level evaluates. Cloudflare evaluates that
+   * top level to validate an upload, with no request in flight — and
+   * `WRIGHTFUL_PUBLIC_URL` is a SECRET (`void secret put`, see env.ts), so it
+   * has no build-time value to fall back on and void's env proxy throws
+   * "Cloudflare env is unavailable". That surfaces as a 10021 validation error
+   * and fails the deploy outright, long before any test or local build notices.
+   */
+  publicUrl: () => string;
   /**
    * Internal-publish secret resolver, called per publish request inside the
    * `onRequest` gate (NOT at wiring time) — exactly as the hand-spelled rooms
@@ -214,7 +227,7 @@ export function defineGuardedRoom<
     async onBeforeConnect(ctx: Ctx) {
       const origin = ctx.request.headers.get("origin");
       const host = ctx.request.headers.get("host");
-      if (!isAllowedWsOrigin(origin, host, config.publicUrl)) {
+      if (!isAllowedWsOrigin(origin, host, config.publicUrl())) {
         return new Response("Forbidden", { status: 403 });
       }
       if (roomAtCapacity(ctx.room.getConnections())) {

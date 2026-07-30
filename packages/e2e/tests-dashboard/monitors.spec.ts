@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { MONITOR_SCHEDULER_TEST_TIMEOUT_MS } from "./helpers/monitor-scheduler-lease";
 import { triggerQueue, triggerScheduled } from "./helpers/void-trigger";
 import { expect, test } from "./fixtures";
 
@@ -33,7 +34,7 @@ import { expect, test } from "./fixtures";
 const SWEEP_CRON = "* * * * *";
 const ONE_MINUTE = 60;
 
-test.setTimeout(90_000);
+test.setTimeout(MONITOR_SCHEDULER_TEST_TIMEOUT_MS);
 
 test.describe("Synthetic monitors", () => {
   test("create, schedule one cycle via the stub executor, and link to a run", async ({

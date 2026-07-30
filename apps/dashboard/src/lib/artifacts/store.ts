@@ -2,14 +2,11 @@ import { ulid } from "ulid";
 import { and, db, eq, inArray } from "void/db";
 import { logger } from "void/log";
 import { storage } from "void/storage";
-import { artifacts, runs, testResults } from "@schema";
+import { artifacts, projects, runs, testResults } from "@schema";
 import { safeContentType } from "@/lib/content-types";
 import { isUniqueViolation } from "@/lib/db/batch";
-import {
-  chunkInsertRows,
-  RUN_WRITE_GUARD_COLUMNS,
-  runClosedForWrites,
-} from "@/lib/ingest";
+import { chunkInsertRows } from "@/lib/db/chunk";
+import { RUN_WRITE_GUARD_COLUMNS, runClosedForWrites } from "@/lib/ingest";
 import {
   childByIdWhere,
   childByRunWhere,
@@ -23,6 +20,7 @@ import {
   usageBumpStatement,
   usageGuardedBumpStatement,
 } from "@/lib/usage";
+import { lockTeamForChildMutation } from "@/lib/team-lock";
 
 /** Rolls back artifact registration when its atomic quota bump is rejected. */
 class ArtifactQuotaOvershootError extends Error {
@@ -61,7 +59,7 @@ class ArtifactQuotaOvershootError extends Error {
 // list stays well under Postgres's 65535 ceiling. 99 is a conservative slice
 // that matches the ingest read cadence (a /results batch is ≤5000 ids, so this
 // is one small round-trip in practice). The hard cap itself lives in
-// `PG_MAX_BOUND_PARAMS` (ingest.ts) — this value is only a per-read slice size.
+// `PG_MAX_BOUND_PARAMS` (`db/chunk.ts`) — this value is only a per-read slice size.
 const MAX_IN_ARRAY_IDS = 99;
 
 /**
@@ -117,37 +115,6 @@ export function buildArtifactR2Key(
   name: string,
 ): string {
   return `t/${scope.teamId}/p/${scope.projectId}/runs/${runId}/${testResultId}/${artifactId}/${safeKeySegment(name)}`;
-}
-
-/**
- * Recover the download filename from an R2 key — the sole inverse of
- * `buildArtifactR2Key`. The key's trailing segment is the sanitized filename
- * (`safeKeySegment(name)`), so the round-trip
- * `filenameFromKey(buildArtifactR2Key(..., name)) === safeKeySegment(name)`
- * holds and is guarded by a colocated unit test. Keeping construct + reverse in
- * one module is the point: the download hot path skips the DB (the signed token
- * carries only `{ r2Key, contentType }`, not the original name), so the served
- * `Content-Disposition` filename depends entirely on this trailing-segment
- * convention. A future key-layout change (e.g. a date partition for retention
- * sweeps) edits `buildArtifactR2Key` here and the round-trip test fails loudly
- * instead of silently corrupting the served filename. Falls back to `"artifact"`
- * for a degenerate (empty / trailing-slash) key.
- */
-export function filenameFromKey(key: string): string {
-  return key.split("/").pop() || "artifact";
-}
-
-/**
- * The `Content-Disposition: attachment` header value for an artifact, keyed off
- * the R2 key's trailing filename segment. One source of truth shared by the
- * worker-proxy response (`buildArtifactHeaders`) and the direct-R2 path (signed
- * as a `response-content-disposition` query param on the presigned GET), so both
- * force a download on top-level navigation identically. RFC 5987 `filename*` +
- * `encodeURIComponent` percent-encodes `\r`, `\n`, `"` so a hostile artifact
- * name cannot inject a header.
- */
-export function artifactContentDisposition(r2Key: string): string {
-  return `attachment; filename*=UTF-8''${encodeURIComponent(filenameFromKey(r2Key))}`;
 }
 
 /**
@@ -422,7 +389,7 @@ export async function registerArtifacts(
   // through unchanged). Strips the internal contentType/sizeBytes either way.
   async function finalizeUploads(
     planned: PlannedArtifactUpload[],
-  ): Promise<ArtifactUpload[]> {
+  ): Promise<ArtifactUpload[] | null> {
     if (!signPut) {
       return planned.map(({ artifactId, uploadUrl, r2Key }) => ({
         artifactId,
@@ -430,20 +397,41 @@ export async function registerArtifacts(
         r2Key,
       }));
     }
-    return Promise.all(
-      planned.map(async ({ artifactId, r2Key, contentType, sizeBytes }) => ({
-        artifactId,
-        r2Key,
-        uploadUrl: await signPut(r2Key, {
-          // Sign the SANITIZED type so the direct-R2 object carries the same
-          // Content-Type the worker path would store (storeArtifactUpload writes
-          // safeContentType). Registration already rejects non-allowlisted types,
-          // so this equals the reporter's sent type — no signature mismatch.
-          contentType: safeContentType(contentType),
-          contentLength: sizeBytes,
-        }),
-      })),
-    );
+
+    // A presigned PUT remains usable after its artifact row disappears. Mint
+    // every capability while holding team→project locks, so project/team
+    // teardown either wins before this point (and no URL is returned) or cannot
+    // create the cleanup job until after the URL exists. The outbox's
+    // deletion-time + PUT-TTL finalization boundary then covers every URL that
+    // escaped; no guessed extension is needed.
+    return db.transaction(async (tx) => {
+      if (!(await lockTeamForChildMutation(tx, scope.teamId))) return null;
+      const liveProject = await tx
+        .select({ id: projects.id })
+        .from(projects)
+        .where(
+          and(
+            eq(projects.id, scope.projectId),
+            eq(projects.teamId, scope.teamId),
+          ),
+        )
+        .for("key share");
+      if (liveProject.length === 0) return null;
+
+      return Promise.all(
+        planned.map(async ({ artifactId, r2Key, contentType, sizeBytes }) => ({
+          artifactId,
+          r2Key,
+          uploadUrl: await signPut(r2Key, {
+            // Sign the SANITIZED type so the direct-R2 object carries the same
+            // Content-Type the worker path would store (storeArtifactUpload
+            // writes safeContentType).
+            contentType: safeContentType(contentType),
+            contentLength: sizeBytes,
+          }),
+        })),
+      );
+    });
   }
 
   const oversized = findOversizedArtifact(payload.artifacts, maxBytes);
@@ -511,7 +499,10 @@ export async function registerArtifacts(
     // Nothing to write: every artifact reused an unchanged row. Still hand back
     // the (overwrite) upload URLs so the reporter's PUT can re-stream the bytes.
     if (rowsToInsert.length === 0 && rowsToUpdate.length === 0) {
-      return { kind: "ok", uploads: await finalizeUploads(uploads) };
+      const finalized = await finalizeUploads(uploads);
+      return finalized
+        ? { kind: "ok", uploads: finalized }
+        : { kind: "runNotFound" };
     }
 
     // Enforce the team's artifact-byte quota on the NET new bytes: fresh inserts
@@ -536,7 +527,20 @@ export async function registerArtifacts(
     }
 
     try {
-      await db.transaction(async (tx) => {
+      // Parent-before-child (AGENTS.md). This transaction writes two
+      // team-owned children whose FKs take IMPLICIT key-share locks on
+      // different parents: `artifacts` locks the project row
+      // (artifacts_projectId_projects_id_fk) and `usageCounters` locks the
+      // team row (usageCounters_teamId_teams_id_fk) on the period's first
+      // insert. Unlocked, that pair is acquired project-then-team, the exact
+      // inverse of teardown — which holds `teams FOR UPDATE` and cascades down
+      // through `projects` — so the two deadlock (40P01). The window is
+      // narrow (an ON CONFLICT update does not re-fire the team FK, so it
+      // opens on a team's first metered artifact write of a UTC month) which
+      // is precisely why it would survive testing. Taking the parent first
+      // collapses both implicit locks into the one global order.
+      const teamGone = await db.transaction(async (tx) => {
+        if (!(await lockTeamForChildMutation(tx, scope.teamId))) return true;
         for (const chunk of chunkInsertRows(rowsToInsert)) {
           await tx.insert(artifacts).values(chunk);
         }
@@ -568,8 +572,16 @@ export async function registerArtifacts(
           );
           if (bump) await bump;
         }
+        return false;
       });
-      return { kind: "ok", uploads: await finalizeUploads(uploads) };
+      // A lost parent lock means teardown committed, so the run these
+      // artifacts belong to is gone too — the same outcome `finalizeUploads`
+      // already reports for the presign path.
+      if (teamGone) return { kind: "runNotFound" };
+      const finalized = await finalizeUploads(uploads);
+      return finalized
+        ? { kind: "ok", uploads: finalized }
+        : { kind: "runNotFound" };
     } catch (err) {
       if (err instanceof ArtifactQuotaOvershootError) {
         return { kind: "quotaExceeded", limit: err.limit, used: err.limit };
@@ -706,10 +718,8 @@ export interface DeleteArtifactObjectsResult {
 
 /**
  * Max list+bulk-delete pages a single prefix sweep performs. Each page costs 2
- * subrequests and removes up to 1000 objects, so 100 pages clears 100k objects
- * while staying far inside the Workers subrequest budget. A prefix bigger than
- * that logs the leftover and stops — the next delete (or a future retention
- * sweep) picks it up.
+ * subrequests and removes up to 1000 objects. A durable cleanup job invokes
+ * another bounded pass when this budget is exhausted.
  */
 const DELETE_OBJECTS_MAX_PAGES = 100;
 
@@ -717,36 +727,32 @@ const DELETE_OBJECTS_MAX_PAGES = 100;
  * Delete every R2 object under a project's artifact prefix
  * (`t/<teamId>/p/<projectId>/`). Called by the project/team delete actions
  * AFTER the DB rows are gone: row deletion is the atomic, authoritative step;
- * this sweep is the best-effort byte cleanup that previously didn't exist at
- * all — "permanently deleted" teams kept their traces/screenshots/videos
- * (which can embed secrets) in R2 forever. Failures must not resurrect the
- * user-facing action, so callers log-and-continue on a thrown error.
+ * this sweep is one bounded pass of the durable cleanup job.
  *
  * Takes raw ids (not a `TenantScope`): deleteTeam sweeps every project of a
- * team it has already authorized and partially deleted, at which point the
- * membership rows backing a scope no longer exist.
+ * team it has already authorized and deleted, at which point the membership
+ * rows backing a scope no longer exist.
  */
 export async function deleteProjectArtifactObjects(
   teamId: string,
   projectId: string,
+  maxPages: number = DELETE_OBJECTS_MAX_PAGES,
 ): Promise<DeleteArtifactObjectsResult> {
   const prefix = `t/${teamId}/p/${projectId}/`;
   let deleted = 0;
-  let cursor: string | undefined;
-  for (let page = 0; page < DELETE_OBJECTS_MAX_PAGES; page++) {
-    const listed = await storage.list({ prefix, cursor, limit: 1000 });
+  for (let page = 0; page < maxPages; page++) {
+    // Always list from the prefix head. The prior page has been deleted, so its
+    // successor naturally becomes the new first page. This avoids persisting
+    // an opaque cursor whose position may become stale as objects are removed,
+    // and makes every retry safe after an interruption between list/delete.
+    const listed = await storage.list({ prefix, limit: 1000 });
     const keys = listed.objects.map((o) => o.key);
     if (keys.length > 0) {
       await storage.delete(keys);
       deleted += keys.length;
     }
     if (!listed.truncated) return { deleted, complete: true };
-    cursor = listed.cursor;
   }
-  logger.warn("artifact prefix sweep hit page budget; objects remain", {
-    prefix,
-    deleted,
-  });
   return { deleted, complete: false };
 }
 
@@ -769,233 +775,4 @@ export async function deleteArtifactObjectsByKeys(
     await storage.delete(keys.slice(i, i + DELETE_KEYS_PER_CALL));
   }
   return keys.length;
-}
-
-/**
- * The artifact READ pipeline — the download/HEAD half of the storage contract.
- *
- * Mirrors the write split above: `readArtifact` is the thin R2 adapter (the
- * only part needing a live binding), and `buildArtifactResponse` is the pure,
- * unit-testable HTTP-protocol math (Content-Range arithmetic, 304/206/200
- * status selection, immutable-cache + Content-Disposition + CORS header
- * assembly). Both compose under `serveArtifactBytes`
- * (`src/lib/artifacts/serve.ts`) — the ONE serve interface that also owns the
- * direct-R2 302 fork (ADR 0003) — so the download route stays request ->
- * verify token -> serveArtifactBytes, with no R2 object shape leaking into
- * the protocol logic and no second home for the origin-safety policy.
- */
-
-/**
- * A plain, R2-agnostic snapshot of a stored artifact, as needed to build the
- * download/HEAD response. `httpMetadata` is the headers R2 *already wrote*
- * (`R2Object.writeHttpMetadata` output) so `buildArtifactResponse` never
- * touches a Cloudflare `R2Object`; `range` is the *resolved* byte window the
- * GET served (the adapter coalesces the suffix/offset/length `R2Range`
- * variants against `size`), or `undefined` when the full object was served.
- */
-export interface ArtifactRead {
-  /** The object bytes, or `null` for a HEAD or a conditional 304 (no body). */
-  body: ReadableStream | null;
-  size: number;
-  /** Quoted ETag (`R2Object.httpEtag`). */
-  httpEtag: string;
-  /** Headers R2 pre-wrote via `writeHttpMetadata`. */
-  httpMetadata: Headers;
-  /** Resolved served range, or `undefined` for a full-body response. */
-  range?: { offset: number; length?: number };
-  /** Whether the client requested a `Range` (drives 206 vs 200). */
-  rangeRequested: boolean;
-}
-
-export interface BuildArtifactResponseOptions {
-  /** Content-type from the signed token; sanitised before it is served. */
-  tokenContentType: string;
-  /** Resolved `Access-Control-Allow-Origin` value. */
-  allowedOrigin: string;
-  /** R2 key — its trailing segment is the download filename. */
-  r2Key: string;
-  /** HTTP method; `"HEAD"` forces a body-less metadata response. */
-  method: string;
-  /**
-   * Seconds a SHARED cache (Cloudflare Workers Cache) may hold this response —
-   * the artifact token's *remaining* life, not the full mint TTL. The `?t=`
-   * token in the URL is the cache key's capability, so an edge-cached copy must
-   * not outlive the token that authorized it. The direct-R2 302 path caps its
-   * presigned URL from the same `exp`, so both capabilities expire together.
-   */
-  sharedMaxAgeSeconds: number;
-}
-
-/**
- * Assemble the immutable-cache + Content-Disposition + CORS headers for an
- * artifact response. Pure: takes the pre-written `httpMetadata` headers, never
- * an `R2Object`. The content-type is *always* overridden with a sanitised
- * value — R2 objects stored before the registration allowlist landed could
- * still carry an unsafe `httpMetadata.contentType` (e.g. `text/html`), and
- * normalising here makes sure no legacy row can hand the dashboard's origin to
- * an attacker. The Content-Disposition forces a download on top-level
- * navigation so a leaked signed URL pasted into the address bar never renders
- * as HTML/JS on the dashboard origin; subresource loads (`<img>`, `<video>`,
- * `fetch()`, trace.playwright.dev) ignore it and keep working. RFC 5987
- * `filename*` + `encodeURIComponent` percent-encodes `\r`, `\n`, `"` so a
- * hostile artifact name cannot inject a header.
- */
-export function buildArtifactHeaders(
-  read: Pick<ArtifactRead, "size" | "httpEtag" | "httpMetadata">,
-  opts: Pick<
-    BuildArtifactResponseOptions,
-    "tokenContentType" | "allowedOrigin" | "r2Key" | "sharedMaxAgeSeconds"
-  >,
-): Headers {
-  const headers = new Headers(read.httpMetadata);
-  headers.set("content-type", safeContentType(opts.tokenContentType));
-  headers.set("etag", read.httpEtag);
-  headers.set("content-length", String(read.size));
-  // Browsers may hold the immutable bytes for a year, but SHARED caches
-  // (Cloudflare Workers Cache) are capped to the token's *remaining* life
-  // (`sharedMaxAgeSeconds`): the `?t=` token in the URL is the cache key's
-  // capability, so an edge-cached copy must not outlive the token that
-  // authorized it. Using the full mint TTL here would let a copy cached from a
-  // late-in-life token linger up to ~TTL past expiry; the caller derives this
-  // from `exp`, exactly like the direct-R2 302 path caps its presigned URL.
-  headers.set(
-    "cache-control",
-    `public, max-age=31536000, s-maxage=${opts.sharedMaxAgeSeconds}, immutable`,
-  );
-  headers.set("content-disposition", artifactContentDisposition(opts.r2Key));
-  headers.set("access-control-allow-origin", opts.allowedOrigin);
-  headers.set("vary", "Origin");
-  headers.set("access-control-allow-methods", "GET, HEAD, OPTIONS");
-  headers.set("access-control-allow-headers", "Range, If-Match, If-None-Match");
-  headers.set(
-    "access-control-expose-headers",
-    "Content-Length, Content-Range, ETag",
-  );
-  return headers;
-}
-
-/**
- * Build the full download/HEAD `Response` from a plain `ArtifactRead`. Pure and
- * unit-testable (no `R2Object`, no `storage`): it owns the regression-prone
- * HTTP-protocol math —
- *
- *   - HEAD -> 200 with metadata headers only, no body;
- *   - a served range -> 206 with `Content-Range: bytes <o>-<o+len-1>/<size>`
- *     and a range-narrowed `Content-Length` (length defaults to `size - offset`
- *     when only an offset was given, matching R2's open-ended-range semantics);
- *   - a conditional miss (no body, not HEAD) -> 304;
- *   - otherwise -> 200 with the full body.
- *
- * The arithmetic is single-source here so a future range-supporting endpoint
- * reuses it instead of re-deriving the `offset + length - 1` boundary.
- */
-export function buildArtifactResponse(
-  read: ArtifactRead,
-  opts: BuildArtifactResponseOptions,
-): Response {
-  const headers = buildArtifactHeaders(read, opts);
-
-  if (opts.method === "HEAD") {
-    return new Response(null, { status: 200, headers });
-  }
-
-  const servedRange = read.rangeRequested && read.range !== undefined;
-  if (servedRange && read.range) {
-    const offset = read.range.offset;
-    const length = read.range.length ?? read.size - offset;
-    headers.set(
-      "content-range",
-      `bytes ${offset}-${offset + length - 1}/${read.size}`,
-    );
-    headers.set("content-length", String(length));
-    // Workers Cache keys on the URL and does NOT vary by `Range`, so a 206
-    // partial must never enter the SHARED edge cache — a later full-body or
-    // different-range GET to the same `?t=` URL could otherwise be answered
-    // with this partial. Keep the year-long *browser* cache (`private`); drop
-    // `public`/`s-maxage` so only full 200s are edge-cacheable.
-    headers.set("cache-control", "private, max-age=31536000, immutable");
-  }
-
-  // No body on a non-HEAD GET means R2 honoured a conditional request
-  // (`If-None-Match` / `If-Modified-Since`) and returned metadata only.
-  if (read.body === null) {
-    return new Response(null, { status: 304, headers });
-  }
-
-  return new Response(read.body, {
-    status: servedRange ? 206 : 200,
-    headers,
-  });
-}
-
-/**
- * Thin R2 adapter: read an artifact for the download/HEAD path and map the
- * Cloudflare `R2Object` into a plain {@link ArtifactRead}. This is the only
- * part of the read pipeline that needs a live R2 binding — all the protocol
- * math lives in the pure {@link buildArtifactResponse}. For HEAD we issue a
- * `storage.head` (no body); for GET we pass the request headers straight
- * through as R2's `range` + `onlyIf` so R2 handles `Range` / conditional
- * requests natively. Returns `null` when the key is absent (404 at the route).
- */
-export async function readArtifact(
-  r2Key: string,
-  reqHeaders: Headers,
-  method: string,
-): Promise<ArtifactRead | null> {
-  if (method === "HEAD") {
-    const head = await storage.head(r2Key);
-    if (!head) return null;
-    return mapR2ObjectToRead(head, false);
-  }
-
-  const object = await storage.get(r2Key, {
-    range: reqHeaders,
-    onlyIf: reqHeaders,
-  });
-  if (!object) return null;
-  const body = "body" in object ? object.body : null;
-  return mapR2ObjectToRead(object, reqHeaders.get("range") !== null, body);
-}
-
-/**
- * Map an `R2Object` (or `R2ObjectBody`) onto the plain {@link ArtifactRead}.
- * Pre-writes the R2 HTTP metadata into a `Headers` here so the pure response
- * builder never touches the Cloudflare object, and coalesces R2's three
- * `R2Range` variants (offset/length, length-only, suffix-only) into a single
- * resolved `{ offset, length }` window so the Content-Range arithmetic stays
- * in one place.
- */
-function mapR2ObjectToRead(
-  object: R2Object,
-  rangeRequested: boolean,
-  body: ReadableStream | null = null,
-): ArtifactRead {
-  const httpMetadata = new Headers();
-  object.writeHttpMetadata(httpMetadata);
-  return {
-    body,
-    size: object.size,
-    httpEtag: object.httpEtag,
-    httpMetadata,
-    range: resolveR2Range(object.range, object.size),
-    rangeRequested,
-  };
-}
-
-/**
- * Collapse R2's `R2Range` union into a resolved `{ offset, length }` byte
- * window against the object's total `size`, or `undefined` when R2 served the
- * full object. A `suffix` range (last N bytes) becomes `offset = size - suffix`
- * over `suffix` bytes.
- */
-function resolveR2Range(
-  range: R2Range | undefined,
-  size: number,
-): { offset: number; length?: number } | undefined {
-  if (!range) return undefined;
-  if ("suffix" in range) {
-    const length = Math.min(range.suffix, size);
-    return { offset: size - length, length };
-  }
-  return { offset: range.offset ?? 0, length: range.length };
 }

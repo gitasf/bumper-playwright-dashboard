@@ -1,7 +1,6 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { clearMonitorSchedulerLease } from "./helpers/monitor-scheduler-lease";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = resolve(__dirname, ".auth", "fixture.json");
@@ -13,5 +12,4 @@ export default async function globalTeardown(): Promise<void> {
   for (const path of [FIXTURE_PATH, STORAGE_STATE_PATH]) {
     if (existsSync(path)) unlinkSync(path);
   }
-  await clearMonitorSchedulerLease();
 }

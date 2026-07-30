@@ -6,7 +6,7 @@ import {
   testResults,
   testTags,
 } from "@schema";
-import { chunkBySize, chunkByParams, chunkInsertRows } from "@/lib/ingest";
+import { chunkBySize, chunkByParams, chunkInsertRows } from "@/lib/db/chunk";
 
 /**
  * Guards F02: the param-chunk column count used to be a hand-typed literal per
@@ -24,7 +24,7 @@ import { chunkBySize, chunkByParams, chunkInsertRows } from "@/lib/ingest";
  */
 
 // Postgres's per-statement bound-parameter ceiling. Must match
-// PG_MAX_BOUND_PARAMS in src/lib/ingest.ts (kept private there; restated here as
+// PG_MAX_BOUND_PARAMS in src/lib/db/chunk.ts (restated here as
 // the invariant under test).
 const MAX_PARAMS_PER_STATEMENT = 65_535;
 

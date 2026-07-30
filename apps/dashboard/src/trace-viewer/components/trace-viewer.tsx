@@ -245,6 +245,7 @@ function Workbench({
       <SplitPane
         direction="horizontal"
         initial={0.32}
+        separatorLabel="Resize action list and trace details"
         min={0.18}
         max={0.55}
         className="min-h-0 flex-1"
@@ -260,6 +261,7 @@ function Workbench({
         <SplitPane
           direction="vertical"
           initial={0.62}
+          separatorLabel="Resize snapshot and action details"
           min={0.3}
           max={0.85}
           className="h-full"

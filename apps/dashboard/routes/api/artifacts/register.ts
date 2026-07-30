@@ -5,20 +5,11 @@ import {
   type ArtifactPutSigner,
   registerArtifacts,
 } from "@/lib/artifacts/store";
+import { ARTIFACT_PRESIGNED_PUT_TTL_SECONDS } from "@/lib/artifacts/constants";
 import { signPutUrl } from "@/lib/artifacts/presign";
 import { r2DirectConfig } from "@/lib/config";
 import { tenantScopeForApiKey } from "@/lib/scope";
 import { RegisterArtifactsPayloadSchema } from "@/lib/schemas";
-
-/**
- * Presigned PUT lifetime. Registration only mints PUT URLs for an OPEN run, but
- * — unlike the worker path's `storeArtifactUpload`, which re-checks run closure
- * on every byte write — a presigned PUT can't re-gate at upload time. Cap it well
- * under the 1h default so a leaked PUT URL can't overwrite a historical artifact
- * long after registration; the reporter PUTs each artifact right after register,
- * so 15 minutes is ample (covers slow links + its retry backoff).
- */
-const PRESIGNED_PUT_TTL_SECONDS = 15 * 60;
 
 /**
  * POST /api/artifacts/register
@@ -44,7 +35,7 @@ export const POST = defineHandler.withValidator({
     ? (r2Key, opts) =>
         signPutUrl(directCfg, r2Key, {
           ...opts,
-          expiresIn: PRESIGNED_PUT_TTL_SECONDS,
+          expiresIn: ARTIFACT_PRESIGNED_PUT_TTL_SECONDS,
         })
     : undefined;
 

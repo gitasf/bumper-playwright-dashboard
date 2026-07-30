@@ -78,9 +78,21 @@ export function traceViewerBridgeOrigin(pageOrigin: string): string {
     : normalizedPageOrigin;
 }
 
-/** Enable snapshot scripts only when the viewer is isolated from the session. */
+/**
+ * True when a snapshot document is allowed to run its own scripts — only ever
+ * when the viewer is isolated from the session on a cookieless origin. The
+ * single source of that decision: the iframe sandbox, the script-less fixup
+ * path, and the popout control all derive from it, and every way they could
+ * drift apart fails silently.
+ */
+export function snapshotScriptsEnabled(
+  pageOrigin = currentPageOrigin(),
+): boolean {
+  return isSeparateTraceViewerOrigin(pageOrigin);
+}
+
 export function snapshotSandbox(pageOrigin = currentPageOrigin()): string {
-  return isSeparateTraceViewerOrigin(pageOrigin)
+  return snapshotScriptsEnabled(pageOrigin)
     ? "allow-same-origin allow-scripts"
     : "allow-same-origin";
 }

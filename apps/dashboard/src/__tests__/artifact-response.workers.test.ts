@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   type ArtifactRead,
+  artifactConditionalOutcome,
   buildArtifactHeaders,
   buildArtifactResponse,
-} from "@/lib/artifacts/store";
+} from "@/lib/artifacts/read";
 
 /**
  * The artifact READ pipeline's HTTP-protocol math (`buildArtifactResponse` +
@@ -19,9 +20,11 @@ import {
 
 function read(overrides: Partial<ArtifactRead> = {}): ArtifactRead {
   return {
+    outcome: "body",
     body: new ReadableStream(),
     size: 1000,
     httpEtag: '"abc123"',
+    lastModified: new Date("2026-10-21T07:28:00.000Z"),
     httpMetadata: new Headers({
       "last-modified": "Wed, 21 Oct 2026 07:28:00 GMT",
     }),
@@ -115,7 +118,7 @@ describe("buildArtifactHeaders", () => {
       "GET, HEAD, OPTIONS",
     );
     expect(headers.get("access-control-allow-headers")).toBe(
-      "Range, If-Match, If-None-Match",
+      "Range, If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since",
     );
     expect(headers.get("access-control-expose-headers")).toBe(
       "Content-Length, Content-Range, ETag",
@@ -144,10 +147,39 @@ describe("buildArtifactResponse", () => {
     expect(res.headers.get("content-range")).toBeNull();
   });
 
-  it("returns 304 on a non-HEAD GET with no body (conditional miss)", () => {
-    const res = buildArtifactResponse(read({ body: null }), baseOpts);
+  it("returns 304 for an explicit not-modified outcome", () => {
+    const res = buildArtifactResponse(
+      read({ outcome: "not-modified", body: null }),
+      baseOpts,
+    );
     expect(res.status).toBe(304);
     expect(res.body).toBeNull();
+  });
+
+  it("returns 412 for a failed If-Match/If-Unmodified-Since precondition", () => {
+    const res = buildArtifactResponse(
+      read({ outcome: "precondition-failed", body: null }),
+      baseOpts,
+    );
+    expect(res.status).toBe(412);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("honors conditional outcomes for HEAD instead of always returning 200", () => {
+    expect(
+      buildArtifactResponse(read({ outcome: "not-modified", body: null }), {
+        ...baseOpts,
+        method: "HEAD",
+      }).status,
+    ).toBe(304);
+    expect(
+      buildArtifactResponse(
+        read({ outcome: "precondition-failed", body: null }),
+        { ...baseOpts, method: "HEAD" },
+      ).status,
+    ).toBe(412);
   });
 
   it("serves a 206 with Content-Range for an offset+length range", () => {
@@ -197,5 +229,72 @@ describe("buildArtifactResponse", () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("content-range")).toBeNull();
+  });
+});
+
+describe("artifactConditionalOutcome", () => {
+  const etag = '"abc123"';
+  const modified = new Date("2026-10-21T07:28:00.900Z");
+
+  it("distinguishes failed write preconditions from cache validation", () => {
+    expect(
+      artifactConditionalOutcome(
+        new Headers({ "if-match": '"other"' }),
+        etag,
+        modified,
+      ),
+    ).toBe("precondition-failed");
+    expect(
+      artifactConditionalOutcome(
+        new Headers({
+          "if-unmodified-since": "Wed, 21 Oct 2026 07:27:59 GMT",
+        }),
+        etag,
+        modified,
+      ),
+    ).toBe("precondition-failed");
+    expect(
+      artifactConditionalOutcome(
+        new Headers({ "if-none-match": 'W/"abc123"' }),
+        etag,
+        modified,
+      ),
+    ).toBe("not-modified");
+    expect(
+      artifactConditionalOutcome(
+        new Headers({
+          "if-modified-since": "Wed, 21 Oct 2026 07:28:00 GMT",
+        }),
+        etag,
+        modified,
+      ),
+    ).toBe("not-modified");
+  });
+
+  it("applies RFC precondition precedence for mixed conditional headers", () => {
+    expect(
+      artifactConditionalOutcome(
+        new Headers({
+          "if-match": etag,
+          "if-unmodified-since": "Wed, 21 Oct 2026 07:27:00 GMT",
+          "if-none-match": etag,
+        }),
+        etag,
+        modified,
+      ),
+    ).toBe("not-modified");
+  });
+
+  it("returns a body outcome when all supplied preconditions pass", () => {
+    expect(
+      artifactConditionalOutcome(
+        new Headers({
+          "if-match": etag,
+          "if-none-match": '"other"',
+        }),
+        etag,
+        modified,
+      ),
+    ).toBe("body");
   });
 });

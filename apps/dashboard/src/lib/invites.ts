@@ -5,6 +5,7 @@ import { memberships, teamInvites, teams } from "@schema";
 import { AUDIT_ACTIONS, recordAudit } from "@/lib/audit";
 import { buildInviteMatchConds, getUserIdentity } from "@/lib/auth-users";
 import { changedRows, isUniqueViolation } from "@/lib/db/batch";
+import { lockTeamForChildMutation } from "@/lib/team-lock";
 
 /**
  * Shared accept/decline core for tokenless (directed-invite) redemption.
@@ -23,6 +24,56 @@ import { changedRows, isUniqueViolation } from "@/lib/db/batch";
 export type AcceptInviteResult =
   | { ok: true; teamId: string; teamSlug: string }
   | { ok: false; status: 403 | 404; error: string };
+
+/**
+ * Consume a token-link invite and grant its membership in one transaction.
+ * DELETE … RETURNING is the single-use latch: only the transaction that removes
+ * the still-unexpired row may insert a membership.
+ */
+export async function consumeTokenInvite(
+  userId: string,
+  inviteId: string,
+  now: number,
+): Promise<{ teamId: string; role: string } | null> {
+  return db.transaction(async (tx) => {
+    // Resolve the parent without locking the child, then take the canonical
+    // parent lock before DELETE locks the invite. A concurrent consumer may
+    // win between these reads; DELETE ... RETURNING remains the single-use
+    // latch below.
+    const candidates = await tx
+      .select({ teamId: teamInvites.teamId })
+      .from(teamInvites)
+      .where(and(eq(teamInvites.id, inviteId), gt(teamInvites.expiresAt, now)))
+      .limit(1);
+    const candidate = candidates[0];
+    if (!candidate || !(await lockTeamForChildMutation(tx, candidate.teamId))) {
+      return null;
+    }
+    const consumed = await tx
+      .delete(teamInvites)
+      .where(
+        and(
+          eq(teamInvites.id, inviteId),
+          eq(teamInvites.teamId, candidate.teamId),
+          gt(teamInvites.expiresAt, now),
+        ),
+      )
+      .returning({
+        teamId: teamInvites.teamId,
+        role: teamInvites.role,
+      });
+    const invite = consumed[0];
+    if (!invite) return null;
+    await tx.insert(memberships).values({
+      id: ulid(),
+      userId,
+      teamId: invite.teamId,
+      role: invite.role,
+      createdAt: now,
+    });
+    return invite;
+  });
+}
 
 export async function acceptDirectedInvite(
   c: Context,
@@ -66,11 +117,13 @@ export async function acceptDirectedInvite(
   let joined: { teamId: string; role: string } | null = null;
   try {
     joined = await db.transaction(async (tx) => {
+      if (!(await lockTeamForChildMutation(tx, invite.teamId))) return null;
       const consumed = await tx
         .delete(teamInvites)
         .where(
           and(
             eq(teamInvites.id, inviteId),
+            eq(teamInvites.teamId, invite.teamId),
             gt(teamInvites.expiresAt, now),
             matchConds,
           ),
@@ -92,9 +145,26 @@ export async function acceptDirectedInvite(
     });
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
-    await db
-      .delete(teamInvites)
-      .where(and(eq(teamInvites.id, inviteId), matchConds));
+    // Already a member, so the accept is idempotent — retire the now-redundant
+    // invite. A lost parent lock means teardown removed the team, cascading
+    // both that membership and this invite, so report the same gone outcome as
+    // a missing invite instead of a success carrying the dead team's slug.
+    const teamSurvived = await db.transaction(async (tx) => {
+      if (!(await lockTeamForChildMutation(tx, invite.teamId))) return false;
+      await tx
+        .delete(teamInvites)
+        .where(
+          and(
+            eq(teamInvites.id, inviteId),
+            eq(teamInvites.teamId, invite.teamId),
+            matchConds,
+          ),
+        );
+      return true;
+    });
+    if (!teamSurvived) {
+      return { ok: false, status: 404, error: "Invite not found or expired" };
+    }
     return { ok: true, teamId: invite.teamId, teamSlug: invite.teamSlug };
   }
 

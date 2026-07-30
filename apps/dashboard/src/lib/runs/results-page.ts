@@ -1,11 +1,11 @@
-import { and, asc, db, desc, eq, gt, lt, or, sql } from "void/db";
+import { and, asc, db, desc, eq, gt, inArray, lt, or, sql } from "void/db";
 import { runs, testResults } from "@schema";
 import {
   type GroupByAxis,
   recommendedRank,
   type StatusFilterValue,
 } from "@/lib/group-tests-by-file";
-import { STATUS_BUCKET_MEMBERS, statusMatchSql } from "@/lib/ingest";
+import { STATUS_BUCKET_MEMBERS } from "@/lib/status-buckets";
 import { decodeKeyset, encodeKeyset } from "@/lib/keyset-cursor";
 import {
   groupPredicate,
@@ -194,7 +194,9 @@ export async function paginateRunTests<
     conditions.push(eq(testResults.status, opts.status));
   }
   if (opts.statusBucket) {
-    conditions.push(statusMatchSql(statusFilterMembers(opts.statusBucket)));
+    conditions.push(
+      inArray(testResults.status, [...statusFilterMembers(opts.statusBucket)]),
+    );
   }
   if (opts.group) {
     conditions.push(groupPredicate(opts.group.axis, opts.group.key));
@@ -210,7 +212,7 @@ export async function paginateRunTests<
   // skip a newer flaky row that sorts after an older failed one.
   const rankByBucket =
     opts.statusBucket === "recommended"
-      ? sql<number>`case when ${statusMatchSql(STATUS_BUCKET_MEMBERS.failed)} then 0 else 1 end`
+      ? sql<number>`case when ${inArray(testResults.status, [...STATUS_BUCKET_MEMBERS.failed])} then 0 else 1 end`
       : null;
 
   if (rankByBucket) {

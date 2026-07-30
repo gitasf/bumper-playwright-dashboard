@@ -44,7 +44,7 @@ interface StatusEntry {
   sortKey: number;
 }
 
-export const STATUS = {
+export const STATUS = Object.freeze({
   failed: {
     cssVar: "--fail",
     label: "Failed",
@@ -75,7 +75,7 @@ export const STATUS = {
     label: "Passed",
     sortKey: 5,
   },
-} as const satisfies Record<Status, StatusEntry>;
+} as const satisfies Record<Status, StatusEntry>);
 
 const FALLBACK_SORT_KEY = 99;
 

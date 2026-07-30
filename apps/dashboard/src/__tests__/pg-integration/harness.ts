@@ -24,12 +24,63 @@
 //     so pglite files are trivially isolated from one another.
 //
 // Real-Postgres isolation: all files in this directory share ONE database
-// under PG_TEST_URL, so running them in parallel would let concurrent
-// DDL/table resets from different files corrupt each other. The CI job for
-// this directory runs with `--no-file-parallelism` (see .github/workflows/
-// ci.yml) so only one file's suite touches the shared database at a time —
-// the pglite lane doesn't need this (each file is a separate in-process DB).
+// under PG_TEST_URL, so running them in parallel lets one file's `resetTables`
+// drop a table another file is mid-assertion on. This is enforced in
+// `vite.config.ts` as `fileParallelism: !process.env.PG_TEST_URL` — derived from
+// the same variable that selects the shared database, so any invocation
+// (`pnpm test`, a single-file run, CI) serializes automatically. The CI job also
+// passes `--no-file-parallelism` (.github/workflows/ci.yml); that is now
+// redundant reinforcement rather than the only thing holding this up. The
+// pglite lane needs none of it — each file is a separate in-process DB — and
+// keeps running fully parallel.
+//
+// If you ever need these files to run concurrently against real Postgres, the
+// fix is per-file isolation (a schema or database per file, with the raw `pg`
+// Clients in `team-lock-order.test.ts` pointed at the same schema), not
+// relaxing the flag.
 import { getTableConfig } from "void/schema-pg";
+
+/**
+ * Refuse a `PG_TEST_URL` that does not name a disposable database.
+ *
+ * {@link resetTables} runs `DROP TABLE … CASCADE` on every table a suite
+ * touches, so pointing this variable at a database anyone cares about destroys
+ * it — and nothing else in the harness would notice, because dropping tables is
+ * the harness's normal behaviour.
+ *
+ * The rule: the database name must be `test` or end in `_test`. That is the part
+ * of the URL that actually encodes intent. Host is deliberately NOT checked —
+ * CI service containers are reachable under assorted hostnames, so a
+ * localhost-only rule would reject legitimate setups while still permitting the
+ * dangerous case (a production database that happens to run locally).
+ *
+ * There is intentionally no opt-out. An escape hatch for "drop every table in
+ * this database" is the kind of thing that ends up exported in a shell profile,
+ * and there is no legitimate reason to run these suites against a database whose
+ * contents matter.
+ */
+export function assertDisposableTestDatabase(url: string): void {
+  let database: string;
+  try {
+    database = decodeURIComponent(new URL(url).pathname).replace(/^\//, "");
+  } catch {
+    // Never interpolate the URL itself into these messages — a connection
+    // string routinely carries a password, and both errors land in CI logs.
+    // The database name is the only part worth reporting, and it is safe.
+    throw new Error(
+      "PG_TEST_URL is not a valid URL.\n" +
+        "Expected something like postgres://user@localhost:5432/wrightful_test",
+    );
+  }
+  if (!/(?:^|_)test$/.test(database)) {
+    throw new Error(
+      `Refusing to run pg-integration against database "${database || "(none)"}".\n` +
+        "These suites DROP every table they touch, so the database name must end " +
+        'in "_test" (or be exactly "test") to confirm it is disposable.\n' +
+        "Create a throwaway database instead, e.g. `createdb wrightful_test`.",
+    );
+  }
+}
 
 /**
  * Build the backing Drizzle instance for one pg-integration test file. Call
@@ -43,6 +94,7 @@ export async function buildHarness() {
   const schema = await import("../../../db/schema");
   const url = process.env.PG_TEST_URL;
   if (url) {
+    assertDisposableTestDatabase(url);
     const { drizzle } = await import("drizzle-orm/node-postgres");
     const { sql } = await import("void/_db");
     const db = drizzle({

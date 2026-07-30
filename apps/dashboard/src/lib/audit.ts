@@ -22,9 +22,17 @@ import { auditLog } from "@schema";
  * **Synchronous by design.** `recordAudit` is a plain awaited insert, never
  * fire-and-forget — workerd terminates orphaned promises after the response, so
  * `waitUntil` / an un-awaited insert can silently drop the row. A single small
- * insert awaited inline is cheap. This also matters for DELETE actions: call
- * `recordAudit` (awaited) BEFORE the delete statement runs so the actor/target
- * context is captured before any FK cascade removes it.
+ * insert awaited inline is cheap.
+ *
+ * **DELETE actions use `buildAuditRow`, NOT `recordAudit`.** Writing the row
+ * before the delete looks safer but is not: it survives a FAILED teardown and
+ * records a deletion that never happened. Project deletion instead emits its
+ * audit row via {@link buildAuditRow} inside the SAME transaction as the delete
+ * (`teardownProject`), so row and deletion commit or roll back together — the
+ * `projectId` FK is `set null`, so the row outlives its subject. Team deletion
+ * is deliberately unaudited: `auditLog.teamId` cascades, so any such row would
+ * be destroyed by the very delete it records (see the `auditLog` doc-comment in
+ * `db/schema.ts`).
  */
 
 /**
@@ -42,7 +50,6 @@ export const AUDIT_ACTIONS = {
   KEY_MINT: "key.mint",
   KEY_REVOKE: "key.revoke",
   TEAM_RENAME: "team.rename",
-  TEAM_DELETE: "team.delete",
   GITHUB_INSTALLATION_DISCONNECT: "github_installation.disconnect",
   PROJECT_CREATE: "project.create",
   PROJECT_DELETE: "project.delete",
@@ -106,7 +113,8 @@ export function buildAuditRow(
  * Record one audit row for the signed-in actor. Best-effort: a failure to
  * resolve the actor or write the row is logged and swallowed so the caller's
  * mutation is never broken. Awaited — see the module doc-comment on why this is
- * synchronous (and why deletes must call it before their delete statement).
+ * synchronous, and why deletes use `buildAuditRow` inside their transaction
+ * instead of calling this before the delete.
  */
 export async function recordAudit(
   c: Context,
