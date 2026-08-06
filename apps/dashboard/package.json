@@ -66,7 +66,7 @@
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "geist": "^1.7.2",
-    "hono": "^4.12.31",
+    "hono": "^4.12.34",
     "lucide-react": "^1.25.0",
     "react": "19.2.8",
     "react-day-picker": "^10.0.1",
