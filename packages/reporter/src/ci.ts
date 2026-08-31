@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
+import type { ShardInfo } from "./types.js";
 
 // CI environment detection. Reads standard env vars on GitHub Actions,
 // GitLab CI, and CircleCI; falls back to a `CI=true` generic case. Commit
@@ -435,4 +436,83 @@ export function generateIdempotencyKey(
     parts.push(`matrix-${shortHash(discriminators.matrixKey)}`);
   }
   return boundedDerivedKey(parts);
+}
+
+/**
+ * Shard coordinates for this reporter process: Playwright's own slicing when
+ * `--shard` is in play, otherwise an env declaration.
+ *
+ * `config.shard` is set ONLY by `--shard`, so a matrix that splits a suite by
+ * `--project` (or by spec paths, or a grep) looks non-sharded to the reporter
+ * even when every leg shares one `WRIGHTFUL_IDEMPOTENCY_KEY` and therefore one
+ * dashboard run. Without shard coordinates the dashboard finalizes that run on
+ * the FIRST leg's `/complete` — the run goes terminal while the slower legs are
+ * still streaming into it, and any leg whose `openRun` lands after that gets
+ * `409 ... already belongs to a completed execution` and drops every result it
+ * has. Declaring the coordinates puts such a matrix on the native-shard path
+ * instead; the README documents the CI wiring.
+ *
+ * A declaration must be complete and consistent (`1 <= index <= total`).
+ * Anything else is a misconfiguration that would strand the run at `running`
+ * until the dashboard watchdog sweeps it, so it warns and reports no shard
+ * rather than guessing — while a leg that declares nothing at all is the
+ * ordinary single-run case and stays silent.
+ */
+const SHARD_INDEX_ENV = "WRIGHTFUL_SHARD_INDEX";
+const SHARD_TOTAL_ENV = "WRIGHTFUL_SHARD_TOTAL";
+
+export interface ShardResolution {
+  /** Coordinates for a sharded execution; null for a plain single run. */
+  shard: ShardInfo | null;
+  /** Misconfiguration to surface on stderr; null when there is nothing to say. */
+  warning: string | null;
+}
+
+/**
+ * Parse one 1-based shard coordinate from an already-trimmed value. The regex
+ * rejects anything that isn't a run of digits (a float, a CI expression that
+ * never expanded); `isSafeInteger` rejects a digit run too long to survive
+ * `Number`; `>= 1` rejects a 0-based index.
+ */
+function parseShardCoordinate(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
+
+export function resolveShardIdentity(
+  configShard: { current: number; total: number } | null,
+  env: NodeJS.ProcessEnv = process.env,
+): ShardResolution {
+  const rawIndex = env[SHARD_INDEX_ENV]?.trim() ?? "";
+  const rawTotal = env[SHARD_TOTAL_ENV]?.trim() ?? "";
+  const declared = rawIndex !== "" || rawTotal !== "";
+
+  if (configShard) {
+    return {
+      shard: { index: configShard.current, total: configShard.total },
+      warning: declared
+        ? `${SHARD_INDEX_ENV}/${SHARD_TOTAL_ENV} ignored — Playwright's --shard takes precedence ` +
+          `(running shard ${configShard.current}/${configShard.total}).`
+        : null,
+    };
+  }
+
+  if (!declared) return { shard: null, warning: null };
+
+  // One rejection for every bad declaration, echoing both raw values: a half
+  // declaration shows up as an empty string, so the same sentence covers the
+  // missing variable, the unexpanded expression, and the 0-based index.
+  const index = parseShardCoordinate(rawIndex);
+  const total = parseShardCoordinate(rawTotal);
+  if (index === null || total === null || index > total) {
+    return {
+      shard: null,
+      warning:
+        `${SHARD_INDEX_ENV}="${rawIndex}" ${SHARD_TOTAL_ENV}="${rawTotal}" does not address a shard ` +
+        `(both must be whole numbers with 1 <= index <= total). Reporting this leg as a whole run.`,
+    };
+  }
+
+  return { shard: { index, total }, warning: null };
 }
