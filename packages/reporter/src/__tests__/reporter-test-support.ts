@@ -25,6 +25,8 @@ export const CI_ENV_VARS = [
   "CI_PIPELINE_ID",
   "WRIGHTFUL_IDEMPOTENCY_KEY",
   "WRIGHTFUL_MATRIX_KEY",
+  "WRIGHTFUL_SHARD_INDEX",
+  "WRIGHTFUL_SHARD_TOTAL",
 ];
 
 export function jsonResponse(status: number, body: unknown): Response {

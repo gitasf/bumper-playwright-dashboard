@@ -27,6 +27,7 @@ import {
   detectCI,
   generateIdempotencyKey,
   resolveCIExecutionPolicy,
+  resolveShardIdentity,
   type CIInfo,
 } from "./ci.js";
 import { AuthError, StreamClient } from "./client.js";
@@ -228,10 +229,12 @@ export default class WrightfulReporter implements Reporter {
   private ci: CIInfo | null = null;
   private projectNames: string[] = [];
   /**
-   * Playwright shard coordinates (`config.shard`) for a sharded run, else null.
-   * Captured at `onBegin`, sent on the open payload AND the final `/complete` so
-   * the dashboard keeps the run at status='running' until every shard has
-   * reported (rather than finalizing on the first shard's /complete).
+   * Shard coordinates for a sharded run — Playwright's `config.shard`, or the
+   * env-declared equivalent for a self-slicing CI matrix — else null. Captured
+   * at `onBegin`, sent on the open payload AND the final `/complete` so the
+   * dashboard keeps the run at status='running' until every shard has reported
+   * (rather than finalizing on the first shard's /complete), and stamped on
+   * every test row so the dashboard can group results by shard.
    */
   private shard: ShardInfo | null = null;
   private batcher: Batcher<EnqueuedTest> | null = null;
@@ -290,13 +293,13 @@ export default class WrightfulReporter implements Reporter {
     // this shard. A shard or grep can contain no tests (or only one project's
     // slice), but every shard still needs the complete selected project set.
     this.projectNames = selectedProjectNames(config);
-    // Playwright sets `config.shard` only under `--shard`; remap its
-    // `{ current, total }` to the wire's `{ index, total }`. Null for a
-    // non-sharded run, which keeps the open/complete payloads at their legacy
-    // shape and the dashboard on the finalize-on-first-complete path.
-    this.shard = config.shard
-      ? { index: config.shard.current, total: config.shard.total }
-      : null;
+    // `--shard`, or the env declaration a self-slicing matrix supplies in its
+    // place (see `resolveShardIdentity`). Null for a genuinely single run,
+    // which keeps the open/complete payloads at their legacy shape and the
+    // dashboard on the finalize-on-first-complete path.
+    const shardIdentity = resolveShardIdentity(config.shard);
+    if (shardIdentity.warning) warn(shardIdentity.warning);
+    this.shard = shardIdentity.shard;
 
     const baseUrl = this.baseUrl;
     const token = this.token;

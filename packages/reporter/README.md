@@ -91,12 +91,52 @@ env:
     ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.project }}-${{ matrix.os }}
 ```
 
-| environment variable        | handling                                                                                                     |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GITHUB_RUN_ATTEMPT`        | Auto-detected rerun attempt. Native-shard attempts after the first require an explicit complete-set key.     |
-| `CI_JOB_ID`                 | Auto-detected GitLab retry identity for non-sharded jobs; intentionally excluded from native-shard identity. |
-| `WRIGHTFUL_MATRIX_KEY`      | Optional discriminator for non-shard matrix axes that auto-detection cannot distinguish.                     |
-| `WRIGHTFUL_IDEMPOTENCY_KEY` | Full explicit override; must be unique per execution and shared by every native shard in that execution.     |
+### Matrices that shard the suite themselves
+
+Playwright sets `config.shard` only under `--shard`. A matrix that slices the
+suite some other way — one `--project` per leg, or spec paths, or a grep —
+looks like a plain single run to the reporter, even when every leg shares one
+`WRIGHTFUL_IDEMPOTENCY_KEY` and therefore one dashboard run. The dashboard then
+finalizes that run on the **first** leg's `/complete`: it goes terminal (status
+decided by whichever leg happened to finish first, run glyph no longer showing
+progress) while the slower legs are still streaming into it, and any leg whose
+`openRun` lands after that point is rejected with `409 ... already belongs to a
+completed execution` and drops every result it has.
+
+Declare the shard coordinates so those legs are treated as shards of one run:
+
+```yaml
+- name: Run Playwright tests
+  # `strategy.job-index` is 0-based and GitHub expressions have no arithmetic,
+  # so the 1-based coordinate is computed in the shell.
+  run: |
+    export WRIGHTFUL_SHARD_INDEX=$((JOB_INDEX + 1))
+    npx playwright test --project=${{ matrix.project }}
+  env:
+    JOB_INDEX: ${{ strategy.job-index }}
+    WRIGHTFUL_SHARD_TOTAL: ${{ strategy.job-total }}
+    WRIGHTFUL_IDEMPOTENCY_KEY: ${{ github.run_id }}-${{ github.job }}-${{ github.run_attempt }}
+```
+
+The run then stays `running` until every leg has reported, its final status is
+the worst leg's rather than the first's, `expectedTotalTests` sums across legs,
+and each test row records the leg that produced it. Both variables are
+required, with `1 <= index <= total`; a partial or nonsensical declaration
+warns on stderr and falls back to the single-run shape rather than opening a run
+that could never finalize. Playwright's `--shard` always takes precedence.
+
+Every leg must report for the run to finalize. A leg killed by a job timeout or
+cancellation still posts its own `interrupted` completion; one lost to `SIGKILL`
+leaves the run `running` until the dashboard watchdog sweeps it.
+
+| environment variable        | handling                                                                                                         |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `GITHUB_RUN_ATTEMPT`        | Auto-detected rerun attempt. Native-shard attempts after the first require an explicit complete-set key.         |
+| `CI_JOB_ID`                 | Auto-detected GitLab retry identity for non-sharded jobs; intentionally excluded from native-shard identity.     |
+| `WRIGHTFUL_MATRIX_KEY`      | Optional discriminator for non-shard matrix axes that auto-detection cannot distinguish.                         |
+| `WRIGHTFUL_IDEMPOTENCY_KEY` | Full explicit override; must be unique per execution and shared by every native shard in that execution.         |
+| `WRIGHTFUL_SHARD_INDEX`     | 1-based shard coordinate for a matrix that shards the suite without `--shard`. Requires `WRIGHTFUL_SHARD_TOTAL`. |
+| `WRIGHTFUL_SHARD_TOTAL`     | How many legs the shared run must wait for before it may finalize. Requires `WRIGHTFUL_SHARD_INDEX`.             |
 
 ## Fail-closed semantics
 

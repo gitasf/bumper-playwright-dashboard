@@ -2,7 +2,7 @@
   "mcpServers": {
     "wrightful": {
       "type": "http",
-      "url": "https://dash.wrightful.dev/api/mcp"
+      "url": "https://bumper-e2e.dev/api/mcp"
     }
   }
 }

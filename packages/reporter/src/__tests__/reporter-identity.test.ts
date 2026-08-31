@@ -387,4 +387,94 @@ describe("WrightfulReporter execution identity", () => {
     const second = await postForProjectToken("wrf_project_two_secret");
     expect(second).not.toBe(first);
   });
+
+  it("declares an env-supplied shard when the matrix slices the suite itself", async () => {
+    process.env.GITHUB_ACTIONS = "true";
+    process.env.GITHUB_RUN_ID = "42";
+    process.env.GITHUB_JOB = "e2e";
+    process.env.WRIGHTFUL_IDEMPOTENCY_KEY = "42-e2e-1";
+    process.env.WRIGHTFUL_SHARD_INDEX = "14";
+    process.env.WRIGHTFUL_SHARD_TOTAL = "20";
+
+    const fetchMock = makeFetch([
+      (url) =>
+        url.endsWith("/api/runs")
+          ? jsonResponse(200, { runId: "run_abc" })
+          : undefined,
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    const reporter = new WrightfulReporter({
+      url: "http://dash.example",
+      token: "tok",
+    });
+    // No --shard: this leg runs a whole Playwright project of its own.
+    reporter.onBegin(makeConfig(null, null, ["chromium-pay"]), makeSuite([]));
+    await reporter.onEnd({
+      status: "failed",
+      startTime: new Date(),
+      duration: 0,
+    } as FullResult);
+
+    const bodyOf = (suffix: string): Record<string, unknown> => {
+      const call = fetchMock.mock.calls
+        .slice()
+        .reverse()
+        .find(([url]) => url.endsWith(suffix));
+      expect(call).toBeDefined();
+      const raw = call![1].body;
+      return JSON.parse(typeof raw === "string" ? raw : "{}") as Record<
+        string,
+        unknown
+      >;
+    };
+
+    expect(bodyOf("/api/runs").shard).toEqual({ index: 14, total: 20 });
+    expect(bodyOf("/complete").shard).toEqual({ index: 14, total: 20 });
+  });
+
+  it("omits shard coordinates when the declaration is incomplete", async () => {
+    process.env.GITHUB_ACTIONS = "true";
+    process.env.GITHUB_RUN_ID = "42";
+    process.env.GITHUB_JOB = "e2e";
+    process.env.WRIGHTFUL_IDEMPOTENCY_KEY = "42-e2e-1";
+    process.env.WRIGHTFUL_SHARD_INDEX = "14";
+
+    const fetchMock = makeFetch([
+      (url) =>
+        url.endsWith("/api/runs")
+          ? jsonResponse(200, { runId: "run_abc" })
+          : undefined,
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    const reporter = new WrightfulReporter({
+      url: "http://dash.example",
+      token: "tok",
+    });
+    reporter.onBegin(makeConfig(null, null, ["chromium-pay"]), makeSuite([]));
+    await reporter.onEnd({
+      status: "passed",
+      startTime: new Date(),
+      duration: 0,
+    } as FullResult);
+
+    const openCall = fetchMock.mock.calls.find(([url]) =>
+      url.endsWith("/api/runs"),
+    );
+    const raw = openCall![1].body;
+    const body = JSON.parse(typeof raw === "string" ? raw : "{}") as {
+      shard?: unknown;
+    };
+    expect(body.shard).toBeUndefined();
+    expect(
+      stderrSpy.mock.calls.some(([message]) =>
+        String(message).includes("does not address a shard"),
+      ),
+    ).toBe(true);
+  });
 });
