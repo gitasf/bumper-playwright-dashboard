@@ -49,7 +49,7 @@
     "@hono/mcp": "^0.3.1",
     "@lezer/highlight": "^1.2.3",
     "@lezer/javascript": "^1.5.4",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@polar-sh/better-auth": "^1.8.4",
     "@polar-sh/sdk": "^0.49.0",
     "@tailwindcss/vite": "^4.3.3",
